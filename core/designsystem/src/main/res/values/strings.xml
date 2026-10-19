@@ -301,6 +301,10 @@
     <string name="add_book_online">Khám phá Kho Truyện Online</string>
     <string name="add_book_online_desc">Duyệt và tải sách từ máy chủ backend</string>
     <string name="add_book_local">Chọn file sách từ thiết bị</string>
+    <string name="add_book_drive">Nhập từ Google Drive</string>
+    <string name="add_book_drive_desc">Chọn truyện trên Drive và tải về để đọc offline</string>
+    <string name="library_drive_import_help">Trong trình chọn tệp, mở menu bên trái và chọn Google Drive cùng tài khoản chứa truyện. Chọn file EPUB, PRC, MOBI hoặc AZW3 (tối đa 100 MiB) để nhập vào thư viện.\n\nNếu không thấy Drive, hãy cài ứng dụng Google Drive và đăng nhập trên điện thoại. Cần kết nối mạng để tải file chưa có trên thiết bị.</string>
+    <string name="library_drive_open_picker">Chọn truyện</string>
     <string name="add_book_local_desc">EPUB, PRC, MOBI hoặc AZW3 (tối đa 100 MiB)</string>
     <string name="add_book_upload">Tải sách lên Server</string>
     <string name="add_book_upload_desc">Gửi file bất kỳ lên backend để xử lý</string>

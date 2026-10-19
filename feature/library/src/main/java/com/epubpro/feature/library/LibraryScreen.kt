@@ -176,6 +176,7 @@ fun LibraryScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val snackbarHostState = remember { SnackbarHostState() }
     var showAddBookBottomSheet by rememberSaveable { mutableStateOf(false) }
+    var showDriveImportHelp by rememberSaveable { mutableStateOf(false) }
     var pendingDeleteBookId by rememberSaveable { mutableStateOf<String?>(null) }
 
     LaunchedEffect(viewModel, lifecycleOwner, snackbarHostState) {
@@ -212,6 +213,33 @@ fun LibraryScreen(
         }
     }
 
+    val drivePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri?.let { viewModel.importBook(it, null) }
+    }
+
+    if (showDriveImportHelp) {
+        AlertDialog(
+            onDismissRequest = { showDriveImportHelp = false },
+            title = { Text(stringResource(R.string.add_book_drive)) },
+            text = { Text(stringResource(R.string.library_drive_import_help)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDriveImportHelp = false
+                    drivePickerLauncher.launch(arrayOf("*/*"))
+                }) {
+                    Text(stringResource(R.string.library_drive_open_picker))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDriveImportHelp = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        )
+    }
+
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { _ ->
@@ -233,7 +261,8 @@ fun LibraryScreen(
             onDismissRequest = { showAddBookBottomSheet = false },
             onNavigateToOnlineLibrary = onNavigateToOnlineLibrary,
             onPickLocalEpub = { filePickerLauncher.launch("*/*") },
-            onUploadEpubToServer = onStartUpload
+            onUploadEpubToServer = onStartUpload,
+            onPickDriveBook = { showDriveImportHelp = true }
         )
     }
 

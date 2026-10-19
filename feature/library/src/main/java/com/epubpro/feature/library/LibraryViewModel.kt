@@ -3,6 +3,7 @@ package com.epubpro.feature.library
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
@@ -439,10 +440,10 @@ class LibraryViewModel @Inject constructor(
     }
 
     /**
-     * Nạp file sách từ bộ nhớ thiết bị vào thư viện sách cục bộ.
+     * Nạp file sách từ thiết bị hoặc cloud provider vào thư viện sách cục bộ.
      *
      * @param uri URI nguồn của file sách được chọn từ Storage Access Framework.
-     * @param originalName Tên gốc của file.
+     * @param originalName Tên gốc của file; null để đọc metadata trên dispatcher I/O.
      */
     fun importBook(uri: Uri, originalName: String?) {
         viewModelScope.launch {
@@ -462,7 +463,15 @@ class LibraryViewModel @Inject constructor(
                     createdAt = null,
                     completedAt = null
                 )
-                if (localBookImportScheduler.enqueue(uri, originalName) == null) {
+                val displayName = originalName ?: withContext(Dispatchers.IO) {
+                    context.contentResolver.query(
+                        uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
+                    )?.use { cursor ->
+                        val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (cursor.moveToFirst() && nameIndex >= 0) cursor.getString(nameIndex) else null
+                    }
+                }
+                if (localBookImportScheduler.enqueue(uri, displayName) == null) {
                     hasActiveLocalImportSession = false
                     _localImportJobState.value = null
                 }
