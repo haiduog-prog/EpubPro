@@ -4,6 +4,8 @@ import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.Toast
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -23,11 +25,13 @@ import com.epubpro.core.reader.tts.TtsWidgetContract
 import com.epubpro.core.storage.ReaderPreferencesManager
 import com.epubpro.core.storage.TtsBubblePreferencesManager
 import com.epubpro.core.storage.worker.LocalBookImportScheduler
+import com.epubpro.core.storage.worker.LocalBookImportWorker
 import com.epubpro.domain.repository.BookRepository
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -182,7 +186,25 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch {
             try {
-                localBookImportScheduler.enqueue(request.uri, request.displayName)
+                val workId = localBookImportScheduler.enqueue(request.uri, request.displayName)
+                    ?: return@launch
+                val workInfo = WorkManager.getInstance(this@MainActivity)
+                    .getWorkInfoByIdFlow(workId)
+                    .first { it?.state?.isFinished == true }
+                if (workInfo?.state == WorkInfo.State.SUCCEEDED) {
+                    workInfo.outputData
+                        .getString(LocalBookImportWorker.KEY_BOOK_ID)
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { bookId ->
+                            intentViewModel.dispatch(
+                                TtsOpenBookRequest(
+                                    bookId = bookId,
+                                    chapterIndex = 0,
+                                    openTtsPlayer = false
+                                )
+                            )
+                        }
+                }
             } catch (error: Exception) {
                 val errorMsg = when {
                     error.message?.contains("100 MiB") == true -> {

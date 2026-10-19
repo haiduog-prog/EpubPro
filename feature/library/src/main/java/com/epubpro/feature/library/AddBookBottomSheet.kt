@@ -1,6 +1,8 @@
 package com.epubpro.feature.library
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -19,13 +21,23 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.epubpro.core.designsystem.R
 
+/**
+ * Cho phép chọn nguồn sách để nhập vào thư viện hoặc gửi lên backend.
+ *
+ * @param onDismissRequest Đóng bảng chọn nguồn trước khi mở tác vụ khác.
+ * @param onNavigateToOnlineLibrary Mở kho truyện online.
+ * @param onPickLocalEpub Chọn file từ thiết bị.
+ * @param onUploadEpubToServer Chọn file để gửi lên backend.
+ * @param onPickDriveBook Mở hướng dẫn chọn truyện từ Google Drive.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddBookBottomSheet(
     onDismissRequest: () -> Unit,
     onNavigateToOnlineLibrary: () -> Unit,
     onPickLocalEpub: () -> Unit,
-    onUploadEpubToServer: () -> Unit
+    onUploadEpubToServer: () -> Unit,
+    onPickDriveBook: () -> Unit
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
@@ -35,6 +47,7 @@ fun AddBookBottomSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp)
                 .padding(bottom = 32.dp)
         ) {
@@ -68,6 +81,20 @@ fun AddBookBottomSheet(
                 onClick = {
                     onDismissRequest()
                     onPickLocalEpub()
+                }
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            AddBookOptionItem(
+                icon = Icons.Default.CloudDownload,
+                title = stringResource(R.string.add_book_drive),
+                subtitle = stringResource(R.string.add_book_drive_desc),
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                iconTint = MaterialTheme.colorScheme.onPrimaryContainer,
+                onClick = {
+                    onDismissRequest()
+                    onPickDriveBook()
                 }
             )
 

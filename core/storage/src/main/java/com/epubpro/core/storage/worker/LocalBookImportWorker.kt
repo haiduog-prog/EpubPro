@@ -75,7 +75,7 @@ class LocalBookImportWorker @AssistedInject constructor(
             val committed = bookRepository.getBookById(targetBookId)
             if (committed != null && committed.filePath == outputFile.absolutePath) {
                 sourceFile.delete()
-                return Result.success(workDataOf(KEY_TITLE to committed.title, KEY_PROGRESS to 100))
+                return Result.success(workDataOf(KEY_TITLE to committed.title, KEY_BOOK_ID to committed.id, KEY_PROGRESS to 100))
             }
             var lastProgress = -1
             val conversion = when {
@@ -113,6 +113,7 @@ class LocalBookImportWorker @AssistedInject constructor(
             Result.success(
                 workDataOf(
                     KEY_TITLE to parsedBook.title,
+                    KEY_BOOK_ID to (replacementBookId ?: parsedBook.id),
                     KEY_SOURCE_FORMAT to conversion.sourceFormat.name,
                     KEY_PROGRESS to 100
                 )
@@ -330,6 +331,7 @@ class LocalBookImportWorker @AssistedInject constructor(
         const val KEY_PROGRESS = "progress"
         const val KEY_STAGE = "stage"
         const val KEY_TITLE = "title"
+        const val KEY_BOOK_ID = "book_id"
         const val KEY_CURRENT_STEP = "current_step"
         const val KEY_SOURCE_FORMAT = "source_format"
         const val KEY_ERROR_CODE = "error_code"
