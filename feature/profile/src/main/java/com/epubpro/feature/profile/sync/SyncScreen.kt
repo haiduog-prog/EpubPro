@@ -83,6 +83,7 @@ fun SyncScreen(
             SyncActions(
                 enabled = !running,
                 onCheck = viewModel::check,
+                onSyncReadingHistory = viewModel::syncReadingHistory,
                 onBackup = viewModel::backup,
                 onRestore = viewModel::restore
             )
@@ -126,10 +127,18 @@ private fun SyncStatusCard(uiState: SyncUiState) {
 private fun SyncActions(
     enabled: Boolean,
     onCheck: () -> Unit,
+    onSyncReadingHistory: () -> Unit,
     onBackup: () -> Unit,
     onRestore: () -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(
+            onClick = onSyncReadingHistory,
+            enabled = enabled,
+            modifier = Modifier.fillMaxWidth().semantics { role = Role.Button }
+        ) {
+            Text(stringResource(R.string.sync_action_reading_history))
+        }
         Button(onClick = onCheck, enabled = enabled, modifier = Modifier.fillMaxWidth().semantics { role = Role.Button }) {
             Text(stringResource(R.string.sync_action_check))
         }

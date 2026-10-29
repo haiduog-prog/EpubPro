@@ -1,3 +1,11 @@
+---
+name: android-bug-investigation
+description: Điều tra bug/regression Android dựa trên bằng chứng (evidence), xác định nguyên nhân gốc rễ trước khi sửa code. Luôn xuất kết quả bằng tiếng Việt.
+argument-hint: "<mô tả bug, log, crash hoặc bước reproduce>"
+user-invocable: true
+language: vi
+---
+
 # Android Bug Investigation
 
 ## Vai trò

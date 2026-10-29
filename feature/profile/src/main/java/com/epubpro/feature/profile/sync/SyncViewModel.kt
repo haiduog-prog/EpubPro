@@ -30,6 +30,12 @@ class SyncViewModel @Inject constructor(
         viewModelScope.launch { coordinator.check() }
     }
 
+    /** Gộp tiến độ đọc local với ledger của các thiết bị trên Google Drive. */
+    fun syncReadingHistory() {
+        if (uiState.value.isRunning()) return
+        viewModelScope.launch { coordinator.syncReadingHistory() }
+    }
+
     /** Backup local sau khi người dùng chủ động nhấn nút. */
     fun backup() {
         if (uiState.value.isRunning()) return

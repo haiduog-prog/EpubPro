@@ -32,7 +32,8 @@ data class ReadingProgress(
     val chapterIndex: Int,
     val pageIndex: Int = 1,
     val progressPercentage: Float,
-    val totalChapters: Int = 0
+    val totalChapters: Int = 0,
+    val updatedAt: Long = System.currentTimeMillis()
 )
 
 data class Bookmark(

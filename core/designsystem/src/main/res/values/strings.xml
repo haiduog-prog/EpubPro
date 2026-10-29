@@ -598,6 +598,7 @@
     <string name="sync_icon_description">Trạng thái đồng bộ</string>
     <string name="sync_progress">Đã xử lý %1$d/%2$d</string>
     <string name="sync_action_check">Kiểm tra thay đổi</string>
+    <string name="sync_action_reading_history">Đồng bộ lịch sử đọc</string>
     <string name="sync_action_backup">Sao lưu lên Drive</string>
     <string name="sync_action_restore">Khôi phục từ Drive</string>
     <string name="sync_conflict_keys_title">Các mục cần xử lý</string>
@@ -614,6 +615,10 @@
     <string name="sync_notification_title">EpubPro sync</string>
     <string name="sync_notification_running">Đang đồng bộ dữ liệu</string>
     <string name="auth_google_sign_in_failed">Đăng nhập Google thất bại. Vui lòng thử lại.</string>
+    <string name="auth_google_sign_in_cancelled">Đã hủy đăng nhập Google. Bạn có thể thử lại.</string>
+    <string name="auth_google_configuration_error">Chưa cấu hình đúng đăng nhập Google cho bản cài đặt này (mã 10). Cần đăng ký package name và SHA-1 của chứng chỉ ký APK trong Google Cloud Console.</string>
+    <string name="auth_google_network_error">Không thể kết nối Google. Vui lòng kiểm tra mạng và thử lại.</string>
+    <string name="auth_google_sign_in_error_code">Đăng nhập Google thất bại (mã %1$d). Vui lòng thử lại.</string>
     <string name="library_duplicate_epub_title">Truyện đã có trong thư viện</string>
     <string name="library_duplicate_epub_message">EPUB có cùng ID với truyện bên dưới. Bạn có thể thêm bản mới hoặc cập nhật truyện đã có. Vị trí đọc và đánh dấu được giữ lại, nhưng có thể lệch nếu nội dung chương thay đổi.</string>
     <string name="library_duplicate_epub_update">Cập nhật: %1$s</string>

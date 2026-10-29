@@ -1,3 +1,11 @@
+---
+name: android-code-review
+description: Review code Android toàn diện như Senior Engineer (functional bug, regression, security, lifecycle, concurrency, crash, performance). Luôn xuất kết quả bằng tiếng Việt.
+argument-hint: "<diff, PR, file hoặc chức năng cần review>"
+user-invocable: true
+language: vi
+---
+
 # Android Code Review
 
 ## Mục tiêu

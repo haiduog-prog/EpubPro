@@ -1,11 +1,21 @@
 # Android Text-to-Speech & Background Media Architecture
 
 > Tổng hợp kiến thức về hệ thống TTS Engine, Sherpa-ONNX Offline AI Voice, Foreground Service, MediaSessionCompat và đồng bộ Highlight trong WebView EPUB Reader.
-> Cập nhật lần cuối: 2026-08-24
+> Cập nhật lần cuối: 2026-10-29
 
 ---
 
 ## Architecture
+
+### IndexedDB Database Isolation cho Voice Storage
+- **Ngày**: 2026-10-29
+- **Chi tiết**: Tách `TtsVoiceStorage` sang cơ sở dữ liệu IndexedDB riêng `EpubPro_Voice_DB` thay vì gộp chung vào `EpubPro_Web_DB`. Việc hai module độc lập cùng mở một database với các version khác nhau (v1 vs v2) sẽ gây ra tình trạng `blocked` vĩnh viễn trên trình duyệt khi kết nối cũ chưa đóng, làm đơ toàn bộ luồng khởi tạo bất đồng bộ.
+- **Files liên quan**: `web-reader/js/voice-catalog.js`, `web-reader/js/reader.js`
+
+### Multi-Origin Local TTS Service Discovery & Fallback Cache
+- **Ngày**: 2026-10-29
+- **Chi tiết**: Cơ chế khám phá mô hình giọng đọc offline tại runtime: client tự động thăm dò danh sách model từ local daemon server qua nhiều origin (`http://127.0.0.1:8080/api/tts/status`, relative `/api/tts/status`, `localhost`) với `AbortController` timeout (1.2s). Đồng thời lưu cache danh sách vào `localStorage` để ứng dụng nhận diện ngay 25 mô hình khi mở từ `file:///` hoặc khi offline.
+- **Files liên quan**: `web-reader/js/voice-catalog.js`, `web-reader/server.py`
 
 ### Centralized Offline Voice Catalog & Comprehensive Vietnamese Voice Models
 - **Ngày**: 2026-08-24
@@ -72,6 +82,20 @@
 
 ---
 ## Bugs & Solutions
+
+### Dropdown Giọng AI hiển thị sai model so với audio đang phát do IndexedDB blocked
+- **Ngày**: 2026-10-29
+- **Vấn đề**: Player đang phát giọng Quang Minh (`selectedAiVoiceId = "quang_minh"`), thông tin trích đoạn hiển thị đúng "Giọng: Quang Minh", nhưng dropdown Giọng AI lại hiển thị "🎙️ Ngọc Ngạn".
+- **Root cause**: `TtsVoiceStorage.init()` nâng version IndexedDB từ 1 lên 2 trong khi `EpubStorage` đang giữ connection version 1 mở, làm request `indexedDB.open` bị blocked vĩnh viễn. Hàm `initAiVoiceCatalog()` bị treo trước khi gọi `initTtsVoices()`, khiến dropdown giữ nguyên option HTML tĩnh ban đầu là Ngọc Ngạn.
+- **Fix**: Tách riêng DB `EpubPro_Voice_DB` (v1) có xử lý `onversionchange`, thêm các option mặc định vào HTML tĩnh, gọi `initTtsVoices()` đồng bộ khi khởi tạo và ép đồng bộ `this.dom.ttsFullVoiceSelect.value = this.tts.selectedAiVoiceId` trong `updateTtsUi()` và `openFullTtsPlayer()`.
+- **Files liên quan**: `web-reader/js/reader.js`, `web-reader/js/voice-catalog.js`, `web-reader/index.html`
+
+### Card giọng đọc vừa hiển thị nhãn ĐANG CHỌN vừa có nút Tải về (60.6 MB)
+- **Ngày**: 2026-10-29
+- **Vấn đề**: Trong modal Kho Giọng AI, card Quang Minh có viền cam và nhãn "ĐANG CHỌN", nhưng nút hành động bên dưới lại là nút màu đỏ "📥 Tải về (60.6 MB)" thay vì "✓ Đang dùng".
+- **Root cause**: `getDownloadedVoiceIds()` fetch thất bại do mở qua `file:///` không gọi được relative URL `/api/tts/status`, fallback về chỉ có `ngoc_ngan`. Biến `isDownloaded` của Quang Minh bị tính là `false`, trong khi `isSelected` là `true`.
+- **Fix**: Áp dụng quy tắc invariant `isDownloaded = isSelected || downloadedIds.has(voice.id)`; đồng thời kết nối trực tiếp `http://127.0.0.1:8080/api/tts/status` để nạp đủ 25 model đã có sẵn trên máy chủ local vào `downloadedVoiceIds`.
+- **Files liên quan**: `web-reader/js/reader.js`, `web-reader/js/voice-catalog.js`
 
 ### Đoạn cuối chapter bị phát lặp và không chuyển sang chapter kế tiếp
 - **Ngày**: 2026-08-13
@@ -208,6 +232,16 @@
 ---
 ## How-To
 
+### Đồng bộ danh mục giọng đọc AI giữa Local Python Server và Web Reader
+- **Ngày**: 2026-10-29
+- **Bước thực hiện**:
+  1. Kiểm tra local daemon server tại `http://127.0.0.1:8080/api/tts/status` trả về mảng `downloaded_models`.
+  2. Tại client, `TtsVoiceStorage.getDownloadedVoiceIds()` thăm dò endpoint với timeout 1.2s và lưu kết quả vào `localStorage.epubpro_downloaded_voices`.
+  3. Bổ sung `selectedAiVoiceId` vào `downloadedVoiceIds` để đảm bảo model đang phát luôn sẵn sàng.
+  4. Cập nhật huy hiệu `aiVoiceBadgeCount`, render dropdown nhóm `⭐ Giọng AI Đã Tải Về` và gán `select.value`.
+  5. Khi đổi giọng, cập nhật đồng thời state, localStorage, audio source và UI player.
+- **Files liên quan**: `web-reader/js/voice-catalog.js`, `web-reader/js/reader.js`, `web-reader/server.py`
+
 ### Chẩn đoán vòng lặp state-effect giữa Reader và TTS Service
 - **Ngày**: 2026-08-13
 - **Bước thực hiện**:
@@ -274,6 +308,21 @@
 
 ---
 ## Patterns
+
+### Invariant Selected-Is-Downloaded Pattern
+- **Ngày**: 2026-10-29
+- **Chi tiết**: Khi người dùng đang chọn một model làm giọng đọc (`selectedAiVoiceId`), UI luôn đảm bảo `isDownloaded = true` và `downloadedVoiceIds.add(voiceId)`. Pattern này ngăn chặn triệt để trạng thái mâu thuẫn giao diện (card vừa có viền active "ĐANG CHỌN" vừa hiển thị nút kêu gọi "Tải về").
+- **Ví dụ code**:
+  ```javascript
+  const isSelected = this.tts.selectedAiVoiceId === voice.id;
+  const isDownloaded = isSelected || downloadedIds.has(voice.id);
+  ```
+- **Files liên quan**: `web-reader/js/reader.js`
+
+### Multi-Origin Local Service Fallback Loop
+- **Ngày**: 2026-10-29
+- **Chi tiết**: Khi web app client cần tương tác với daemon service local (như Python TTS engine), duyệt danh sách các candidate URL (`http://127.0.0.1:PORT`, `/relative/path`, `http://localhost:PORT`) với `AbortController` timeout ngắn. Cache kết quả thành công vào `localStorage` làm fallback cho các lần mở ngoại tuyến hoặc mở qua giao thức `file:///`.
+- **Files liên quan**: `web-reader/js/voice-catalog.js`
 
 ### Observable State Must Not Implicitly Reissue Playback Commands
 - **Ngày**: 2026-08-13

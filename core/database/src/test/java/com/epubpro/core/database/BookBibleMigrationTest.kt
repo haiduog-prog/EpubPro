@@ -62,4 +62,19 @@ class BookBibleMigrationTest {
 
         verify(db).execSQL("ALTER TABLE books ADD COLUMN sourceFormat TEXT NOT NULL DEFAULT 'EPUB'")
     }
+
+    /**
+     * Kiểm tra migration 7 lên 8 thêm timestamp tiến độ và backfill từ lần đọc gần nhất.
+     */
+    @Test
+    fun migration7To8AddsAndBackfillsProgressTimestamp() {
+        val db = mock(SupportSQLiteDatabase::class.java)
+
+        MIGRATION_7_8.migrate(db)
+
+        verify(db).execSQL("ALTER TABLE reading_progress ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0")
+        verify(db).execSQL(
+            org.mockito.ArgumentMatchers.contains("SET updatedAt = COALESCE((SELECT lastReadAt FROM books")
+        )
+    }
 }

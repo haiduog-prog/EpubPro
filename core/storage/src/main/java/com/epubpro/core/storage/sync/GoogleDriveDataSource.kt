@@ -1,6 +1,7 @@
 package com.epubpro.core.storage.sync
 
 import com.epubpro.domain.sync.ManifestComparator
+import com.epubpro.domain.sync.ReadingHistoryLedger
 import com.epubpro.domain.sync.SyncManifest
 import com.google.gson.Gson
 import com.google.gson.JsonObject
@@ -15,6 +16,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.io.File
 import java.io.FileOutputStream
+import java.io.ByteArrayOutputStream
 import java.time.Duration
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -31,6 +33,7 @@ class GoogleDriveDataSource @Inject constructor(
     private val authManager: GoogleDriveAuthManager,
     private val stateStore: SyncStateStore,
     private val manifestCodec: ManifestJsonCodec,
+    private val readingHistoryLedgerCodec: ReadingHistoryLedgerCodec,
     @ApplicationContext private val context: android.content.Context
 ) {
     /**
@@ -48,6 +51,56 @@ class GoogleDriveDataSource @Inject constructor(
         val files = linkedMapOf<String, DriveFileRef>()
         walkFolder(rootId, "", files)
         return DriveSyncSnapshot(manifest, files)
+    }
+
+    /**
+     * Đọc các ledger tiến độ riêng của từng thiết bị trong thư mục lịch sử đọc.
+     *
+     * @return Các ledger hợp lệ cùng ID Drive được xác minh theo tên file.
+     * @throws DriveSyncException Nếu file không khớp chủ sở hữu hoặc không đọc được.
+     */
+    suspend fun readReadingHistoryLedgers(): List<ReadingHistoryLedger> = withContext(Dispatchers.IO) {
+        val rootId = ensureRootFolder()
+        val folderId = ensureFolder(rootId, READING_HISTORY_FOLDER)
+        listChildren(folderId)
+            .filter { it.mimeType == MIME_JSON && it.name.startsWith(READING_HISTORY_FILE_PREFIX) }
+            .map { file ->
+                val fileId = file.id ?: throw DriveSyncException("Ledger Drive thiếu file ID")
+                val ledger = try {
+                    readingHistoryLedgerCodec.decode(downloadText(fileId, MAX_READING_HISTORY_LEDGER_BYTES))
+                } catch (error: IllegalArgumentException) {
+                    throw DriveSyncException(error.message ?: "Ledger Drive không hợp lệ", cause = error)
+                }
+                if (file.name != readingHistoryFileName(ledger.deviceId)) {
+                    throw DriveSyncException("Tên ledger Drive không khớp device ID")
+                }
+                ledger
+            }
+    }
+
+    /**
+     * Ghi ledger đã gộp vào file riêng của thiết bị hiện tại.
+     *
+     * @param ledger Ledger chứa hợp dữ liệu đã được merge.
+     * @throws DriveSyncException Nếu Drive không tạo hoặc cập nhật được file.
+     */
+    suspend fun writeReadingHistoryLedger(ledger: ReadingHistoryLedger) = withContext(Dispatchers.IO) {
+        val rootId = ensureRootFolder()
+        val folderId = ensureFolder(rootId, READING_HISTORY_FOLDER)
+        val name = readingHistoryFileName(ledger.deviceId)
+        val existing = findChild(folderId, name, MIME_JSON)
+        val metadata = JsonObject().apply {
+            addProperty("name", name)
+            addProperty("mimeType", MIME_JSON)
+            add("parents", gson.toJsonTree(listOf(folderId)))
+        }
+        val temporary = File.createTempFile("reading-history-", ".json", context.cacheDir)
+        try {
+            temporary.writeText(readingHistoryLedgerCodec.encode(ledger), Charsets.UTF_8)
+            resumableUpload(existing?.id, metadata.toString(), temporary) { _, _ -> }
+        } finally {
+            temporary.delete()
+        }
     }
 
     /**
@@ -277,14 +330,42 @@ class GoogleDriveDataSource @Inject constructor(
         }
     }
 
-    private suspend fun downloadText(fileId: String): String {
+    /**
+     * Tải file JSON dưới giới hạn byte tùy chọn để tránh ledger quá lớn chiếm bộ nhớ.
+     *
+     * @param fileId ID file Drive.
+     * @param maxBytes Giới hạn byte, null nếu caller dùng contract không giới hạn riêng.
+     * @return Nội dung UTF-8 của file.
+     */
+    private suspend fun downloadText(fileId: String, maxBytes: Long? = null): String {
         val token = accessToken()
         val request = Request.Builder()
             .url(apiUrl("drive/v3/files/$fileId", mapOf("alt" to "media")))
             .header("Authorization", "Bearer $token")
             .get()
             .build()
-        return executeWithRetry(request).use { it.body?.string() ?: throw DriveSyncException("Manifest Drive rỗng") }
+        return executeWithRetry(request).use { response ->
+            val body = response.body ?: throw DriveSyncException("Manifest Drive rỗng")
+            val contentLength = body.contentLength()
+            if (maxBytes != null && contentLength > maxBytes) {
+                throw DriveSyncException("Ledger Drive vượt quá giới hạn dung lượng")
+            }
+            val output = ByteArrayOutputStream()
+            body.byteStream().use { input ->
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                var totalBytes = 0L
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read <= 0) break
+                    totalBytes += read
+                    if (maxBytes != null && totalBytes > maxBytes) {
+                        throw DriveSyncException("Ledger Drive vượt quá giới hạn dung lượng")
+                    }
+                    output.write(buffer, 0, read)
+                }
+            }
+            output.toString(Charsets.UTF_8.name())
+        }
     }
 
     private suspend fun resumableUpload(
@@ -368,6 +449,14 @@ class GoogleDriveDataSource @Inject constructor(
 
     private fun escapeQuery(value: String): String = value.replace("\\", "\\\\").replace("'", "\\'")
 
+    /**
+     * Tạo tên file ledger xác định từ UUID thiết bị đã được lưu cục bộ.
+     *
+     * @param deviceId UUID thiết bị sở hữu ledger.
+     * @return Tên file JSON không chứa đường dẫn tùy ý.
+     */
+    private fun readingHistoryFileName(deviceId: String): String = "$READING_HISTORY_FILE_PREFIX$deviceId.json"
+
     private data class DriveListDto(val nextPageToken: String? = null, val files: List<DriveFileDto>? = null)
     private data class DriveFileDto(
         val id: String? = null,
@@ -386,6 +475,9 @@ class GoogleDriveDataSource @Inject constructor(
         private const val STORAGE_FOLDER = "storage"
         private const val NOVELS_FOLDER = "novels"
         private const val UPLOADS_FOLDER = "uploads"
+        private const val READING_HISTORY_FOLDER = "reading-history"
+        private const val READING_HISTORY_FILE_PREFIX = "progress-"
+        private const val MAX_READING_HISTORY_LEDGER_BYTES = 8L * 1024L * 1024L
         private const val MANIFEST_NAME = "manifest.json"
         private const val MIME_FOLDER = "application/vnd.google-apps.folder"
         private const val MIME_JSON = "application/json"

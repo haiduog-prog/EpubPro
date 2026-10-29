@@ -1,3 +1,11 @@
+---
+name: android-testing
+description: Thiết kế và đánh giá test Android theo kim tự tháp test dựa trên risk (Unit, Integration, UI test). Luôn xuất kết quả bằng tiếng Việt.
+argument-hint: "<mục tiêu test, function, repository hoặc flow cần test>"
+user-invocable: true
+language: vi
+---
+
 # Android Testing Skill
 
 ## Mục tiêu

@@ -1,3 +1,11 @@
+---
+name: senior-android
+description: Baseline skill kỹ sư Android cấp cao: đảm bảo chất lượng production, kiến trúc, lifecycle, concurrency, minimal change, không regression. Luôn xuất kết quả bằng tiếng Việt.
+argument-hint: "<yêu cầu phát triển hoặc refactor Android>"
+user-invocable: true
+language: vi
+---
+
 # Senior Android Engineer
 
 ## Vai trò

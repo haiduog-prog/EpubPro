@@ -1,6 +1,5 @@
 package com.epubpro.feature.profile.auth
 
-import android.app.Activity
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -44,6 +43,8 @@ import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.Scope
 import com.google.android.gms.common.api.ApiException
+import com.google.android.gms.common.api.CommonStatusCodes
+import com.google.android.gms.auth.api.signin.GoogleSignInStatusCodes
 
 /**
  * Màn hình Đăng nhập tài khoản người dùng của ứng dụng EpubPro.
@@ -76,14 +77,24 @@ fun LoginScreen(
     val googleSignInLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode != Activity.RESULT_OK) return@rememberLauncherForActivityResult
         runCatching {
             GoogleSignIn.getSignedInAccountFromIntent(result.data)
                 .getResult(ApiException::class.java)
         }.onSuccess { account ->
             viewModel.loginWithGoogle(account.idToken, account.email, account.displayName)
-        }.onFailure {
-            viewModel.showGoogleSignInError(context.getString(R.string.auth_google_sign_in_failed))
+        }.onFailure { error ->
+            val statusCode = (error as? ApiException)?.statusCode
+            val message = when (statusCode) {
+                GoogleSignInStatusCodes.SIGN_IN_CANCELLED ->
+                    context.getString(R.string.auth_google_sign_in_cancelled)
+                CommonStatusCodes.DEVELOPER_ERROR ->
+                    context.getString(R.string.auth_google_configuration_error)
+                CommonStatusCodes.NETWORK_ERROR ->
+                    context.getString(R.string.auth_google_network_error)
+                null -> context.getString(R.string.auth_google_sign_in_failed)
+                else -> context.getString(R.string.auth_google_sign_in_error_code, statusCode)
+            }
+            viewModel.showGoogleSignInError(message)
         }
     }
 

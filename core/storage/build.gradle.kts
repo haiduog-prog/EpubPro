@@ -32,6 +32,7 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.okhttp.logging)
     implementation(libs.gson)
+    implementation(libs.play.services.auth)
 
     testImplementation(libs.junit4)
     testImplementation(libs.mockito.core)

@@ -1,0 +1,5 @@
+cache_tts/
+tts_engine/models/
+tts_engine/*.wav
+__pycache__/
+*.pyc

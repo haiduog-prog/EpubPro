@@ -56,12 +56,17 @@ class LocalBookReplacement @Inject constructor(
             database.aiChapterDao().deleteBookCaches(bookId)
             dao.getReadingProgressDirect(bookId)?.let { progress ->
                 val chapter = progress.chapterIndex.coerceIn(0, (parsed.totalChapters - 1).coerceAtLeast(0))
+                val nextTimestamp = maxOf(
+                    System.currentTimeMillis(),
+                    if (progress.updatedAt == Long.MAX_VALUE) Long.MAX_VALUE else progress.updatedAt + 1L
+                )
                 dao.saveReadingProgress(progress.copy(
                     chapterIndex = chapter,
                     currentCfi = if (chapter == progress.chapterIndex) progress.currentCfi else "",
                     pageIndex = if (chapter == progress.chapterIndex) progress.pageIndex else 1,
                     totalChapters = parsed.totalChapters,
-                    progressPercentage = if (parsed.totalChapters > 0) chapter.toFloat() / parsed.totalChapters else 0f
+                    progressPercentage = if (parsed.totalChapters > 0) chapter.toFloat() / parsed.totalChapters else 0f,
+                    updatedAt = nextTimestamp
                 ))
             }
             updated.toDomain()

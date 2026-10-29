@@ -183,6 +183,9 @@ interface SyncCoordinator {
     suspend fun check(): SyncCheckResult
 
     /** Backup các thay đổi local lên Drive. */
+    /** Gộp tiến độ đọc giữa Room và các ledger trên Google Drive. */
+    suspend fun syncReadingHistory(): SyncResult
+
     suspend fun backup(options: SyncOptions = SyncOptions()): SyncResult
 
     /** Restore các thay đổi từ Drive về local. */

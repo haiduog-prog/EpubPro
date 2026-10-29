@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="vi" data-theme="sepia">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>EpubPro Web Reader — Trải Nghiệm Đọc Sách Đỉnh Cao</title>
+  <meta name="description" content="Trình đọc sách EPUB trên nền tảng Web tiêu chuẩn của EpubPro. Hỗ trợ lật trang ngang đa cột, cuộn dọc, 5 giao diện công thái học và giọng đọc thông minh.">
+
+  <!-- Google Fonts Preconnect & Styles -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;0,700;1,400&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,500;0,7..72,600;1,7..72,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Reader Stylesheet -->
+  <link rel="stylesheet" href="css/reader.css">
+</head>
+<body>
+
+  <div id="reader-app">
+    <!-- Top Control Bar (Tự động ẩn/hiện) -->
+    <header class="reader-topbar" id="reader-topbar">
+      <div class="topbar-left">
+        <div class="brand-badge" title="EpubPro Web Edition">
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z"/>
+          </svg>
+          <span>EpubPro</span>
+        </div>
+        <button class="library-nav-btn" id="btn-open-library" title="Mở kho sách & chọn truyện (L)">
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H8V4h12v12z"/>
+          </svg>
+          <span>Kệ Sách</span>
+        </button>
+        <button class="icon-btn" id="btn-open-toc" title="Mục lục chương hiện tại (M)">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+            <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="topbar-center">
+        <h2 class="book-title-display" id="book-title-display">Đang nạp sách...</h2>
+        <div class="chapter-subtitle-display" id="chapter-subtitle-display">Chương hiện tại</div>
+      </div>
+
+      <div class="topbar-right">
+        <button class="icon-btn" id="btn-open-tts" title="Đọc bằng giọng nói (TTS)">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+            <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+          </svg>
+        </button>
+        <button class="icon-btn" id="btn-add-bookmark" title="Đánh dấu trang hiện tại">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+            <path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/>
+          </svg>
+        </button>
+        <button class="icon-btn" id="btn-open-bookmarks" title="Danh sách dấu trang">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+            <path d="M19 18l2 1V3c0-1.1-.9-2-2-2H8.99C7.89 1 7 1.9 7 3h10c1.1 0 2 .9 2 2v13zM15 5H5c-1.1 0-2 .9-2 2v16l7-3 7 3V7c0-1.1-.9-2-2-2z"/>
+          </svg>
+        </button>
+        <button class="icon-btn" id="btn-open-upload" title="Mở file EPUB từ máy">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+            <path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/>
+          </svg>
+        </button>
+        <button class="icon-btn" id="btn-open-settings" title="Cài đặt hiển thị">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+            <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Reading Stage (Khu vực đọc chính) -->
+    <main class="reader-stage" id="reader-stage">
+      <!-- 3 Khu Vực Chạm Nhạy Cảm (Left = Back, Center = Toggle Menu, Right = Next) -->
+      <div class="click-zone click-zone-left" id="zone-left" title="Trang trước (←)"></div>
+      <div class="click-zone click-zone-center" id="zone-center" title="Bật/Tắt thanh điều khiển"></div>
+      <div class="click-zone click-zone-right" id="zone-right" title="Trang tiếp (→)"></div>
+
+      <!-- Viewport Phân Trang Ngang Đa Cột -->
+      <div class="reader-viewport-paged" id="viewport-paged">
+        <div class="paged-column-container chapter-content" id="paged-container">
+          <!-- Nội dung sách được tiêm vào đây -->
+        </div>
+      </div>
+
+      <!-- Viewport Cuộn Dọc Vô Tận -->
+      <div class="reader-viewport-scroll" id="viewport-scroll" style="display: none;">
+        <div class="scroll-inner-wrapper chapter-content" id="scroll-inner">
+          <!-- Nội dung sách được tiêm vào đây -->
+        </div>
+      </div>
+
+      <!-- Màn hình chào mừng khi chưa có cuốn sách nào được mở -->
+      <div class="welcome-reader-screen" id="welcome-reader-screen" style="display: none;">
+        <div class="welcome-card">
+          <div class="welcome-icon-box">
+            <svg viewBox="0 0 24 24" width="48" height="48" fill="currentColor">
+              <path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z"/>
+            </svg>
+          </div>
+          <h2 class="welcome-title">EpubPro Web Reader</h2>
+          <p class="welcome-desc">Chào mừng bạn đến với phiên bản đọc sách web cao cấp. Toàn bộ sách và lịch sử tiến độ đọc của bạn được lưu trữ an toàn, riêng tư trên thiết bị này.</p>
+          <div class="welcome-dropzone" id="welcome-dropzone">
+            <svg viewBox="0 0 24 24" width="40" height="40" fill="currentColor">
+              <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
+            </svg>
+            <div style="font-weight: 600; font-size: 1.05rem; margin-top: 10px;">Kéo thả tệp .epub vào đây</div>
+            <div style="font-size: 0.82rem; color: var(--text-muted); margin-top: 4px;">hoặc bấm vào đây để chọn tệp từ máy tính</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Huy hiệu số trang đáy góc phải -->
+      <div class="page-indicator-badge" id="page-indicator">Trang 1 / 1</div>
+    </main>
+
+    <!-- Bottom Control Bar (Thanh trượt tiến độ & Chuyển chương) -->
+    <footer class="reader-bottombar" id="reader-bottombar">
+      <div class="progress-track-wrapper">
+        <button class="chapter-btn" id="btn-prev-page" title="Trang trước">‹ Trang</button>
+        <input type="range" class="progress-slider" id="progress-slider" min="0" max="100" value="0" title="Kéo đến tiến độ đọc mong muốn">
+        <span id="progress-percent" style="font-weight: 600; min-width: 42px; text-align: right;">0%</span>
+        <button class="chapter-btn" id="btn-next-page" title="Trang tiếp">Trang ›</button>
+      </div>
+
+      <div class="bottombar-info-row">
+        <div class="nav-actions">
+          <button class="chapter-btn" id="btn-prev-chapter" title="Chương trước">« Chương trước</button>
+          <button class="chapter-btn" id="btn-next-chapter" title="Chương tiếp">Chương tiếp »</button>
+        </div>
+        <div style="font-size: 0.75rem; color: var(--text-muted);">
+          Phím tắt: <strong>←</strong> / <strong>→</strong> (Lật trang) • <strong>T</strong> (Theme) • <strong>F</strong> (Toàn màn hình)
+        </div>
+      </div>
+    </footer>
+
+    <!-- TTS Mini Player Bar (Đồng bộ TtsMiniPlayerBar.kt) -->
+    <div class="tts-mini-player-bar" id="tts-mini-bar">
+      <button class="tts-mini-play-btn" id="tts-mini-play-btn" title="Phát / Tạm dừng">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+          <path id="tts-mini-play-icon" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+        </svg>
+      </button>
+      <div class="tts-mini-info" id="tts-mini-info-expand" title="Bấm để mở trình phát âm thanh đầy đủ">
+        <div class="tts-mini-status" id="tts-mini-status">
+          <span style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #D97757;"></span>
+          <span id="tts-mini-status-text">ĐANG PHÁT</span>
+        </div>
+        <div class="tts-mini-text" id="tts-mini-text">Đang nạp giọng đọc...</div>
+      </div>
+      <button class="icon-btn" id="tts-mini-expand-btn" title="Mở rộng trình phát (Full Player)">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+          <path d="M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z"/>
+        </svg>
+      </button>
+      <button class="icon-btn" id="tts-mini-close-btn" title="Dừng đọc">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+          <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- TTS Full Audio Player Screen (Đồng bộ TtsAudioPlayerScreen.kt) -->
+    <div class="tts-full-player-modal" id="tts-full-player">
+      <header class="tts-full-header">
+        <button class="icon-btn" id="tts-full-minimize-btn" title="Thu nhỏ">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
+            <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/>
+          </svg>
+        </button>
+        <span class="tts-full-header-title">ĐANG ĐỌC DỞ</span>
+        <div style="width: 40px;"></div>
+      </header>
+
+      <div class="tts-full-body">
+        <!-- Book Card -->
+        <div class="tts-book-card">
+          <div class="tts-book-info">
+            <h3 class="tts-book-title" id="tts-full-book-title">Tên sách</h3>
+            <div class="tts-book-author" id="tts-full-book-author">Tác giả</div>
+            <div style="font-size: 0.78rem; color: #D97757; font-weight: 600; margin-top: 4px;" id="tts-full-chapter-title">Chương hiện tại</div>
+          </div>
+          <div class="tts-book-icon-badge">
+            <svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor">
+              <path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z"/>
+            </svg>
+          </div>
+        </div>
+
+        <!-- Paragraph Card -->
+        <div class="tts-paragraph-card">
+          <div class="tts-paragraph-card-header">
+            <div class="tts-paragraph-quote-tag">
+              <span style="font-size: 1.4rem; line-height: 1;">“</span>
+              <span>Đang đọc</span>
+            </div>
+            <span class="tts-paragraph-chunk-count" id="tts-full-chunk-info">Đoạn 1 / 1</span>
+          </div>
+
+          <div class="tts-paragraph-text" id="tts-full-paragraph-text">
+            Nội dung đoạn văn đang đọc sẽ hiển thị ở đây...
+          </div>
+
+          <!-- Soundwave Animation Visualizer -->
+          <div class="audio-visualizer" id="tts-audio-visualizer">
+            <div class="audio-bar"></div>
+            <div class="audio-bar"></div>
+            <div class="audio-bar"></div>
+            <div class="audio-bar"></div>
+            <div class="audio-bar"></div>
+          </div>
+        </div>
+
+        <!-- Progress Timeline -->
+        <div class="tts-timeline-wrapper">
+          <input type="range" class="progress-slider" id="tts-full-seek-slider" min="0" max="100" value="0">
+          <div class="tts-time-labels">
+            <span id="tts-full-time-current">00:00</span>
+            <span id="tts-full-time-total">00:00</span>
+          </div>
+        </div>
+
+        <!-- Main Controls -->
+        <div class="tts-controls-row">
+          <button class="icon-btn tts-skip-btn" id="tts-full-skip-prev" title="Đoạn trước">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+          </button>
+          <button class="tts-main-play-btn" id="tts-full-play-btn" title="Phát / Tạm dừng">
+            <svg viewBox="0 0 24 24" width="30" height="30" fill="currentColor">
+              <path id="tts-full-play-icon" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+            </svg>
+          </button>
+          <button class="icon-btn tts-skip-btn" id="tts-full-skip-next" title="Đoạn tiếp">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          </button>
+        </div>
+
+        <!-- Advanced Audio Settings -->
+        <div class="tts-advanced-bar">
+          <div class="tts-setting-item">
+            <span>Tốc độ:</span>
+            <select class="tts-select" id="tts-full-speed-select">
+              <option value="0.75">0.75x</option>
+              <option value="1.0" selected>1.0x Chuẩn</option>
+              <option value="1.25">1.25x</option>
+              <option value="1.5">1.5x</option>
+              <option value="2.0">2.0x</option>
+            </select>
+          </div>
+
+          <div class="tts-setting-item tts-voice-setting-item">
+            <span>Giọng AI:</span>
+            <select class="tts-select" id="tts-full-voice-select" style="max-width: 175px;">
+              <option value="quang_minh">🎙️ Quang Minh (Bắc Bộ - Nam)</option>
+              <option value="ngoc_ngan">🎙️ Ngọc Ngạn (Nam Bộ - Nam)</option>
+              <option value="ban_mai">🎙️ Ban Mai (Bắc Bộ - Nữ)</option>
+              <option value="tran_thanh">🎙️ Trấn Thành (Nam Bộ - Nam)</option>
+            </select>
+            <button class="btn-voice-catalog-trigger" id="btn-open-voice-catalog" title="Mở kho giọng đọc AI tải về (25 giọng chuẩn Android)">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor">
+                <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/>
+              </svg>
+              <span>Kho Giọng AI</span>
+              <span class="voice-badge-count" id="ai-voice-badge-count">1</span>
+            </button>
+          </div>
+
+          <div class="tts-setting-item">
+            <span>Hẹn giờ tắt:</span>
+            <select class="tts-select" id="tts-full-timer-select">
+              <option value="off" selected>Tắt</option>
+              <option value="15">15 phút</option>
+              <option value="30">30 phút</option>
+              <option value="45">45 phút</option>
+              <option value="chapter">Hết chương</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Backdrop Chung Cho Panel & Drawer -->
+    <div class="drawer-backdrop" id="drawer-backdrop"></div>
+
+    <!-- Drawer Mục Lục (TOC) -->
+    <aside class="reader-drawer drawer-left" id="drawer-toc">
+      <div class="drawer-header">
+        <h3 class="drawer-title">Mục Lục Tác Phẩm</h3>
+        <button class="icon-btn" id="btn-close-toc" title="Đóng mục lục">✕</button>
+      </div>
+      <div class="drawer-body">
+        <ul class="toc-list" id="toc-list"></ul>
+      </div>
+    </aside>
+
+    <!-- Drawer Cài Đặt Hiển Thị (Themes, Fonts, Margins, Reading Mode) -->
+    <aside class="reader-drawer drawer-right" id="drawer-settings">
+      <div class="drawer-header">
+        <h3 class="drawer-title">Cài Đặt Đọc Sách</h3>
+        <button class="icon-btn" id="btn-close-settings" title="Đóng cài đặt">✕</button>
+      </div>
+      <div class="drawer-body">
+        <!-- Chế độ đọc -->
+        <div class="setting-section">
+          <div class="setting-title">Chế Độ Đọc</div>
+          <div class="segmented-control">
+            <button class="seg-btn seg-mode-btn" data-mode-val="paged">Lật Trang Ngang</button>
+            <button class="seg-btn seg-mode-btn" data-mode-val="scroll">Cuộn Dọc Vô Tận</button>
+          </div>
+        </div>
+
+        <!-- Chủ đề màu (5 Themes) -->
+        <div class="setting-section">
+          <div class="setting-title">Chủ Đề Giao Diện</div>
+          <div class="theme-grid">
+            <button class="theme-pill-btn" data-theme-val="light">
+              <span class="theme-circle" style="background: #FFFFFF;"></span>
+              <span>Sáng</span>
+            </button>
+            <button class="theme-pill-btn" data-theme-val="sepia">
+              <span class="theme-circle" style="background: #FBF0D9;"></span>
+              <span>Sepia</span>
+            </button>
+            <button class="theme-pill-btn" data-theme-val="paper">
+              <span class="theme-circle" style="background: #F5F0E8;"></span>
+              <span>Giấy mộc</span>
+            </button>
+            <button class="theme-pill-btn" data-theme-val="dark">
+              <span class="theme-circle" style="background: #0F172A;"></span>
+              <span>Tối</span>
+            </button>
+            <button class="theme-pill-btn" data-theme-val="midnight">
+              <span class="theme-circle" style="background: #07090E;"></span>
+              <span>Nửa đêm</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Kiểu chữ Font -->
+        <div class="setting-section">
+          <div class="setting-title">Kiểu Chữ</div>
+          <div class="chip-group">
+            <button class="chip-btn chip-font-btn" data-font-val="'Literata', serif" style="font-family: 'Literata', serif;">Literata</button>
+            <button class="chip-btn chip-font-btn" data-font-val="'Cormorant Garamond', serif" style="font-family: 'Cormorant Garamond', serif;">Garamond</button>
+            <button class="chip-btn chip-font-btn" data-font-val="'Plus Jakarta Sans', sans-serif" style="font-family: 'Plus Jakarta Sans', sans-serif;">Jakarta</button>
+            <button class="chip-btn chip-font-btn" data-font-val="serif" style="font-family: serif;">Serif Chuẩn</button>
+          </div>
+        </div>
+
+        <!-- Cỡ chữ Slider -->
+        <div class="setting-section">
+          <div class="setting-title">Cỡ Chữ</div>
+          <div class="slider-control-row">
+            <input type="range" class="progress-slider" id="slider-font-size" min="14" max="28" step="1" value="18">
+            <span class="slider-val-badge" id="val-font-size">18px</span>
+          </div>
+        </div>
+
+        <!-- Giãn dòng Slider -->
+        <div class="setting-section">
+          <div class="setting-title">Giãn Dòng</div>
+          <div class="slider-control-row">
+            <input type="range" class="progress-slider" id="slider-line-height" min="1.4" max="2.4" step="0.1" value="1.75">
+            <span class="slider-val-badge" id="val-line-height">1.75</span>
+          </div>
+        </div>
+
+        <!-- Căn lề lề biên Margin -->
+        <div class="setting-section">
+          <div class="setting-title">Khoảng Cách Lề</div>
+          <div class="slider-control-row">
+            <input type="range" class="progress-slider" id="slider-margin" min="16" max="64" step="4" value="32">
+            <span class="slider-val-badge" id="val-margin">32px</span>
+          </div>
+        </div>
+
+        <!-- Căn hàng Text Alignment -->
+        <div class="setting-section">
+          <div class="setting-title">Căn Văn Bản</div>
+          <div class="chip-group">
+            <button class="chip-btn chip-align-btn" data-align-val="justify">Căn Đều Hai Bên</button>
+            <button class="chip-btn chip-align-btn" data-align-val="left">Căn Lề Trái</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Modal Kho Sách / Kệ Truyện & Lịch Sử Đọc -->
+    <div class="modal-library-dialog" id="modal-library">
+      <div class="library-header">
+        <div class="library-title-group">
+          <h2 class="library-main-title">Kệ Sách & Lịch Sử Đọc</h2>
+          <span class="library-sub-title">Toàn bộ tác phẩm và lịch sử đọc được lưu trữ an toàn trên thiết bị</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button class="library-nav-btn" id="btn-library-upload-trigger" title="Tải tệp .epub lên kệ sách">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
+            <span>+ Nhập Tệp .epub</span>
+          </button>
+          <button class="icon-btn" id="btn-close-library" title="Đóng kho sách">✕</button>
+        </div>
+      </div>
+
+      <div class="library-controls-bar">
+        <div class="library-search-wrapper">
+          <svg class="library-search-icon" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+          </svg>
+          <input type="text" class="library-search-input" id="library-search-input" placeholder="Tìm theo tên truyện hoặc tác giả...">
+        </div>
+
+        <div class="library-filters">
+          <button class="filter-chip-btn active" data-filter="all">Tất cả sách</button>
+          <button class="filter-chip-btn" data-filter="history">⏳ Lịch sử đọc</button>
+          <button class="filter-chip-btn" data-filter="reading">📖 Đang đọc dở</button>
+          <button class="filter-chip-btn" data-filter="completed">✅ Đã đọc xong</button>
+        </div>
+
+        <button class="icon-btn" id="btn-clear-history" title="Xóa toàn bộ lịch sử đọc" style="font-size: 0.78rem; padding: 4px 10px; width: auto; height: 32px; border: 1px solid var(--border-subtle); color: var(--text-muted);">
+          <span>🗑️ Xóa Lịch Sử</span>
+        </button>
+      </div>
+
+      <div class="library-grid-scroll">
+        <div class="books-grid" id="books-grid">
+          <!-- Các thẻ truyện được render động bằng JavaScript -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal Mở File EPUB -->
+    <div class="modal-dialog" id="modal-upload">
+      <div class="modal-header">
+        <h3 class="modal-title">Mở Sách EPUB</h3>
+        <button class="icon-btn" id="btn-close-upload" title="Đóng">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="file" id="file-input" accept=".epub" style="display: none;">
+        <div class="drop-zone" id="drop-zone">
+          <svg class="drop-zone-icon" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
+          </svg>
+          <div class="drop-zone-title">Kéo thả tệp .epub vào đây</div>
+          <div class="drop-zone-desc">hoặc bấm vào khung để chọn tệp từ máy tính</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal Dấu Trang (Bookmarks) -->
+    <div class="modal-dialog" id="modal-bookmarks">
+      <div class="modal-header">
+        <h3 class="modal-title">Dấu Trang Đã Lưu</h3>
+        <button class="icon-btn" id="btn-close-bookmarks" title="Đóng">✕</button>
+      </div>
+      <div class="modal-body" style="max-height: 400px; overflow-y: auto;">
+        <div id="bookmarks-list"></div>
+      </div>
+    </div>
+
+    <!-- Modal Kho Giọng Đọc AI Tiếng Việt (Tải về chuẩn Android App) -->
+    <div class="modal-dialog modal-voice-catalog" id="modal-voice-catalog">
+      <div class="modal-header">
+        <div class="modal-header-info">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="#D97757">
+              <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+              <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+            </svg>
+            <h3 class="modal-title">Kho Giọng Đọc AI Tiếng Việt (Sherpa-ONNX)</h3>
+          </div>
+          <p class="modal-subtitle">Đồng bộ trực tiếp từ ứng dụng Android EpubPro. Mô hình AI offline tải về lưu trữ an toàn trong trình duyệt.</p>
+        </div>
+        <button class="icon-btn" id="btn-close-voice-catalog" title="Đóng">✕</button>
+      </div>
+
+      <div class="modal-body voice-catalog-modal-body">
+        <!-- Thanh thống kê & bộ lọc -->
+        <div class="voice-catalog-toolbar">
+          <div class="voice-stats" id="voice-stats-info">
+            Đang kiểm tra mô hình đã tải...
+          </div>
+          <div class="voice-filters">
+            <button class="voice-filter-btn active" data-filter="all">Tất Cả (25)</button>
+            <button class="voice-filter-btn" data-filter="recommended">⭐ Khuyên Dùng</button>
+            <button class="voice-filter-btn" data-filter="downloaded">✓ Đã Tải Về</button>
+            <button class="voice-filter-btn" data-filter="Bac">Miền Bắc</button>
+            <button class="voice-filter-btn" data-filter="Nam">Miền Nam</button>
+            <button class="voice-filter-btn" data-filter="male">Giọng Nam</button>
+            <button class="voice-filter-btn" data-filter="female">Giọng Nữ</button>
+          </div>
+        </div>
+
+        <!-- Banner Chú Thích Về Nguồn Giọng Đọc -->
+        <div class="voice-system-notice" id="voice-system-notice">
+          <span class="notice-icon">💡</span>
+          <div class="notice-text">
+            <strong>Cơ chế phát âm thanh giọng đọc:</strong>
+            <span>Trên ứng dụng Android, giọng đọc được tổng hợp trực tiếp từ tệp model ONNX offline qua thư viện Sherpa-ONNX. Trên trình duyệt web máy tính, nếu máy chỉ có giọng mặc định <em>Microsoft David (tiếng Anh)</em>, hệ thống sẽ cảnh báo để tránh đọc méo tiếng; bạn có thể cài thêm gói <em>Vietnamese Speech</em> trong Windows Settings hoặc chạy <code>python server.py</code> để nghe chuẩn 100%.</span>
+          </div>
+        </div>
+
+        <!-- Danh sách card các giọng đọc -->
+        <div class="voice-catalog-grid" id="voice-catalog-grid">
+          <!-- Render động từ voice-catalog.js -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast Thông Báo Nhẹ Nhàng -->
+    <div class="toast-notice" id="toast-notice">Thông báo</div>
+  </div>
+
+  <!-- Thư viện JSZip để parse file EPUB cục bộ hoặc từ CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <!-- Dữ liệu sách mẫu tiếng Việt -->
+  <script src="js/sample-book.js"></script>
+  <!-- Trình phân tích EPUB Client-side -->
+  <script src="js/epub-parser.js"></script>
+  <!-- Danh mục và kho lưu trữ giọng đọc AI tiếng Việt (Sherpa-ONNX) -->
+  <script src="js/voice-catalog.js"></script>
+  <!-- Engine Reader chính -->
+  <script src="js/reader.js"></script>
+</body>
+</html>

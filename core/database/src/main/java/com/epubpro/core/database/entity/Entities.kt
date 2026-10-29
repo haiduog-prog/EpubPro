@@ -66,11 +66,28 @@ data class ReadingProgressEntity(
     val chapterIndex: Int,
     val pageIndex: Int = 1,
     val progressPercentage: Float,
-    @ColumnInfo(defaultValue = "0") val totalChapters: Int = 0
+    @ColumnInfo(defaultValue = "0") val totalChapters: Int = 0,
+    @ColumnInfo(defaultValue = "0") val updatedAt: Long = 0L
 ) {
-    fun toDomain() = ReadingProgress(bookId, currentCfi, chapterIndex, pageIndex, progressPercentage, totalChapters)
+    fun toDomain() = ReadingProgress(
+        bookId = bookId,
+        currentCfi = currentCfi,
+        chapterIndex = chapterIndex,
+        pageIndex = pageIndex,
+        progressPercentage = progressPercentage,
+        totalChapters = totalChapters,
+        updatedAt = updatedAt
+    )
     companion object {
-        fun fromDomain(rp: ReadingProgress) = ReadingProgressEntity(rp.bookId, rp.currentCfi, rp.chapterIndex, rp.pageIndex, rp.progressPercentage, rp.totalChapters)
+        fun fromDomain(rp: ReadingProgress) = ReadingProgressEntity(
+            bookId = rp.bookId,
+            currentCfi = rp.currentCfi,
+            chapterIndex = rp.chapterIndex,
+            pageIndex = rp.pageIndex,
+            progressPercentage = rp.progressPercentage,
+            totalChapters = rp.totalChapters,
+            updatedAt = rp.updatedAt
+        )
     }
 }
 

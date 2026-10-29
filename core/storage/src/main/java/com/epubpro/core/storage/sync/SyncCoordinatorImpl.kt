@@ -1,6 +1,8 @@
 package com.epubpro.core.storage.sync
 
 import com.epubpro.domain.sync.ManifestComparator
+import com.epubpro.domain.sync.ReadingHistoryLedger
+import com.epubpro.domain.sync.ReadingHistoryMerger
 import com.epubpro.domain.sync.SyncChangeType
 import com.epubpro.domain.sync.SyncCheckResult
 import com.epubpro.domain.sync.SyncCoordinator
@@ -30,7 +32,8 @@ class SyncCoordinatorImpl @Inject constructor(
     private val local: LocalSnapshotDataSource,
     private val drive: GoogleDriveDataSource,
     private val stateStore: SyncStateStore,
-    private val rollbackStore: RollbackStore
+    private val rollbackStore: RollbackStore,
+    private val readingHistoryLocal: ReadingHistoryLocalDataSource
 ) : SyncCoordinator {
     private val mutex = Mutex()
     private val _state = MutableStateFlow(SyncUiState())
@@ -58,6 +61,51 @@ class SyncCoordinatorImpl @Inject constructor(
         } catch (error: Exception) {
             _state.value = SyncUiState(SyncStatus.ERROR, message = error.message)
             SyncCheckResult(SyncStatus.ERROR, emptyComparison(), error.message)
+        }
+    }
+
+    /**
+     * Gộp vị trí đọc mới nhất từ Room và ledger của mọi thiết bị trên Drive.
+     *
+     * @return Kết quả sync, giữ nguyên dữ liệu local nếu tải hoặc xác thực ledger thất bại.
+     */
+    override suspend fun syncReadingHistory(): SyncResult = mutex.withLock {
+        try {
+            val deviceId = stateStore.getOrCreateReadingHistoryDeviceId()
+            _state.value = SyncUiState(SyncStatus.SYNCING_DOWN, totalItems = 1)
+            val remoteLedgers = drive.readReadingHistoryLedgers()
+            val remoteRecords = remoteLedgers.flatMap { it.records }
+            val localRecords = readingHistoryLocal.readRecords(deviceId)
+            val mergedRecords = ReadingHistoryMerger.merge(remoteRecords + localRecords)
+
+            readingHistoryLocal.applyRecords(mergedRecords)
+            val refreshedLocalRecords = readingHistoryLocal.readRecords(deviceId)
+            val mergedByBookKey = mergedRecords.associateBy { it.bookKey }
+            val refreshedRecordsWithOrigin = refreshedLocalRecords.map { refreshed ->
+                val applied = mergedByBookKey[refreshed.bookKey]
+                if (applied != null && refreshed.hasSameProgress(applied)) applied else refreshed
+            }
+            val finalRecords = ReadingHistoryMerger.merge(
+                remoteRecords + mergedRecords + refreshedRecordsWithOrigin
+            )
+            val localLedger = ReadingHistoryLedger(deviceId = deviceId, records = finalRecords)
+
+            _state.value = SyncUiState(SyncStatus.SYNCING_UP, completedItems = 1, totalItems = 2)
+            drive.writeReadingHistoryLedger(localLedger)
+            finish(
+                SyncResult(
+                    status = SyncStatus.SYNCED,
+                    uploadedCount = 1,
+                    downloadedCount = remoteLedgers.size
+                )
+            )
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: DriveSyncException) {
+            val status = if (error.requiresAuth) SyncStatus.AUTH_REQUIRED else SyncStatus.ERROR
+            finish(SyncResult(status, message = error.message))
+        } catch (error: Exception) {
+            finish(SyncResult(SyncStatus.ERROR, message = error.message))
         }
     }
 
@@ -269,6 +317,24 @@ class SyncCoordinatorImpl @Inject constructor(
     }
 
     private fun emptyComparison() = com.epubpro.domain.sync.SyncComparison(emptyList(), SyncChangeType.UNCHANGED)
+
+    /**
+     * So sánh nội dung tiến độ để giữ nguyên nguồn gốc của bản ghi vừa áp dụng từ Drive.
+     *
+     * @receiver Tiến độ đọc snapshot sau khi đã áp dụng ledger.
+     * @param other Bản ghi đã thắng trong bước merge.
+     * @return true nếu vị trí và timestamp đang khớp hoàn toàn.
+     */
+    private fun com.epubpro.domain.sync.ReadingHistoryRecord.hasSameProgress(
+        other: com.epubpro.domain.sync.ReadingHistoryRecord
+    ): Boolean =
+        currentCfi == other.currentCfi &&
+            chapterIndex == other.chapterIndex &&
+            pageIndex == other.pageIndex &&
+            progressPercentage == other.progressPercentage &&
+            totalChapters == other.totalChapters &&
+            lastReadAt == other.lastReadAt &&
+            updatedAt == other.updatedAt
 
     private fun sha256(file: java.io.File): String {
         val digest = MessageDigest.getInstance("SHA-256")

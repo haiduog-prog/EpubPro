@@ -1,8 +1,11 @@
 package com.epubpro.core.storage.sync
 
-import android.accounts.Account
 import android.accounts.AccountManager
 import android.content.Context
+import com.google.android.gms.auth.GoogleAuthUtil
+import com.google.android.gms.auth.UserRecoverableAuthException
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.common.api.Scope
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -16,19 +19,26 @@ import javax.inject.Singleton
  */
 @Singleton
 class GoogleDriveAuthManager @Inject constructor(
-    @ApplicationContext context: Context
+    @ApplicationContext private val context: Context
 ) {
-    private val accountManager = AccountManager.get(context)
 
     /**
-     * Lấy access token cho tài khoản Google đầu tiên trên thiết bị.
+     * Lấy access token cho đúng tài khoản đã chọn trong Google Sign-In.
      *
      * @return Token trong bộ nhớ, hoặc null nếu cần người dùng cấp quyền/đăng nhập.
+     * @throws com.google.android.gms.auth.GoogleAuthException Khi Google từ chối xác thực.
+     * @throws java.io.IOException Khi không thể kết nối dịch vụ xác thực.
      */
     suspend fun getAccessToken(): String? = withContext(Dispatchers.IO) {
-        val account = accountManager.getAccountsByType(GOOGLE_ACCOUNT_TYPE).firstOrNull() ?: return@withContext null
-        val result = accountManager.getAuthToken(account, TOKEN_TYPE, null, false, null, null).result
-        result.getString(AccountManager.KEY_AUTHTOKEN)
+        val signedInAccount = GoogleSignIn.getLastSignedInAccount(context) ?: return@withContext null
+        if (!GoogleSignIn.hasPermissions(signedInAccount, Scope(DRIVE_FILE_SCOPE))) return@withContext null
+        val account = signedInAccount.account ?: return@withContext null
+        try {
+            GoogleAuthUtil.getToken(context, account, TOKEN_TYPE)
+        } catch (_: UserRecoverableAuthException) {
+            // Worker không thể mở giao diện cấp quyền; yêu cầu đăng nhập lại ở foreground.
+            null
+        }
     }
 
     /**
@@ -37,14 +47,13 @@ class GoogleDriveAuthManager @Inject constructor(
      * @param token Token đã bị Drive từ chối.
      */
     fun invalidate(token: String) {
-        accountManager.invalidateAuthToken(GOOGLE_ACCOUNT_TYPE, token)
+        AccountManager.get(context).invalidateAuthToken("com.google", token)
     }
 
     companion object {
         /** Scope OAuth tối thiểu để app chỉ thao tác file do app tạo/chọn trên Drive. */
         const val DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 
-        private const val GOOGLE_ACCOUNT_TYPE = "com.google"
         private const val TOKEN_TYPE = "oauth2:$DRIVE_FILE_SCOPE"
     }
 }

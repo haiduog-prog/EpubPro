@@ -12,6 +12,14 @@ interface BookDao {
     @Query("SELECT * FROM books WHERE id = :id")
     suspend fun getBookById(id: String): BookEntity?
 
+    /**
+     * Đọc danh sách sách hiện tại cho một snapshot đồng bộ.
+     *
+     * @return Các sách trong thư viện tại thời điểm truy vấn.
+     */
+    @Query("SELECT * FROM books")
+    suspend fun getAllBooksDirect(): List<BookEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertBook(book: BookEntity)
 
@@ -47,8 +55,33 @@ interface BookDao {
     @Query("SELECT * FROM reading_progress")
     fun getAllReadingProgress(): Flow<List<ReadingProgressEntity>>
 
+    /**
+     * Đọc mọi tiến độ hiện tại để ghép với metadata sách trước khi sync.
+     *
+     * @return Các bản ghi tiến độ hiện có.
+     */
+    @Query("SELECT * FROM reading_progress")
+    suspend fun getAllReadingProgressDirect(): List<ReadingProgressEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun saveReadingProgress(progress: ReadingProgressEntity)
+
+    /**
+     * Lưu tiến độ và thời điểm đọc gần nhất nguyên tử, giữ timestamp tăng đơn điệu theo truyện.
+     *
+     * @param progress Tiến độ mới với `updatedAt` đã được thiết lập.
+     */
+    @Transaction
+    suspend fun saveProgressAndLastRead(progress: ReadingProgressEntity) {
+        val previous = getReadingProgressDirect(progress.bookId)
+        val nextTimestamp = maxOf(
+            progress.updatedAt,
+            if (previous?.updatedAt == Long.MAX_VALUE) Long.MAX_VALUE else (previous?.updatedAt ?: 0L) + 1L
+        )
+        val updatedProgress = progress.copy(updatedAt = nextTimestamp)
+        saveReadingProgress(updatedProgress)
+        updateLastRead(updatedProgress.bookId, nextTimestamp)
+    }
 
     @Query("""
         SELECT books.* FROM books

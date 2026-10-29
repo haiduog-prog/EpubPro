@@ -199,3 +199,20 @@ val MIGRATION_6_7 = object : Migration(6, 7) {
         db.execSQL("ALTER TABLE books ADD COLUMN sourceFormat TEXT NOT NULL DEFAULT 'EPUB'")
     }
 }
+
+/**
+ * Bổ sung timestamp cho tiến độ để gộp chính xác lịch sử đọc giữa các thiết bị.
+ *
+ * @param db Cơ sở dữ liệu SQLite cần nâng cấp.
+ */
+val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE reading_progress ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0")
+        db.execSQL(
+            """
+            UPDATE reading_progress
+            SET updatedAt = COALESCE((SELECT lastReadAt FROM books WHERE books.id = reading_progress.bookId), 0)
+            """.trimIndent()
+        )
+    }
+}
