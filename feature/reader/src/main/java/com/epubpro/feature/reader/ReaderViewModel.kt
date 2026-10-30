@@ -1,5 +1,17 @@
 package com.epubpro.feature.reader
 
+import com.epubpro.core.convert.ChineseTextDetector
+import com.epubpro.core.convert.HanVietConverter
+import com.epubpro.core.convert.HtmlConverter
+import com.epubpro.core.storage.WebNovelSourceStore
+import com.epubpro.core.storage.worker.WebNovelDownloadScheduler
+import com.epubpro.core.storage.worker.WebNovelDownloadState
+import com.epubpro.core.designsystem.R
+import com.epubpro.core.storage.ConvertDictionaryStore
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import android.content.Context
 import android.content.Intent
 import android.util.Log
@@ -69,6 +81,13 @@ import org.jsoup.Jsoup
 
 private const val WIDGET_TEXT_MAX_CHARS = 800
 private const val SANITIZED_CHAPTER_CACHE_MAX_BYTES = 4 * 1024 * 1024
+private const val CONVERT_DETECTION_SAMPLE = 8000
+
+/** Còn từng này chương chưa đọc thì tự tải thêm chương cho truyện lưu từ web. */
+private const val AUTO_APPEND_REMAINING_CHAPTERS = 2
+
+/** Số chương tải thêm mỗi lần. */
+private const val APPEND_BATCH_CHAPTERS = 20
 
 enum class ReaderContentVersion {
     ORIGINAL,
@@ -113,13 +132,44 @@ data class ReaderUiState(
     val isTestingAiConnection: Boolean = false,
     val aiConnectionMessage: String? = null,
     val filterPreferences: ContentFilterPreferences = ContentFilterPreferences(),
-    val replaceTextPattern: String? = null
+    val replaceTextPattern: String? = null,
+    val convertEnabled: Boolean = false,
+    val convertedChapterHtml: String? = null,
+    val sanitizedConvertedChapterHtml: SanitizedEpubHtml? = null,
+    val showConvertSheet: Boolean = false,
+    val convertNames: List<Pair<String, String>> = emptyList(),
+    val convertHasDictionary: Boolean = false,
+    val convertSuggested: Boolean = false,
+    @androidx.annotation.StringRes val convertMessageRes: Int? = null,
+    val isWebNovel: Boolean = false,
+    val isAppendingChapters: Boolean = false,
+    @androidx.annotation.StringRes val webNovelMessageRes: Int? = null,
+    val webNovelMessageArg: Int = 0
 ) {
+    /** true khi đang hiển thị bản Convert Hán-Việt của chương hiện tại. */
+    val isShowingConverted: Boolean
+        get() = contentVersion == ReaderContentVersion.ORIGINAL && convertEnabled && convertedChapterHtml != null
+
+    /** true khi HTML hiển thị trùng bản gốc, nên được dùng bản đã sanitize sẵn trong cache. */
+    val usesOriginalHtml: Boolean
+        get() = contentVersion == ReaderContentVersion.ORIGINAL && !isShowingConverted
+
+    /**
+     * HTML đã sanitize khớp đúng bản đang hiển thị. Bản Convert cũng phải có bản sanitize sẵn để key
+     * commit chương kề trong WebView trùng với key nạp chương mới, tránh reload trang.
+     */
+    val preSanitizedDisplayedHtml: SanitizedEpubHtml?
+        get() = when {
+            usesOriginalHtml -> sanitizedCurrentChapterHtml
+            isShowingConverted -> sanitizedConvertedChapterHtml
+            else -> null
+        }
+
     val displayedChapterHtml: String
-        get() = if (contentVersion == ReaderContentVersion.AI) {
-            aiChapterHtml ?: currentChapterHtml
-        } else {
-            currentChapterHtml
+        get() = when {
+            contentVersion == ReaderContentVersion.AI -> aiChapterHtml ?: currentChapterHtml
+            isShowingConverted -> convertedChapterHtml ?: currentChapterHtml
+            else -> currentChapterHtml
         }
 }
 
@@ -232,7 +282,10 @@ class ReaderViewModel @Inject constructor(
     private val widgetStateStore: TtsWidgetStateStore,
     private val playbackSnapshotStore: TtsPlaybackSnapshotStore,
     private val resumeSnapshotStore: ReaderResumeSnapshotStore,
-    private val bookBibleRepository: BookBibleRepository
+    private val bookBibleRepository: BookBibleRepository,
+    private val convertStore: ConvertDictionaryStore,
+    private val webNovelSourceStore: WebNovelSourceStore,
+    private val webNovelScheduler: WebNovelDownloadScheduler
 ) : ViewModel() {
 
     val bookId: String = checkNotNull(savedStateHandle["bookId"])
@@ -268,7 +321,39 @@ class ReaderViewModel @Inject constructor(
     )
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
 
+    /** Bộ convert đã nạp cho sách này; null khi chưa dùng hoặc từ điển vừa thay đổi. */
+    private var hanVietConverter: HanVietConverter? = null
+
+    private var appendJob: Job? = null
+
+    /** Số chương tại lần tự tải thêm gần nhất, để mỗi mốc chỉ tự tải một lần. */
+    private var autoAppendChapterCount = -1
+
     init {
+        _uiState.update {
+            it.copy(
+                convertEnabled = convertStore.isConvertEnabled(bookId),
+                convertHasDictionary = convertStore.hasBaseDictionary(),
+                isWebNovel = webNovelSourceStore.get(bookId) != null
+            )
+        }
+        viewModelScope.launch {
+            // Truyện lưu từ web: đọc tới gần chương cuối thì tự tải thêm chương ở nền.
+            _uiState.map { it.currentChapterIndex to it.chapters.size }
+                .distinctUntilChanged()
+                .collect { (index, size) ->
+                    if (size > 0 && index >= size - AUTO_APPEND_REMAINING_CHAPTERS) loadMoreWebChapters(auto = true)
+                }
+        }
+        viewModelScope.launch {
+            // Từ điển hoặc Name thay đổi: convert lại chương hiện tại, giữ nguyên trang đang đọc.
+            convertStore.revision.drop(1).collect {
+                hanVietConverter = null
+                _uiState.update { it.copy(convertHasDictionary = convertStore.hasBaseDictionary()) }
+                refreshConvertedChapter()
+            }
+        }
+
         viewModelScope.launch {
             preferencesManager.settings.collect { settings ->
                 _uiState.update { it.copy(settings = settings) }
@@ -426,6 +511,9 @@ class ReaderViewModel @Inject constructor(
                 val restoredSanitizedHtml = snapshotSanitizedHtml ?: sanitizedChapterCache.get(sanitizedCacheKey)
                 val currentHtml = cachedSnapshot?.normalizedHtml ?: epubEngine.loadChapterHtml(file, entryName)
                 require(currentHtml.isNotBlank()) { "Chương hiện tại không có nội dung" }
+                val convertedHtml = convertChapterHtml(currentHtml)
+                val suggestConvert = convertedHtml == null && !_uiState.value.convertEnabled &&
+                    withContext(Dispatchers.Default) { looksChinese(currentHtml) }
 
                 // EMIT CURRENT CHAPTER IMMEDIATELY
                 _uiState.update {
@@ -442,6 +530,9 @@ class ReaderViewModel @Inject constructor(
                         aiChapterHtml = null,
                         contentVersion = ReaderContentVersion.ORIGINAL,
                         aiCreatedWithOldConfiguration = false,
+                        convertedChapterHtml = convertedHtml?.html,
+                        sanitizedConvertedChapterHtml = convertedHtml?.sanitized,
+                        convertSuggested = suggestConvert,
                         currentPageInChapter = initialPage,
                         initialPageRequest = initialPage,
                         firstVisibleParagraphIndex = parseParagraphLocator(initialCfi),
@@ -492,15 +583,20 @@ class ReaderViewModel @Inject constructor(
                             }
                     }
                     val cachedAi = aiVietnameseService.loadCachedChapter(bookId, initialIndex, currentHtml)
+                    val convertedPrev = convertChapterHtml(prev)
+                    val convertedNext = convertChapterHtml(next)
 
                     if (chapterNavigationGeneration == loadGen && _uiState.value.currentChapterIndex == initialIndex) {
                         _uiState.update {
                             it.copy(
-                                previousChapterHtml = prev,
-                                nextChapterHtml = next,
-                                sanitizedPreviousChapterHtml = headers.getOrNull(initialIndex - 1)
+                                previousChapterHtml = convertedPrev?.html ?: prev,
+                                nextChapterHtml = convertedNext?.html ?: next,
+                                // Bản preview đã convert dùng HTML sanitize của chính nó, không dùng cache bản gốc.
+                                sanitizedPreviousChapterHtml = convertedPrev?.sanitized ?: headers
+                                    .getOrNull(initialIndex - 1)
                                     ?.let { sanitizedChapterCache.get(sanitizedChapterCacheKey(fingerprint, it.entryName)) },
-                                sanitizedNextChapterHtml = headers.getOrNull(initialIndex + 1)
+                                sanitizedNextChapterHtml = convertedNext?.sanitized ?: headers
+                                    .getOrNull(initialIndex + 1)
                                     ?.let { sanitizedChapterCache.get(sanitizedChapterCacheKey(fingerprint, it.entryName)) },
                                 aiChapterHtml = cachedAi?.html,
                                 aiCreatedWithOldConfiguration = cachedAi?.createdWithOldConfiguration == true
@@ -556,6 +652,7 @@ class ReaderViewModel @Inject constructor(
                 val preSanitizedHtml = sanitizedChapterCache.get(
                     sanitizedChapterCacheKey(fingerprint, entryName)
                 )
+                val convertedHtml = convertChapterHtml(currentHtml)
 
                 _uiState.update {
                     it.copy(
@@ -569,6 +666,8 @@ class ReaderViewModel @Inject constructor(
                         aiChapterHtml = null,
                         contentVersion = ReaderContentVersion.ORIGINAL,
                         aiCreatedWithOldConfiguration = false,
+                        convertedChapterHtml = convertedHtml?.html,
+                        sanitizedConvertedChapterHtml = convertedHtml?.sanitized,
                         isAiProcessing = false,
                         aiCompletedParts = 0,
                         aiTotalParts = 0,
@@ -625,15 +724,19 @@ class ReaderViewModel @Inject constructor(
                             }
                     }
                     val cachedAi = aiVietnameseService.loadCachedChapter(bookId, index, currentHtml)
+                    val convertedPrev = convertChapterHtml(prev)
+                    val convertedNext = convertChapterHtml(next)
 
                     if (chapterNavigationGeneration == loadGen && _uiState.value.currentChapterIndex == index) {
                         _uiState.update {
                             it.copy(
-                                previousChapterHtml = prev,
-                                nextChapterHtml = next,
-                                sanitizedPreviousChapterHtml = state.chapters.getOrNull(index - 1)
+                                previousChapterHtml = convertedPrev?.html ?: prev,
+                                nextChapterHtml = convertedNext?.html ?: next,
+                                sanitizedPreviousChapterHtml = convertedPrev?.sanitized ?: state.chapters
+                                    .getOrNull(index - 1)
                                     ?.let { sanitizedChapterCache.get(sanitizedChapterCacheKey(fingerprint, it.entryName)) },
-                                sanitizedNextChapterHtml = state.chapters.getOrNull(index + 1)
+                                sanitizedNextChapterHtml = convertedNext?.sanitized ?: state.chapters
+                                    .getOrNull(index + 1)
                                     ?.let { sanitizedChapterCache.get(sanitizedChapterCacheKey(fingerprint, it.entryName)) },
                                 aiChapterHtml = cachedAi?.html,
                                 contentVersion = if (
@@ -1064,6 +1167,203 @@ class ReaderViewModel @Inject constructor(
     fun addSelectionToContentFilter(selectedText: String) {
         openReplaceTextBottomSheet(selectedText)
     }
+
+    /**
+     * Mở bảng Convert Hán-Việt và nạp danh sách Name của truyện.
+     */
+    fun openConvertSheet() {
+        _uiState.update { it.copy(showConvertSheet = true, convertSuggested = false) }
+        viewModelScope.launch {
+            val names = convertStore.bookNames(bookId)
+            _uiState.update { it.copy(convertNames = names, convertHasDictionary = convertStore.hasBaseDictionary()) }
+        }
+    }
+
+    /** Đóng bảng Convert Hán-Việt. */
+    fun dismissConvertSheet() {
+        _uiState.update { it.copy(showConvertSheet = false) }
+    }
+
+    /** Đánh dấu gợi ý bật Convert đã hiển thị, để không lặp lại trong phiên đọc này. */
+    fun consumeConvertSuggestion() {
+        _uiState.update { it.copy(convertSuggested = false) }
+    }
+
+    /**
+     * Tải thêm chương cho truyện lưu từ web, rồi cập nhật mục lục mà không nạp lại trang đang đọc.
+     *
+     * @param auto true khi tự kích hoạt lúc đọc gần hết: chỉ chạy một lần mỗi mốc và không báo lỗi.
+     */
+    fun loadMoreWebChapters(auto: Boolean = false) {
+        val state = _uiState.value
+        if (!state.isWebNovel || appendJob?.isActive == true || state.chapters.isEmpty()) return
+        if (auto && autoAppendChapterCount == state.chapters.size) return
+        autoAppendChapterCount = state.chapters.size
+        // Ghi vị trí mới nhất trước khi worker thay file, để bản mới giữ đúng chương/trang đang đọc.
+        flushPendingProgress()
+        appendJob = viewModelScope.launch {
+            _uiState.update { it.copy(isAppendingChapters = true) }
+            val result = try {
+                val workId = withContext(Dispatchers.IO) { webNovelScheduler.enqueueAppend(bookId, APPEND_BATCH_CHAPTERS) }
+                webNovelScheduler.observe(workId).first { it !is WebNovelDownloadState.Running }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                WebNovelDownloadState.Failed
+            } finally {
+                _uiState.update { it.copy(isAppendingChapters = false) }
+            }
+            when {
+                result is WebNovelDownloadState.Succeeded && result.newChapters > 0 -> {
+                    refreshAppendedChapters()
+                    _uiState.update {
+                        it.copy(webNovelMessageRes = R.string.reader_web_chapters_added, webNovelMessageArg = result.newChapters)
+                    }
+                }
+                auto -> Unit
+                result is WebNovelDownloadState.Succeeded ->
+                    _uiState.update { it.copy(webNovelMessageRes = R.string.web_novel_no_new_chapters) }
+                else -> _uiState.update { it.copy(webNovelMessageRes = R.string.web_novel_download_failed) }
+            }
+        }
+    }
+
+    /** Xóa thông báo tải thêm chương đã hiển thị. */
+    fun consumeWebNovelMessage() {
+        _uiState.update { it.copy(webNovelMessageRes = null) }
+    }
+
+    /**
+     * Cập nhật sách/mục lục sang file EPUB mới sau khi tải thêm chương. Các chương cũ giữ nguyên tên entry và
+     * nội dung nên chương đang đọc không cần nạp lại; chỉ nạp preview chương kế để vuốt qua ranh giới mượt.
+     */
+    private suspend fun refreshAppendedChapters() {
+        val book = bookRepository.getBookById(bookId) ?: return
+        val file = storageManager.getBookFile(book.filePath)
+        if (!file.isFile) return
+        val headers = runCatching { epubEngine.extractChapterHeaders(file) }.getOrNull() ?: return
+        bookFile = file
+        _uiState.update { it.copy(book = book, chapters = headers) }
+
+        val index = _uiState.value.currentChapterIndex
+        val header = headers.getOrNull(index + 1) ?: return
+        val html = withContext(Dispatchers.IO) {
+            runCatching { epubEngine.loadChapterHtml(file, header.entryName) }.getOrNull()
+        } ?: return
+        val converted = convertChapterHtml(html)
+        val sanitized = converted?.sanitized ?: run {
+            val fingerprint = withContext(Dispatchers.IO) { EpubCacheFingerprint.fromFile(file) }
+            sanitizeAndCacheChapter(fingerprint, header.entryName, html)
+        }
+        _uiState.update {
+            if (it.currentChapterIndex != index || it.nextChapterHtml != null) it
+            else it.copy(nextChapterHtml = converted?.html ?: html, sanitizedNextChapterHtml = sanitized)
+        }
+    }
+
+    /** Xóa thông báo Convert đã hiển thị. */
+    fun consumeConvertMessage() {
+        _uiState.update { it.copy(convertMessageRes = null) }
+    }
+
+    /**
+     * Bật/tắt Convert cho sách và nạp lại chương hiện tại theo chế độ mới.
+     *
+     * @param enabled Trạng thái mới.
+     */
+    fun setConvertEnabled(enabled: Boolean) {
+        if (enabled && !convertStore.hasBaseDictionary()) {
+            _uiState.update { it.copy(convertMessageRes = R.string.convert_no_dictionary) }
+            return
+        }
+        convertStore.setConvertEnabled(bookId, enabled)
+        hanVietConverter = null
+        _uiState.update { it.copy(convertEnabled = enabled, convertSuggested = false) }
+        onChapterSelected(_uiState.value.currentChapterIndex)
+    }
+
+    /**
+     * Thêm hoặc sửa một Name của truyện; chương hiện tại được convert lại qua [ConvertDictionaryStore.revision].
+     *
+     * @param source Chữ Hán.
+     * @param target Tên tiếng Việt.
+     */
+    fun saveConvertName(source: String, target: String) {
+        viewModelScope.launch {
+            convertStore.saveBookName(bookId, source, target)
+            _uiState.update { it.copy(convertNames = convertStore.bookNames(bookId)) }
+        }
+    }
+
+    /**
+     * Xóa một Name của truyện.
+     *
+     * @param source Chữ Hán cần xóa.
+     */
+    fun deleteConvertName(source: String) {
+        viewModelScope.launch {
+            convertStore.deleteBookName(bookId, source)
+            _uiState.update { it.copy(convertNames = convertStore.bookNames(bookId)) }
+        }
+    }
+
+    /**
+     * Bản Convert của một chương kèm HTML đã sanitize tương ứng.
+     *
+     * @property html HTML đã convert (dùng cho hiển thị và TTS).
+     * @property sanitized Kết quả sanitize của [html], truyền vào WebView như bản gốc dùng cache sanitize.
+     */
+    private data class ConvertedChapter(val html: String, val sanitized: SanitizedEpubHtml)
+
+    /**
+     * Convert HTML chương nếu sách đang bật Convert và sanitize luôn bản kết quả.
+     *
+     * Sanitize ở đây (thay vì để WebView tự làm) giúp key commit chương kề và key nạp chương mới cùng
+     * tính trên một chuỗi đã sanitize, nên WebView giữ được DOM khi vuốt qua ranh giới chương.
+     * Book Bible và cache AI vẫn dùng bản gốc nên hàm này chỉ phục vụ hiển thị và TTS.
+     *
+     * @param html HTML gốc, có thể null.
+     * @return Bản convert, hoặc null nếu không bật/không có từ điển/convert lỗi.
+     */
+    private suspend fun convertChapterHtml(html: String?): ConvertedChapter? {
+        if (html.isNullOrBlank() || !_uiState.value.convertEnabled) return null
+        val converter = hanVietConverter ?: convertStore.createConverter(bookId)?.also { hanVietConverter = it }
+            ?: return null
+        return withContext(Dispatchers.Default) {
+            try {
+                val converted = HtmlConverter.convert(html, converter)
+                ConvertedChapter(converted, EpubHtmlSanitizer.sanitize(converted))
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+
+    /** Convert lại chương hiện tại sau khi từ điển đổi, giữ trang đang đọc. */
+    private suspend fun refreshConvertedChapter() {
+        val state = _uiState.value
+        if (!state.convertEnabled || state.currentChapterHtml.isBlank()) return
+        val converted = convertChapterHtml(state.currentChapterHtml) ?: return
+        _uiState.update {
+            if (it.currentChapterHtml != state.currentChapterHtml) it
+            else it.copy(
+                convertedChapterHtml = converted.html,
+                sanitizedConvertedChapterHtml = converted.sanitized,
+                initialPageRequest = it.currentPageInChapter
+            )
+        }
+    }
+
+    /**
+     * Ước lượng chương là tiếng Trung từ mẫu văn bản đã bỏ thẻ HTML.
+     *
+     * @param html HTML chương.
+     * @return true nếu nên gợi ý bật Convert.
+     */
+    private fun looksChinese(html: String): Boolean =
+        ChineseTextDetector.isLikelyChinese(html.take(CONVERT_DETECTION_SAMPLE).replace(Regex("<[^>]*>"), " "))
 
     fun openAiBottomSheet() {
         _uiState.update {

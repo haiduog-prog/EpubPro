@@ -16,14 +16,19 @@ data class Book(
 /**
  * Định dạng nguồn mà người dùng đã nhập vào thư viện.
  *
- * File được lưu trong thư viện luôn là EPUB nội bộ; giá trị này chỉ phục vụ
- * hiển thị nguồn gốc và chẩn đoán quá trình chuyển đổi.
+ * Sách chữ (EPUB/PRC/MOBI/AZW3) luôn được lưu thành EPUB nội bộ; giá trị này chỉ phục vụ
+ * hiển thị nguồn gốc và chẩn đoán quá trình chuyển đổi. Riêng [CBZ] được giữ nguyên
+ * archive ảnh và phải mở bằng Reader truyện tranh thay vì Reader EPUB.
  */
 enum class BookSourceFormat {
     EPUB,
     PRC,
     MOBI,
-    AZW3
+    AZW3,
+    CBZ;
+
+    /** true khi sách là archive ảnh, không có nội dung chữ để TTS/AI/FTS xử lý. */
+    val isComic: Boolean get() = this == CBZ
 }
 
 data class ReadingProgress(

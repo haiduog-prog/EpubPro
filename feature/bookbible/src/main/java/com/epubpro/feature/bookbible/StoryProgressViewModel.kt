@@ -75,7 +75,8 @@ class StoryProgressViewModel @Inject constructor(
             launch {
                 bookRepository.getAllBooks()
                     .catch { error -> sourceError.value = error.message ?: error.toString() }
-                    .collect { localBooks.value = it }
+                    // Book Bible chỉ phân tích truyện chữ nên bỏ qua truyện tranh CBZ.
+                    .collect { books -> localBooks.value = books.filterNot { it.sourceFormat.isComic } }
             }
             launch {
                 bookBibleRepository.observeProgressSummaries()

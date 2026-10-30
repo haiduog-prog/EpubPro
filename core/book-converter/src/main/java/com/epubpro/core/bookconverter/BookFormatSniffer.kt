@@ -1,5 +1,6 @@
 package com.epubpro.core.bookconverter
 
+import com.epubpro.core.comic.ComicArchiveEntries
 import com.epubpro.domain.model.BookSourceFormat
 import java.io.File
 import java.io.FileInputStream
@@ -24,7 +25,34 @@ class BookFormatSniffer @Inject constructor() {
         "prc" -> BookSourceFormat.PRC
         "mobi" -> BookSourceFormat.MOBI
         "azw3" -> BookSourceFormat.AZW3
-        else -> detectPalmDatabaseFormat(file) ?: detectEpubFormat(file)
+        "cbz" -> BookSourceFormat.CBZ
+        else -> detectPalmDatabaseFormat(file) ?: detectZipFormat(file)
+    }
+
+    /**
+     * Nhận diện file ZIP không có phần mở rộng tin cậy là EPUB hay truyện tranh CBZ.
+     *
+     * EPUB được ưu tiên vì EPUB cũng chứa ảnh; ZIP chỉ gồm ảnh (không có HTML/OPF) được coi là CBZ.
+     *
+     * @param file File nguồn cần kiểm tra.
+     * @return [BookSourceFormat.EPUB], [BookSourceFormat.CBZ] hoặc null nếu không nhận diện được.
+     */
+    private fun detectZipFormat(file: File): BookSourceFormat? =
+        detectEpubFormat(file) ?: detectComicFormat(file)
+
+    /**
+     * Nhận diện archive ảnh truyện tranh dựa trên danh sách entry.
+     *
+     * @param file File nguồn cần kiểm tra.
+     * @return [BookSourceFormat.CBZ] nếu ZIP chỉ chứa trang ảnh, ngược lại null.
+     */
+    private fun detectComicFormat(file: File): BookSourceFormat? {
+        if (!file.isFile || file.length() < 22L) return null
+        return runCatching {
+            java.util.zip.ZipFile(file).use { zip ->
+                if (ComicArchiveEntries.looksLikeComicArchive(zip)) BookSourceFormat.CBZ else null
+            }
+        }.getOrNull()
     }
 
     /**

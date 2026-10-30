@@ -12,7 +12,12 @@ import com.epubpro.core.designsystem.R
 import com.epubpro.core.bookconverter.BookConversionException
 import com.epubpro.core.reader.engine.EpubEngine
 import com.epubpro.core.reader.tts.TtsWidgetContract
+import com.epubpro.core.storage.BookFileTooLargeException
+import com.epubpro.core.storage.ComicPreferencesStore
+import com.epubpro.core.storage.ComicTranslationStore
+import com.epubpro.core.storage.ConvertDictionaryStore
 import com.epubpro.core.storage.EpubStorageManager
+import com.epubpro.core.storage.WebNovelSourceStore
 import com.epubpro.core.storage.ReaderResumeSnapshotStore
 import com.epubpro.core.storage.TtsPlaybackSnapshotStore
 import com.epubpro.core.storage.TtsWidgetState
@@ -140,7 +145,11 @@ class LibraryViewModel @Inject constructor(
     private val snapshotStore: ReaderResumeSnapshotStore,
     private val ttsPlaybackSnapshotStore: TtsPlaybackSnapshotStore,
     private val ttsWidgetStateStore: TtsWidgetStateStore,
-    private val bookBibleRepository: BookBibleRepository
+    private val bookBibleRepository: BookBibleRepository,
+    private val comicPreferencesStore: ComicPreferencesStore,
+    private val convertDictionaryStore: ConvertDictionaryStore,
+    private val comicTranslationStore: ComicTranslationStore,
+    private val webNovelSourceStore: WebNovelSourceStore
 ) : ViewModel() {
 
     val pendingLocalImports = localBookImportScheduler.pendingImports
@@ -205,7 +214,8 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 bookRepository.getAllBooks().first().forEach { book ->
-                    if (book.coverPath.isNullOrBlank() && book.filePath.isNotBlank()) {
+                    // Bìa truyện tranh được tạo lúc import; EpubEngine không đọc được archive CBZ.
+                    if (book.coverPath.isNullOrBlank() && book.filePath.isNotBlank() && !book.sourceFormat.isComic) {
                         val file = java.io.File(book.filePath)
                         if (file.isFile) {
                             val extractedCover = epubEngine.extractCoverImage(file)
@@ -478,6 +488,10 @@ class LibraryViewModel @Inject constructor(
             } catch (error: CancellationException) {
                 hasActiveLocalImportSession = false
                 throw error
+            } catch (error: BookFileTooLargeException) {
+                hasActiveLocalImportSession = false
+                _localImportJobState.value = null
+                _events.send(UserMessage(R.string.book_import_error_too_large, listOf(error.limitMiB)))
             } catch (_: BookConversionException) {
                 hasActiveLocalImportSession = false
                 _localImportJobState.value = null
@@ -605,6 +619,10 @@ class LibraryViewModel @Inject constructor(
                     storageManager.deleteCoverFile(item.book.coverPath)
                     storageManager.deleteAiBookCache(item.book.id)
                     bookBibleRepository.deleteDataForBook(item.book.id)
+                    comicPreferencesStore.clear(item.book.id)
+                    convertDictionaryStore.clearBook(item.book.id)
+                    comicTranslationStore.clearBook(item.book.id)
+                    webNovelSourceStore.clear(item.book.id)
                     bookRepository.deleteBook(item.book.id)
                 }
             } catch (error: CancellationException) {

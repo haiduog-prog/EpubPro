@@ -95,6 +95,8 @@ dependencies {
     implementation(project(":feature:search"))
     implementation(project(":feature:profile"))
     implementation(project(":feature:bookbible"))
+    implementation(project(":feature:comic"))
+    implementation(project(":feature:browser"))
     implementation(project(":core:tts"))
 
     implementation(libs.androidx.core.ktx)

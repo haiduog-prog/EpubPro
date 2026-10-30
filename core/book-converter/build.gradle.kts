@@ -31,6 +31,7 @@ android {
 
 dependencies {
     implementation(project(":domain"))
+    implementation(project(":core:comic"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.javax.inject)
 

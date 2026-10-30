@@ -40,4 +40,7 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.json)
     implementation(project(":core:book-converter"))
+    implementation(project(":core:comic"))
+    implementation(project(":core:webnovel"))
+    api(project(":core:convert"))
 }

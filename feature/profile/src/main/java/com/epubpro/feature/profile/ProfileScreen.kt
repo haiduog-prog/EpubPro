@@ -64,6 +64,7 @@ fun ProfileScreen(
     onNavigateToReadingDefaults: () -> Unit = {},
     onNavigateToContentFilter: () -> Unit = {},
     onNavigateToSync: () -> Unit = {},
+    onNavigateToConvertDictionaries: () -> Unit = {},
     viewModel: ProfileViewModel = hiltViewModel()
 ) {
     var showServerSettingsDialog by rememberSaveable { mutableStateOf(false) }
@@ -191,6 +192,13 @@ fun ProfileScreen(
                 subtitle = stringResource(R.string.profile_content_filter_subtitle),
                 icon = Icons.Default.FilterAlt,
                 onClick = onNavigateToContentFilter
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+            ProfileCardItem(
+                title = stringResource(R.string.convert_dictionaries_title),
+                subtitle = stringResource(R.string.convert_dictionaries_subtitle),
+                icon = Icons.Default.Translate,
+                onClick = onNavigateToConvertDictionaries
             )
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
             ProfileCardItem(

@@ -24,10 +24,16 @@ class LocalBookReplacement @Inject constructor(
      * @param parsed Metadata của bản EPUB mới đã được kiểm tra.
      * @param bookId ID nội bộ được người dùng chọn.
      * @param identifier ID xuất bản bắt buộc trùng ở cả hai bản.
+     * @param keepAiCache true khi bản mới chỉ nối thêm chương (các chương cũ không đổi) nên cache AI vẫn đúng.
      * @return Metadata sau cập nhật.
      * @throws IllegalStateException Nếu truyện đã bị xóa, thay đổi hoặc ID không còn khớp.
      */
-    suspend fun replace(parsed: Book, bookId: String, identifier: String): Book = withContext(Dispatchers.IO) {
+    suspend fun replace(
+        parsed: Book,
+        bookId: String,
+        identifier: String,
+        keepAiCache: Boolean = false
+    ): Book = withContext(Dispatchers.IO) {
         val dao = database.bookDao()
         val previous = checkNotNull(dao.getBookById(bookId))
         check(identifier.isNotBlank())
@@ -53,7 +59,7 @@ class LocalBookReplacement @Inject constructor(
             check(dao.updateBook(updated) == 1)
             database.searchDao().clearIndexForBook(bookId)
             database.searchDao().moveIndex(parsed.id, bookId)
-            database.aiChapterDao().deleteBookCaches(bookId)
+            if (!keepAiCache) database.aiChapterDao().deleteBookCaches(bookId)
             dao.getReadingProgressDirect(bookId)?.let { progress ->
                 val chapter = progress.chapterIndex.coerceIn(0, (parsed.totalChapters - 1).coerceAtLeast(0))
                 val nextTimestamp = maxOf(

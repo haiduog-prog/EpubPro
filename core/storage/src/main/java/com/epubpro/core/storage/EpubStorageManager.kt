@@ -3,6 +3,7 @@ package com.epubpro.core.storage
 import android.content.Context
 import android.net.Uri
 import com.epubpro.core.bookconverter.MobiEpubConverter
+import com.epubpro.core.comic.ComicReadLimits
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.FileOutputStream
@@ -59,10 +60,18 @@ class EpubStorageManager @Inject constructor(
                     "application/x-mobipocket-ebook" -> "mobi"
                     "application/vnd.amazon.mobi8-ebook" -> "azw3"
                     "application/x-palm-database" -> "prc"
+                    "application/vnd.comicbook+zip", "application/x-cbz" -> "cbz"
+                    "application/zip", "application/x-zip-compressed" -> "zip"
                     else -> "bin"
                 }
             }
         val targetFile = File(booksDir, "$fileId.$extension")
+        // Archive truyện tranh thường lớn hơn nhiều so với ebook chữ nên dùng giới hạn riêng.
+        val maxBytes = if (extension == "cbz" || extension == "zip") {
+            ComicReadLimits.MAX_ARCHIVE_BYTES
+        } else {
+            MobiEpubConverter.MAX_INPUT_BYTES
+        }
         try {
             context.contentResolver.openInputStream(uri)?.use { input ->
                 FileOutputStream(targetFile).use { output ->
@@ -72,9 +81,7 @@ class EpubStorageManager @Inject constructor(
                         val read = input.read(buffer)
                         if (read <= 0) break
                         total += read
-                        check(total <= MobiEpubConverter.MAX_INPUT_BYTES) {
-                            "File ebook cục bộ vượt quá giới hạn 100 MiB"
-                        }
+                        if (total > maxBytes) throw BookFileTooLargeException(maxBytes)
                         output.write(buffer, 0, read)
                     }
                     output.fd.sync()
@@ -93,6 +100,21 @@ class EpubStorageManager @Inject constructor(
      * @return File đích chưa có dữ liệu, dùng cho commit atomically sau chuyển đổi.
      */
     fun createConvertedEpubFile(): File = File(booksDir, "${UUID.randomUUID()}.epub")
+
+    /**
+     * Tạo đường dẫn CBZ mới trong storage nội bộ cho truyện tranh nhập từ thiết bị.
+     *
+     * @return File đích chưa có dữ liệu; tên file cũng là ID sách sau khi commit.
+     */
+    fun createComicFile(): File = File(booksDir, "${UUID.randomUUID()}.cbz")
+
+    /**
+     * Lấy đường dẫn ảnh bìa nội bộ cho truyện tranh.
+     *
+     * @param bookFile File CBZ đã nằm trong thư viện.
+     * @return File JPEG đích trong thư mục covers.
+     */
+    fun comicCoverFile(bookFile: File): File = File(coversDir, "${bookFile.nameWithoutExtension}_cover.jpg")
 
     /**
      * Save downloaded EPUB stream directly into internal app storage

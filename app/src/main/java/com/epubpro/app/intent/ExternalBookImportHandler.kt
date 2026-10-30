@@ -27,14 +27,17 @@ object ExternalBookImportHandler {
         "application/x-zip-compressed-epub",
         "application/x-mobipocket-ebook",
         "application/vnd.amazon.mobi8-ebook",
-        "application/x-palm-database"
+        "application/x-palm-database",
+        "application/vnd.comicbook+zip",
+        "application/x-cbz"
     )
 
     private val SUPPORTED_EXTENSIONS = setOf(
         "epub",
         "prc",
         "mobi",
-        "azw3"
+        "azw3",
+        "cbz"
     )
 
     /**

@@ -100,6 +100,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import coil.compose.AsyncImage
 import com.epubpro.core.designsystem.R
+import com.epubpro.domain.model.BookSourceFormat
 import com.epubpro.feature.library.components.GeneratedBookCover
 
 /**
@@ -131,17 +132,20 @@ private fun queryMimeType(context: Context, uri: Uri): String? =
 /**
  * Màn hình Thư viện sách (Library Screen) theo phong cách thiết kế Material 3 chuẩn Stitch.
  *
- * @param onBookClick Callback điều hướng khi người dùng nhấn chọn một cuốn sách.
+ * @param onBookClick Callback điều hướng khi người dùng nhấn chọn một cuốn sách; kèm định dạng nguồn
+ * để caller chọn đúng Reader (EPUB hoặc truyện tranh).
  * @param onNavigateToBookmarks Callback điều hướng sang màn hình Dấu trang & Ghi chú.
  * @param onNavigateToOnlineLibrary Callback điều hướng sang Kho truyện Online.
+ * @param onNavigateToBrowser Callback mở trình duyệt tích hợp để đọc/lưu truyện từ trang web.
  * @param viewModel ViewModel quản lý trạng thái thư viện.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(
-    onBookClick: (bookId: String) -> Unit,
+    onBookClick: (bookId: String, sourceFormat: BookSourceFormat) -> Unit,
     onNavigateToBookmarks: () -> Unit,
     onNavigateToOnlineLibrary: () -> Unit,
+    onNavigateToBrowser: () -> Unit = {},
     viewModel: LibraryViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -262,7 +266,8 @@ fun LibraryScreen(
             onNavigateToOnlineLibrary = onNavigateToOnlineLibrary,
             onPickLocalEpub = { filePickerLauncher.launch("*/*") },
             onUploadEpubToServer = onStartUpload,
-            onPickDriveBook = { showDriveImportHelp = true }
+            onPickDriveBook = { showDriveImportHelp = true },
+            onOpenBrowser = onNavigateToBrowser
         )
     }
 
@@ -622,7 +627,7 @@ fun LibraryScreen(
                         ) { item ->
                             BookCard(
                                 item = item,
-                                onClick = { onBookClick(item.book.id) },
+                                onClick = { onBookClick(item.book.id, item.book.sourceFormat) },
                                 onDelete = { pendingDeleteBookId = item.book.id }
                             )
                         }
@@ -951,6 +956,7 @@ fun BookCard(
                         com.epubpro.domain.model.BookSourceFormat.PRC -> R.string.book_source_format_prc
                         com.epubpro.domain.model.BookSourceFormat.MOBI -> R.string.book_source_format_mobi
                         com.epubpro.domain.model.BookSourceFormat.AZW3 -> R.string.book_source_format_azw3
+                        com.epubpro.domain.model.BookSourceFormat.CBZ -> R.string.book_source_format_cbz
                     }
 
                     Row(

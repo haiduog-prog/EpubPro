@@ -18,8 +18,15 @@ import com.epubpro.core.bookconverter.BookConversionException
 import com.epubpro.core.bookconverter.BookConversionResult
 import com.epubpro.core.bookconverter.BookConversionStage
 import com.epubpro.core.bookconverter.MobiEpubConverter
+import com.epubpro.core.comic.ComicArchive
+import com.epubpro.core.comic.ComicArchiveException
+import com.epubpro.core.comic.ComicPageDecoder
+import com.epubpro.core.comic.resolveAuthor
+import com.epubpro.core.comic.resolveTitle
 import com.epubpro.core.designsystem.R
 import com.epubpro.core.reader.engine.EpubEngine
+import com.epubpro.core.storage.EpubStorageManager
+import com.epubpro.domain.model.Book
 import com.epubpro.domain.repository.BookRepository
 import com.epubpro.domain.repository.SearchRepository
 import com.epubpro.domain.model.BookSourceFormat
@@ -32,7 +39,7 @@ import java.io.File
 import java.io.IOException
 
 /**
- * Worker chuyển đổi file PRC/MOBI/AZW3 thành EPUB và nạp vào thư viện.
+ * Worker chuyển đổi file PRC/MOBI/AZW3 thành EPUB (hoặc giữ nguyên archive CBZ) và nạp vào thư viện.
  *
  * File nguồn và file đích đều nằm trong app-private storage nên WorkManager có thể tiếp tục
  * sau khi process bị kill; bản ghi sách chỉ được ghi sau khi EPUB đã commit hoàn chỉnh.
@@ -45,7 +52,8 @@ class LocalBookImportWorker @AssistedInject constructor(
     private val epubEngine: EpubEngine,
     private val bookRepository: BookRepository,
     private val searchRepository: SearchRepository,
-    private val replacement: LocalBookReplacement
+    private val replacement: LocalBookReplacement,
+    private val storageManager: EpubStorageManager
 ) : CoroutineWorker(appContext, workerParams) {
 
     private val notificationManager =
@@ -76,6 +84,19 @@ class LocalBookImportWorker @AssistedInject constructor(
             if (committed != null && committed.filePath == outputFile.absolutePath) {
                 sourceFile.delete()
                 return Result.success(workDataOf(KEY_TITLE to committed.title, KEY_BOOK_ID to committed.id, KEY_PROGRESS to 100))
+            }
+            if (scheduledSourceFormat == BookSourceFormat.CBZ) {
+                val comic = importComic(sourceFile, outputFile, originalName)
+                updateProgress(BookConversionStage.COMPLETED, 100, comic.title)
+                showSuccessNotification(comic.title)
+                return Result.success(
+                    workDataOf(
+                        KEY_TITLE to comic.title,
+                        KEY_BOOK_ID to comic.id,
+                        KEY_SOURCE_FORMAT to BookSourceFormat.CBZ.name,
+                        KEY_PROGRESS to 100
+                    )
+                )
             }
             var lastProgress = -1
             val conversion = when {
@@ -157,6 +178,61 @@ class LocalBookImportWorker @AssistedInject constructor(
             outputFile.delete()
         }
         Unit
+    }
+
+    /**
+     * Đưa archive CBZ vào thư viện mà không chuyển đổi: chuyển file vào vị trí đích, đọc metadata,
+     * tạo ảnh bìa và ghi bản ghi sách. Truyện tranh không có chữ nên bỏ qua bước index FTS.
+     *
+     * Hàm idempotent với process death: nếu nguồn đã được chuyển sang đích ở lần chạy trước thì
+     * tiếp tục từ file đích.
+     *
+     * @param sourceFile Bản sao nguồn trong storage nội bộ.
+     * @param outputFile File CBZ đích, tên file là ID sách.
+     * @param originalName Tên file gốc dùng làm tiêu đề dự phòng.
+     * @return Sách đã được ghi vào thư viện.
+     * @throws BookConversionException Nếu archive không có trang ảnh hợp lệ.
+     * @throws IOException Nếu không chuyển được file nguồn sang đích.
+     */
+    private suspend fun importComic(sourceFile: File, outputFile: File, originalName: String): Book {
+        updateProgress(BookConversionStage.PACKAGING, 30, originalName)
+        if (sourceFile.isFile) {
+            if (outputFile.exists()) outputFile.delete()
+            if (!sourceFile.renameTo(outputFile)) {
+                sourceFile.inputStream().use { input ->
+                    outputFile.outputStream().use { output ->
+                        input.copyTo(output)
+                        output.fd.sync()
+                    }
+                }
+                sourceFile.delete()
+            }
+        }
+        val archive = try {
+            ComicArchive.open(outputFile)
+        } catch (error: ComicArchiveException) {
+            throw BookConversionException(BookConversionErrorCode.INVALID_OR_CORRUPTED_FILE, error)
+        }
+        val book = archive.use {
+            val coverPath = runCatching {
+                ComicPageDecoder.writeCover(it.readPageBytes(0), storageManager.comicCoverFile(outputFile))
+            }.getOrNull()
+            val now = System.currentTimeMillis()
+            Book(
+                id = outputFile.name,
+                title = it.info.resolveTitle(originalName.substringBeforeLast('.').ifBlank { originalName }),
+                author = it.info.resolveAuthor(),
+                coverPath = coverPath,
+                filePath = outputFile.absolutePath,
+                addedAt = now,
+                lastReadAt = now,
+                totalChapters = it.pageCount,
+                sourceFormat = BookSourceFormat.CBZ
+            )
+        }
+        updateProgress(BookConversionStage.PACKAGING, 92, book.title)
+        bookRepository.insertBook(book)
+        return book
     }
 
     /**

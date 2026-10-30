@@ -2,6 +2,8 @@ package com.epubpro.core.reader.tts
 
 import com.epubpro.core.reader.engine.EpubChapterHeader
 import com.epubpro.core.reader.engine.EpubEngine
+import com.epubpro.core.convert.HtmlConverter
+import com.epubpro.core.storage.ConvertDictionaryStore
 import com.epubpro.core.storage.EpubStorageManager
 import com.epubpro.domain.model.AiChapterStatus
 import com.epubpro.domain.model.Book
@@ -9,6 +11,7 @@ import com.epubpro.domain.model.ReadingProgress
 import com.epubpro.domain.model.TtsChunk
 import com.epubpro.domain.repository.AiChapterRepository
 import com.epubpro.domain.repository.BookRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -27,7 +30,8 @@ class TtsChapterPlaybackCoordinator @Inject constructor(
     private val bookRepository: BookRepository,
     private val aiChapterRepository: AiChapterRepository,
     private val storageManager: EpubStorageManager,
-    private val epubEngine: EpubEngine
+    private val epubEngine: EpubEngine,
+    private val convertStore: ConvertDictionaryStore
 ) {
     private data class Session(
         val book: Book,
@@ -65,7 +69,7 @@ class TtsChapterPlaybackCoordinator @Inject constructor(
     }
 
     suspend fun loadChapter(chapterIndex: Int): TtsChapterContent? = withContext(Dispatchers.IO) {
-        val activeSession = session ?: error("Phiên TTS chưa được chuẩn bị")
+        val activeSession = refreshIfBookFileReplaced(session ?: error("Phiên TTS chưa được chuẩn bị"))
         val header = activeSession.headers.getOrNull(chapterIndex) ?: return@withContext null
         val sourceHtml = epubEngine.loadChapterHtml(activeSession.file, header.entryName)
         val aiHtml = if (activeSession.preferAiContent) {
@@ -73,7 +77,8 @@ class TtsChapterPlaybackCoordinator @Inject constructor(
         } else {
             null
         }
-        val chunks = TtsTextParser.parseHtmlToChunks(aiHtml ?: sourceHtml)
+        val convertedHtml = if (aiHtml == null) loadConvertedHtml(activeSession.book.id, sourceHtml) else null
+        val chunks = TtsTextParser.parseHtmlToChunks(aiHtml ?: convertedHtml ?: sourceHtml)
         TtsChapterContent(
             chapterIndex = chapterIndex,
             chapterTitle = header.title,
@@ -122,6 +127,44 @@ class TtsChapterPlaybackCoordinator @Inject constructor(
     fun clear() {
         preparationGeneration.incrementAndGet()
         session = null
+    }
+
+    /**
+     * Nạp lại phiên khi file EPUB của sách đã bị thay (ví dụ truyện web vừa tải thêm chương),
+     * để TTS chạy nền đọc file mới thay vì file cũ đã bị xóa.
+     *
+     * @param current Phiên đang dùng.
+     * @return Phiên mới nếu file đã đổi, ngược lại chính phiên hiện tại.
+     */
+    private suspend fun refreshIfBookFileReplaced(current: Session): Session {
+        if (current.file.isFile) return current
+        val book = bookRepository.getBookById(current.book.id) ?: return current
+        val file = storageManager.getBookFile(book.filePath)
+        if (!file.isFile) return current
+        return Session(book, file, epubEngine.extractChapterHeaders(file), current.preferAiContent)
+            .also { session = it }
+    }
+
+    /**
+     * Convert chương bằng từ điển Hán-Việt khi sách đang bật Convert, để TTS chuyển chương ngầm
+     * (màn hình tắt, Reader không hoạt động) vẫn đọc bản tiếng Việt giống Reader.
+     *
+     * @param bookId ID sách.
+     * @param sourceHtml HTML gốc của chương.
+     * @return HTML đã convert, hoặc null nếu không bật Convert, chưa có từ điển hoặc convert lỗi.
+     */
+    private suspend fun loadConvertedHtml(bookId: String, sourceHtml: String): String? {
+        if (!convertStore.isConvertEnabled(bookId)) return null
+        val converter = convertStore.createConverter(bookId) ?: return null
+        return withContext(Dispatchers.Default) {
+            try {
+                HtmlConverter.convert(sourceHtml, converter)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                null
+            }
+        }
     }
 
     private suspend fun loadValidAiCache(

@@ -28,7 +28,12 @@ import androidx.compose.ui.res.stringResource
 import com.epubpro.core.designsystem.R
 import com.epubpro.core.reader.tts.TtsOpenBookContract
 import com.epubpro.core.reader.tts.TtsOpenBookRequest
+import com.epubpro.domain.model.BookSourceFormat
 import com.epubpro.feature.bookmark.BookmarkScreen
+import com.epubpro.feature.browser.BrowserScreen
+import com.epubpro.feature.browser.BrowserViewModel
+import com.epubpro.feature.comic.ComicReaderScreen
+import com.epubpro.feature.comic.ComicReaderViewModel
 import com.epubpro.feature.library.LibraryScreen
 import com.epubpro.feature.profile.ProfileScreen
 import com.epubpro.feature.profile.sync.SyncScreen
@@ -45,7 +50,9 @@ import kotlinx.coroutines.flow.emptyFlow
 fun AppNavHost(
     navController: NavHostController,
     openBookRequests: Flow<TtsOpenBookRequest> = emptyFlow(),
-    openLibraryRequests: Flow<Unit> = emptyFlow()
+    openLibraryRequests: Flow<Unit> = emptyFlow(),
+    openComicRequests: Flow<String> = emptyFlow(),
+    openBrowserRequests: Flow<String> = emptyFlow()
 ) {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
@@ -62,6 +69,25 @@ fun AppNavHost(
                     openTtsPlayer = request.openTtsPlayer
                 )
             ) {
+                launchSingleTop = true
+            }
+        }
+    }
+
+    LaunchedEffect(navController, openComicRequests) {
+        openComicRequests.collect { bookId ->
+            if (navController.currentDestination?.route == Screen.ComicReader.route) {
+                navController.popBackStack()
+            }
+            navController.navigate(Screen.ComicReader.createRoute(bookId)) {
+                launchSingleTop = true
+            }
+        }
+    }
+
+    LaunchedEffect(navController, openBrowserRequests) {
+        openBrowserRequests.collect { url ->
+            navController.navigate(Screen.Browser.createRoute(url)) {
                 launchSingleTop = true
             }
         }
@@ -171,8 +197,13 @@ fun AppNavHost(
 
             composable(Screen.Bookshelf.route) {
                 LibraryScreen(
-                    onBookClick = { bookId ->
-                        navController.navigate(Screen.Reader.createRoute(bookId))
+                    onBookClick = { bookId, sourceFormat ->
+                        val route = if (sourceFormat == BookSourceFormat.CBZ) {
+                            Screen.ComicReader.createRoute(bookId)
+                        } else {
+                            Screen.Reader.createRoute(bookId)
+                        }
+                        navController.navigate(route)
                     },
                     onNavigateToBookmarks = {
                         navController.navigate(Screen.Bookmark.createRoute("global"))
@@ -181,7 +212,8 @@ fun AppNavHost(
                         navController.navigate(Screen.Browse.route) {
                             launchSingleTop = true
                         }
-                    }
+                    },
+                    onNavigateToBrowser = { navController.navigate(Screen.Browser.createRoute(null)) }
                 )
             }
 
@@ -217,7 +249,14 @@ fun AppNavHost(
                     onNavigateToAudioSettings = { navController.navigate(Screen.AudioSettings.route) },
                     onNavigateToReadingDefaults = { navController.navigate(Screen.ReadingDefaults.route) },
                     onNavigateToContentFilter = { navController.navigate(Screen.ContentFilter.route) },
-                    onNavigateToSync = { navController.navigate(Screen.Sync.route) }
+                    onNavigateToSync = { navController.navigate(Screen.Sync.route) },
+                    onNavigateToConvertDictionaries = { navController.navigate(Screen.ConvertDictionaries.route) }
+                )
+            }
+
+            composable(Screen.ConvertDictionaries.route) {
+                com.epubpro.feature.profile.convert.ConvertDictionaryScreen(
+                    onNavigateBack = { navController.popBackStack() }
                 )
             }
 
@@ -277,6 +316,29 @@ fun AppNavHost(
                         navController.navigate(Screen.BookBible.createRoute("LOCAL_EPUB", bookId, chapterNumber))
                     }
                 )
+            }
+
+            composable(
+                route = Screen.Browser.route,
+                arguments = listOf(
+                    navArgument(BrowserViewModel.ARG_URL) {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    }
+                )
+            ) {
+                BrowserScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    onOpenBook = { bookId -> navController.navigate(Screen.Reader.createRoute(bookId)) }
+                )
+            }
+
+            composable(
+                route = Screen.ComicReader.route,
+                arguments = listOf(navArgument(ComicReaderViewModel.ARG_BOOK_ID) { type = NavType.StringType })
+            ) {
+                ComicReaderScreen(onNavigateBack = { navController.popBackStack() })
             }
 
             composable(
@@ -344,6 +406,15 @@ sealed class Screen(val route: String) {
         }
     }
 
+    object Browser : Screen("browser?${BrowserViewModel.ARG_URL}={${BrowserViewModel.ARG_URL}}") {
+        fun createRoute(url: String?): String =
+            if (url.isNullOrBlank()) "browser" else "browser?${BrowserViewModel.ARG_URL}=${Uri.encode(url)}"
+    }
+
+    object ComicReader : Screen("comic_reader/{${ComicReaderViewModel.ARG_BOOK_ID}}") {
+        fun createRoute(bookId: String): String = "comic_reader/${Uri.encode(bookId)}"
+    }
+
     object BookBible : Screen("book_bible/{sourceType}/{sourceId}/{chapterNumber}") {
         fun createRoute(sourceType: String, sourceId: String, chapterNumber: Int): String {
             return "book_bible/${Uri.encode(sourceType)}/${Uri.encode(sourceId)}/$chapterNumber"
@@ -373,6 +444,7 @@ sealed class Screen(val route: String) {
     }
     object Profile : Screen("profile")
     object Sync : Screen("sync")
+    object ConvertDictionaries : Screen("convert_dictionaries")
     object Login : Screen("login")
     object AudioSettings : Screen("audio_settings")
     object ReadingDefaults : Screen("reading_defaults")

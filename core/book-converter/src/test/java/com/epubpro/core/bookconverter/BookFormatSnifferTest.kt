@@ -54,6 +54,23 @@ class BookFormatSnifferTest {
         }
     }
 
+    /** Kiểm tra `.cbz` và ZIP chỉ chứa ảnh được nhận là truyện tranh CBZ. */
+    @Test
+    fun recognizesComicArchives() {
+        assertEquals(BookSourceFormat.CBZ, sniffer.sniff(File("comic.CBZ")))
+        val imageZip = Files.createTempFile("book-comic-", ".zip").toFile()
+        try {
+            java.util.zip.ZipOutputStream(java.io.FileOutputStream(imageZip)).use { zos ->
+                zos.putNextEntry(java.util.zip.ZipEntry("001.jpg"))
+                zos.write(byteArrayOf(1, 2, 3))
+                zos.closeEntry()
+            }
+            assertEquals(BookSourceFormat.CBZ, sniffer.sniff(imageZip))
+        } finally {
+            imageZip.delete()
+        }
+    }
+
     /**
      * Tạo file tạm có định dạng ZIP chứa entry mimetype của EPUB để kiểm thử.
      *

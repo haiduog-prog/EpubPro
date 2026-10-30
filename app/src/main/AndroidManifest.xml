@@ -72,6 +72,8 @@
                 <data android:mimeType="application/epub+zip" />
                 <data android:mimeType="application/epub" />
                 <data android:mimeType="application/x-zip-compressed-epub" />
+                <data android:mimeType="application/vnd.comicbook+zip" />
+                <data android:mimeType="application/x-cbz" />
             </intent-filter>
 
             <!-- Nhận mở file EPUB từ file manager với MIME generic hoặc wildcard kèm đuôi .epub -->
@@ -93,6 +95,8 @@
                 <data android:pathPattern=".*\\..*\\..*\\..*\\.EPUB" />
                 <data android:pathSuffix=".epub" />
                 <data android:pathSuffix=".EPUB" />
+                <data android:pathSuffix=".cbz" />
+                <data android:pathSuffix=".CBZ" />
             </intent-filter>
 
             <!-- Nhận mở file EPUB từ URI không có mimeType nhưng có phần mở rộng .epub -->
@@ -113,15 +117,26 @@
                 <data android:pathPattern=".*\\..*\\..*\\..*\\.EPUB" />
                 <data android:pathSuffix=".epub" />
                 <data android:pathSuffix=".EPUB" />
+                <data android:pathSuffix=".cbz" />
+                <data android:pathSuffix=".CBZ" />
             </intent-filter>
 
-            <!-- Nhận chia sẻ file EPUB từ ứng dụng khác -->
+            <!-- Nhận liên kết web được chia sẻ dạng văn bản để mở trong trình duyệt tích hợp -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+
+            <!-- Nhận chia sẻ file EPUB/CBZ từ ứng dụng khác -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/epub+zip" />
                 <data android:mimeType="application/epub" />
                 <data android:mimeType="application/x-zip-compressed-epub" />
+                <data android:mimeType="application/vnd.comicbook+zip" />
+                <data android:mimeType="application/x-cbz" />
             </intent-filter>
         </activity>
         <receiver

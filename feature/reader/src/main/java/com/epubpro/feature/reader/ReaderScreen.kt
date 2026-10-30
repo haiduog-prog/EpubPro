@@ -52,7 +52,9 @@ import androidx.compose.material.icons.filled.NavigateBefore
 import androidx.compose.material.icons.filled.NavigateNext
 import androidx.compose.material.icons.filled.Nightlight
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.TextFields
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.outlined.AutoStories
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -307,9 +309,7 @@ fun ReaderScreen(
 
                 EpubProWebView(
                     htmlContent = uiState.displayedChapterHtml,
-                    preSanitizedHtml = uiState.sanitizedCurrentChapterHtml.takeIf {
-                        uiState.contentVersion == ReaderContentVersion.ORIGINAL
-                    },
+                    preSanitizedHtml = uiState.preSanitizedDisplayedHtml,
                     previousChapterHtml = uiState.previousChapterHtml,
                     nextChapterHtml = uiState.nextChapterHtml,
                     preSanitizedPreviousChapterHtml = uiState.sanitizedPreviousChapterHtml,
@@ -462,6 +462,45 @@ fun ReaderScreen(
                                     val bookId = uiState.book?.id ?: ""
                                     val chapterNumber = uiState.currentChapterIndex + 1
                                     onOpenBookBible(bookId, chapterNumber)
+                                }
+                            )
+                            if (uiState.isWebNovel) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            stringResource(
+                                                if (uiState.isAppendingChapters) {
+                                                    R.string.reader_web_chapters_loading
+                                                } else {
+                                                    R.string.reader_web_load_more
+                                                }
+                                            )
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Default.CloudDownload,
+                                            contentDescription = null
+                                        )
+                                    },
+                                    enabled = !uiState.isAppendingChapters,
+                                    onClick = {
+                                        showReaderOverflowMenu = false
+                                        viewModel.loadMoreWebChapters()
+                                    }
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.convert_menu_action)) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Translate,
+                                        contentDescription = null
+                                    )
+                                },
+                                onClick = {
+                                    showReaderOverflowMenu = false
+                                    viewModel.openConvertSheet()
                                 }
                             )
                             DropdownMenuItem(
@@ -653,6 +692,44 @@ fun ReaderScreen(
                 onSaveRule = viewModel::saveAiRule,
                 onDeleteRule = viewModel::deleteAiRule
             )
+        }
+
+        if (uiState.showConvertSheet) {
+            ConvertBottomSheet(
+                enabled = uiState.convertEnabled,
+                hasDictionary = uiState.convertHasDictionary,
+                names = uiState.convertNames,
+                onDismiss = viewModel::dismissConvertSheet,
+                onToggle = viewModel::setConvertEnabled,
+                onSaveName = viewModel::saveConvertName,
+                onDeleteName = viewModel::deleteConvertName
+            )
+        }
+
+        LaunchedEffect(uiState.webNovelMessageRes) {
+            uiState.webNovelMessageRes?.let { messageRes ->
+                Toast.makeText(
+                    context,
+                    context.getString(messageRes, uiState.webNovelMessageArg),
+                    Toast.LENGTH_SHORT
+                ).show()
+                viewModel.consumeWebNovelMessage()
+            }
+        }
+
+        LaunchedEffect(uiState.convertMessageRes) {
+            uiState.convertMessageRes?.let { messageRes ->
+                Toast.makeText(context, context.getString(messageRes), Toast.LENGTH_LONG).show()
+                viewModel.consumeConvertMessage()
+            }
+        }
+
+        LaunchedEffect(uiState.convertSuggested) {
+            if (uiState.convertSuggested) {
+                Toast.makeText(context, context.getString(R.string.convert_suggestion), Toast.LENGTH_LONG).show()
+                // Sự kiện một lần: tiêu thụ ngay để quay lại Reader từ màn hình khác không hiện lại.
+                viewModel.consumeConvertSuggestion()
+            }
         }
 
         uiState.replaceTextPattern?.let { pattern ->

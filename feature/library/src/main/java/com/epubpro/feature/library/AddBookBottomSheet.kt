@@ -9,6 +9,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -37,7 +38,8 @@ fun AddBookBottomSheet(
     onNavigateToOnlineLibrary: () -> Unit,
     onPickLocalEpub: () -> Unit,
     onUploadEpubToServer: () -> Unit,
-    onPickDriveBook: () -> Unit
+    onPickDriveBook: () -> Unit,
+    onOpenBrowser: () -> Unit
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
@@ -67,6 +69,20 @@ fun AddBookBottomSheet(
                 onClick = {
                     onDismissRequest()
                     onNavigateToOnlineLibrary()
+                }
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            AddBookOptionItem(
+                icon = Icons.Default.Language,
+                title = stringResource(R.string.add_book_browser),
+                subtitle = stringResource(R.string.add_book_browser_desc),
+                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                iconTint = MaterialTheme.colorScheme.onTertiaryContainer,
+                onClick = {
+                    onDismissRequest()
+                    onOpenBrowser()
                 }
             )
 

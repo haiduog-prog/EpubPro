@@ -9,6 +9,8 @@ import androidx.work.workDataOf
 import com.epubpro.core.bookconverter.BookConversionErrorCode
 import com.epubpro.core.bookconverter.BookConversionException
 import com.epubpro.core.bookconverter.BookFormatSniffer
+import com.epubpro.core.bookconverter.MobiEpubConverter
+import com.epubpro.core.storage.BookFileTooLargeException
 import com.epubpro.core.storage.EpubStorageManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -100,6 +102,7 @@ class LocalBookImportScheduler @Inject constructor(
      * @param originalName Tên hiển thị gốc của file.
      * @return ID WorkManager, hoặc null khi đang chờ lựa chọn cho EPUB trùng ID.
      * @throws BookConversionException Nếu phần mở rộng không được hỗ trợ.
+     * @throws BookFileTooLargeException Nếu file vượt giới hạn dung lượng của định dạng thực tế.
      */
     suspend fun enqueue(uri: Uri, originalName: String?): UUID? = withContext(Dispatchers.IO) {
         val sourceFile = storageManager.importLocalBookSource(uri, originalName)
@@ -107,6 +110,11 @@ class LocalBookImportScheduler @Inject constructor(
         if (sourceFormat == null) {
             sourceFile.delete()
             throw BookConversionException(BookConversionErrorCode.UNSUPPORTED_EXTENSION)
+        }
+        // File `.zip` được sao lưu với giới hạn truyện tranh (1 GiB); nếu thực tế là ebook chữ thì áp lại giới hạn 100 MiB.
+        if (sourceFormat != BookSourceFormat.CBZ && sourceFile.length() > MobiEpubConverter.MAX_INPUT_BYTES) {
+            sourceFile.delete()
+            throw BookFileTooLargeException(MobiEpubConverter.MAX_INPUT_BYTES)
         }
 
         try {
@@ -154,7 +162,11 @@ class LocalBookImportScheduler @Inject constructor(
         replacementBookId: String? = null,
         identifier: String? = null
     ): UUID {
-        val outputFile = storageManager.createConvertedEpubFile()
+        val outputFile = if (sourceFormat == BookSourceFormat.CBZ) {
+            storageManager.createComicFile()
+        } else {
+            storageManager.createConvertedEpubFile()
+        }
         val request = OneTimeWorkRequestBuilder<LocalBookImportWorker>()
             .setInputData(
                 workDataOf(
