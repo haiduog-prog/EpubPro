@@ -61,15 +61,21 @@ object ArticleExtractor {
         val links = ChapterLinkDetector.detect(document, url)
         val pageTitle = document.title().trim()
         val headingTitle = document.selectFirst("h1")?.text()?.trim()?.takeIf { it.isNotEmpty() }
+        val explicitChapterTitle = document.selectFirst(".chapter-title, #chapter-title, [itemprop=headline]")
+            ?.text()?.trim()?.takeIf { it.isNotEmpty() }
         val novelTitle = document.selectFirst("meta[property=og:novel:book_name]")?.attr("content")?.trim()
             ?.takeIf { it.isNotEmpty() }
+        val author = document.selectFirst("meta[property=article:author], meta[property=og:novel:author]")
+            ?.attr("content")?.trim()?.takeIf { it.isNotEmpty() }
 
         cleanDocument(document)
         val body = document.body() ?: return null
         val best = pickBestCandidate(body) ?: return null
         val paragraphs = toParagraphs(best).toMutableList()
 
-        val chapterTitle = headingTitle
+        val chapterTitle = explicitChapterTitle
+            ?: titleParts(pageTitle).firstOrNull { it.matches(Regex("(?i)^(chương|chuong|chapter)\\s+\\d+.*")) }
+            ?: headingTitle
             ?: best.selectFirst("h1, h2, h3")?.text()?.trim()?.takeIf { it.isNotEmpty() }
             ?: titleParts(pageTitle).firstOrNull()
             ?: pageTitle
@@ -81,7 +87,8 @@ object ArticleExtractor {
             title = chapterTitle,
             novelTitle = novelTitle ?: guessNovelTitle(pageTitle, chapterTitle),
             paragraphs = paragraphs,
-            links = links
+            links = links,
+            author = author
         )
     }
 

@@ -90,7 +90,8 @@ object EpubWriter {
             val document = zip.getInputStream(entry).use { Jsoup.parse(it, "UTF-8", "", Parser.xmlParser()) }
             WebNovelChapter(
                 title = document.selectFirst("h2")?.text().orEmpty(),
-                paragraphs = document.select("p").map { it.text() }
+                paragraphs = document.select("p").map { it.text() },
+                sourceUrl = document.selectFirst("meta[name=epubpro-source-url]")?.attr("content")?.takeIf { it.isNotBlank() }
             )
         }
     }
@@ -157,7 +158,9 @@ object EpubWriter {
         append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
         append("<!DOCTYPE html>\n")
         append("<html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"${escape(language)}\" lang=\"${escape(language)}\">\n")
-        append("<head><title>${escape(chapter.title)}</title><link rel=\"stylesheet\" type=\"text/css\" href=\"../style.css\"/></head>\n")
+        append("<head><title>${escape(chapter.title)}</title><link rel=\"stylesheet\" type=\"text/css\" href=\"../style.css\"/>")
+        chapter.sourceUrl?.let { append("<meta name=\"epubpro-source-url\" content=\"${escape(it)}\"/>") }
+        append("</head>\n")
         append("<body>\n<h2>${escape(chapter.title)}</h2>\n")
         chapter.paragraphs.forEach { append("<p>").append(escape(it)).append("</p>\n") }
         append("</body>\n</html>\n")

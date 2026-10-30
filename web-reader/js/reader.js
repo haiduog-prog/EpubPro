@@ -253,13 +253,26 @@ class EpubProReader {
       fileInput: document.getElementById("file-input"),
       dropZone: document.getElementById("drop-zone"),
 
-      // TTS Mini Player Bar (TtsMiniPlayerBar.kt)
+      // TTS Voice Reader Floating Audio Capsule (Kéo thả tự do, siêu nhỏ gọn)
       ttsMiniBar: document.getElementById("tts-mini-bar"),
+      ttsDragHandle: document.getElementById("tts-drag-handle"),
+      ttsBarSkipPrev: document.getElementById("tts-bar-skip-prev"),
       ttsMiniPlayBtn: document.getElementById("tts-mini-play-btn"),
       ttsMiniPlayIcon: document.getElementById("tts-mini-play-icon"),
+      ttsBarSkipNext: document.getElementById("tts-bar-skip-next"),
+      ttsBarChunkBadge: document.getElementById("tts-bar-chunk-badge"),
+      ttsBarVisualizer: document.getElementById("tts-bar-visualizer"),
+      ttsBarVoiceLabel: document.getElementById("tts-bar-voice-label"),
       ttsMiniInfoExpand: document.getElementById("tts-mini-info-expand"),
       ttsMiniStatusText: document.getElementById("tts-mini-status-text"),
       ttsMiniText: document.getElementById("tts-mini-text"),
+      ttsFloatSettingsBtn: document.getElementById("tts-float-settings-btn"),
+      ttsFloatPopover: document.getElementById("tts-float-popover"),
+      ttsPopoverCloseBtn: document.getElementById("tts-popover-close-btn"),
+      ttsBarVoiceSelect: document.getElementById("tts-bar-voice-select"),
+      ttsBarSpeedSelect: document.getElementById("tts-bar-speed-select"),
+      btnBarOpenCatalog: document.getElementById("btn-bar-open-catalog"),
+      barVoiceBadgeCount: document.getElementById("bar-voice-badge-count"),
       ttsMiniExpandBtn: document.getElementById("tts-mini-expand-btn"),
       ttsMiniCloseBtn: document.getElementById("tts-mini-close-btn"),
 
@@ -1024,11 +1037,14 @@ class EpubProReader {
    * Cập nhật số lượng giọng đọc AI đã tải về máy trên huy hiệu và thanh thống kê
    */
   updateVoiceBadgeCount() {
+    const count = this.tts.downloadedVoiceIds ? this.tts.downloadedVoiceIds.size : 1;
     if (this.dom.aiVoiceBadgeCount) {
-      this.dom.aiVoiceBadgeCount.textContent = this.tts.downloadedVoiceIds.size;
+      this.dom.aiVoiceBadgeCount.textContent = count;
+    }
+    if (this.dom.barVoiceBadgeCount) {
+      this.dom.barVoiceBadgeCount.textContent = count;
     }
     if (this.dom.voiceStatsInfo) {
-      const count = this.tts.downloadedVoiceIds.size;
       const totalMb = (count * 60.6).toFixed(1);
       this.dom.voiceStatsInfo.innerHTML = `
         <span>💾 Đã tải về: <strong>${count} / 25</strong> mô hình</span>
@@ -1039,61 +1055,65 @@ class EpubProReader {
   }
 
   /**
-   * Nạp danh mục giọng đọc AI Tiếng Việt vào dropdown trình phát
+   * Nạp danh mục giọng đọc AI Tiếng Việt vào các dropdown trình phát (cả Voice Bar và Full Player)
    * Loại bỏ hoàn toàn các giọng tiếng Anh mặc định của hệ điều hành
    */
   initTtsVoices() {
-    const select = this.dom.ttsFullVoiceSelect;
-    if (!select) return;
+    const selects = [this.dom.ttsFullVoiceSelect, this.dom.ttsBarVoiceSelect].filter(Boolean);
+    if (selects.length === 0) return;
 
-    select.innerHTML = "";
     const catalog = window.TtsVoiceCatalog || [];
     const downloadedIds = this.tts.downloadedVoiceIds || new Set(["quang_minh", "ngoc_ngan"]);
     if (this.tts.selectedAiVoiceId) {
       downloadedIds.add(this.tts.selectedAiVoiceId);
     }
 
-    // Nhóm 1: Giọng đã tải về máy (Sẵn sàng Offline)
-    const downloadedVoices = catalog.filter(v => downloadedIds.has(v.id));
-    if (downloadedVoices.length > 0) {
-      const groupDownloaded = document.createElement("optgroup");
-      groupDownloaded.label = "⭐ Giọng AI Đã Tải Về (Sẵn sàng Offline)";
-      downloadedVoices.forEach(v => {
-        const opt = document.createElement("option");
-        opt.value = v.id;
-        opt.textContent = `🎙️ ${v.displayName} (${v.region} - ${v.gender})`;
-        if (v.id === this.tts.selectedAiVoiceId) opt.selected = true;
-        groupDownloaded.appendChild(opt);
-      });
-      select.appendChild(groupDownloaded);
-    }
-
-    // Nhóm 2: Các giọng AI khác trong danh mục (Tải từ HuggingFace)
-    const otherVoices = catalog.filter(v => !downloadedIds.has(v.id));
-    if (otherVoices.length > 0) {
-      const groupOther = document.createElement("optgroup");
-      groupOther.label = "☁️ Giọng AI Từ HuggingFace (Cần tải về)";
-      otherVoices.forEach(v => {
-        const opt = document.createElement("option");
-        opt.value = v.id;
-        opt.textContent = `📥 ${v.displayName} (${v.region} - ${v.downloadSize})`;
-        if (v.id === this.tts.selectedAiVoiceId) opt.selected = true;
-        groupOther.appendChild(opt);
-      });
-      select.appendChild(groupOther);
-    }
-
-    // Tùy chọn mở nhanh kho giọng
-    const optCatalog = document.createElement("option");
-    optCatalog.value = "__open_catalog__";
-    optCatalog.textContent = "⚙️ Quản lý & Tải thêm giọng AI...";
-    select.appendChild(optCatalog);
-
     // Đảm bảo có giọng được chọn hợp lệ
     if (!catalog.some(v => v.id === this.tts.selectedAiVoiceId)) {
       this.tts.selectedAiVoiceId = "quang_minh";
     }
-    select.value = this.tts.selectedAiVoiceId;
+
+    selects.forEach(select => {
+      select.innerHTML = "";
+
+      // Nhóm 1: Giọng đã tải về máy (Sẵn sàng Offline)
+      const downloadedVoices = catalog.filter(v => downloadedIds.has(v.id));
+      if (downloadedVoices.length > 0) {
+        const groupDownloaded = document.createElement("optgroup");
+        groupDownloaded.label = "⭐ Giọng AI Đã Tải Về";
+        downloadedVoices.forEach(v => {
+          const opt = document.createElement("option");
+          opt.value = v.id;
+          opt.textContent = `🎙️ ${v.displayName} (${v.region} - ${v.gender})`;
+          if (v.id === this.tts.selectedAiVoiceId) opt.selected = true;
+          groupDownloaded.appendChild(opt);
+        });
+        select.appendChild(groupDownloaded);
+      }
+
+      // Nhóm 2: Các giọng AI khác trong danh mục (Tải từ HuggingFace)
+      const otherVoices = catalog.filter(v => !downloadedIds.has(v.id));
+      if (otherVoices.length > 0) {
+        const groupOther = document.createElement("optgroup");
+        groupOther.label = "☁️ Giọng AI Từ HuggingFace";
+        otherVoices.forEach(v => {
+          const opt = document.createElement("option");
+          opt.value = v.id;
+          opt.textContent = `📥 ${v.displayName} (${v.region} - ${v.downloadSize})`;
+          if (v.id === this.tts.selectedAiVoiceId) opt.selected = true;
+          groupOther.appendChild(opt);
+        });
+        select.appendChild(groupOther);
+      }
+
+      // Tùy chọn mở nhanh kho giọng
+      const optCatalog = document.createElement("option");
+      optCatalog.value = "__open_catalog__";
+      optCatalog.textContent = "⚙️ Quản lý & Tải thêm giọng AI...";
+      select.appendChild(optCatalog);
+
+      select.value = this.tts.selectedAiVoiceId;
+    });
   }
 
   /**
@@ -1393,6 +1413,98 @@ class EpubProReader {
   }
 
   /**
+   * Xác định chỉ số đoạn văn (chunk) đầu tiên đang hiển thị trong tầm mắt trên màn hình đọc truyện
+   * Giúp bắt đầu nghe giọng AI ngay lập tức tại vị trí mắt người dùng đang đọc
+   *
+   * @return {number} Chỉ số đoạn văn (0-based)
+   */
+  getFirstVisibleChunkIndex() {
+    if (!this.tts.chunks || this.tts.chunks.length === 0) {
+      this.prepareTtsChunks();
+    }
+    if (!this.tts.chunks || this.tts.chunks.length === 0) return 0;
+
+    const isPaged = this.settings.readingMode === "paged";
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+
+    for (let i = 0; i < this.tts.chunks.length; i++) {
+      const el = this.tts.chunks[i].element;
+      if (!el) continue;
+      const rect = el.getBoundingClientRect();
+      if (isPaged) {
+        // Trong chế độ lật trang ngang, đoạn văn nằm trong phạm vi trang hiện tại
+        if (rect.right > 30 && rect.left < viewportWidth - 30 && rect.bottom > 40 && rect.top < viewportHeight) {
+          return i;
+        }
+      } else {
+        // Trong chế độ cuộn dọc, đoạn văn có thân nằm trong khung nhìn
+        if (rect.bottom > 80 && rect.top < viewportHeight - 80) {
+          return i;
+        }
+      }
+    }
+    return 0;
+  }
+
+  /**
+   * Xử lý thay đổi giọng đọc AI Tiếng Việt từ dropdown
+   * Đồng bộ giữa thanh Voice Bar và Full Player, cập nhật cache và phát tiếp bằng giọng mới
+   *
+   * @param {string} val Voice ID cần chọn
+   */
+  handleVoiceChange(val) {
+    if (val === "__open_catalog__") {
+      this.openVoiceCatalogModal();
+      if (this.dom.ttsFullVoiceSelect) this.dom.ttsFullVoiceSelect.value = this.tts.selectedAiVoiceId;
+      if (this.dom.ttsBarVoiceSelect) this.dom.ttsBarVoiceSelect.value = this.tts.selectedAiVoiceId;
+      return;
+    }
+    this.tts.selectedAiVoiceId = val;
+    this.tts.downloadedVoiceIds.add(val);
+    localStorage.setItem("epubpro_selected_ai_voice", val);
+    const catalog = window.TtsVoiceCatalog || [];
+    const model = catalog.find(v => v.id === val);
+    if (model) {
+      this.showToast(`Đã chọn giọng AI: ${model.displayName}`);
+    }
+    this.updateTtsUi();
+    if (this.audioPlayer) {
+      this.audioPlayer.pause();
+      this.audioPlayer.src = "";
+    }
+    if (this.tts.isPlaying) {
+      this.playTtsChunk(this.tts.currentChunkIndex);
+    }
+  }
+
+  /**
+   * Xử lý thay đổi tốc độ đọc
+   *
+   * @param {number} speed Tốc độ phát (0.75 - 2.0)
+   */
+  handleSpeedChange(speed) {
+    this.tts.speed = speed;
+    if (this.dom.ttsFullSpeedSelect) this.dom.ttsFullSpeedSelect.value = String(speed);
+    if (this.dom.ttsBarSpeedSelect) this.dom.ttsBarSpeedSelect.value = String(speed);
+    if (this.tts.isPlaying) {
+      if (this.audioPlayer && !this.audioPlayer.paused) {
+        const catalog = window.TtsVoiceCatalog || [];
+        const currentModel = catalog.find(v => v.id === this.tts.selectedAiVoiceId) || { id: "ngoc_ngan" };
+        let effectiveRate = this.tts.speed;
+        if (currentModel.id === "ngoc_ngan") effectiveRate *= 0.92;
+        else if (currentModel.id === "quang_minh") effectiveRate *= 0.96;
+        else if (currentModel.id === "ban_mai") effectiveRate *= 1.05;
+        else if (currentModel.id === "tran_thanh") effectiveRate *= 1.10;
+        else if (currentModel.id === "deep_man" || currentModel.id === "duy") effectiveRate *= 0.88;
+        this.audioPlayer.playbackRate = Math.min(2.0, Math.max(0.5, effectiveRate));
+      } else {
+        this.playTtsChunk(this.tts.currentChunkIndex);
+      }
+    }
+  }
+
+  /**
    * Bắt đầu phát âm thanh TTS cho chương sách hiện tại
    *
    * @param {number} chunkIndex Chỉ số đoạn văn bắt đầu đọc
@@ -1617,12 +1729,28 @@ class EpubProReader {
     const catalog = window.TtsVoiceCatalog || [];
     const currentModel = catalog.find(v => v.id === this.tts.selectedAiVoiceId) || { displayName: "Quang Minh" };
 
-    // Đồng bộ giá trị dropdown Giọng AI với model đang chọn
+    // Đồng bộ giá trị dropdown Giọng AI với model đang chọn ở cả 2 nơi
     if (this.dom.ttsFullVoiceSelect && this.dom.ttsFullVoiceSelect.value !== this.tts.selectedAiVoiceId) {
       this.dom.ttsFullVoiceSelect.value = this.tts.selectedAiVoiceId;
     }
+    if (this.dom.ttsBarVoiceSelect && this.dom.ttsBarVoiceSelect.value !== this.tts.selectedAiVoiceId) {
+      this.dom.ttsBarVoiceSelect.value = this.tts.selectedAiVoiceId;
+    }
+    if (this.dom.ttsBarSpeedSelect) {
+      this.dom.ttsBarSpeedSelect.value = String(this.tts.speed);
+    }
 
-    // Mini Player UI
+    // Voice Reader Bar UI
+    if (this.dom.ttsBarChunkBadge) {
+      this.dom.ttsBarChunkBadge.textContent = `${curIdx + 1} / ${total}`;
+      this.dom.ttsBarChunkBadge.title = `Đoạn ${curIdx + 1} / ${total}`;
+    }
+    if (this.dom.ttsBarVoiceLabel) {
+      this.dom.ttsBarVoiceLabel.textContent = `Giọng: ${currentModel.displayName}`;
+    }
+    if (this.dom.ttsBarVisualizer) {
+      this.dom.ttsBarVisualizer.classList.toggle("playing", this.tts.isPlaying);
+    }
     if (this.dom.ttsMiniText) {
       this.dom.ttsMiniText.textContent = curChunk.text || "Đang đọc...";
     }
@@ -1734,10 +1862,183 @@ class EpubProReader {
     if (this.dom.ttsMiniBar) this.dom.ttsMiniBar.classList.remove("active");
     if (this.dom.ttsFullPlayer) this.dom.ttsFullPlayer.classList.remove("active");
     if (this.dom.ttsAudioVisualizer) this.dom.ttsAudioVisualizer.classList.remove("playing");
+    if (this.dom.ttsBarVisualizer) this.dom.ttsBarVisualizer.classList.remove("playing");
+    if (this.dom.ttsFloatPopover) this.dom.ttsFloatPopover.classList.remove("active");
     if (this.tts.sleepTimerId) {
       clearTimeout(this.tts.sleepTimerId);
       this.tts.sleepTimerId = null;
     }
+  }
+
+  /**
+   * Khởi tạo cơ chế kéo thả tự do (Draggable) cho Floating Audio Widget
+   * Cho phép người dùng di chuyển thanh điều khiển giọng đọc đến bất kỳ vị trí nào trên màn hình
+   * để không bị che khuất văn bản truyện, đồng thời ghi nhớ vị trí người dùng đã chọn
+   */
+  initTtsFloatingDraggable() {
+    const el = this.dom.ttsMiniBar;
+    if (!el) return;
+
+    // Khôi phục vị trí đã lưu nếu có
+    const savedPos = localStorage.getItem("epubpro_tts_floating_pos");
+    if (savedPos) {
+      try {
+        const { left, top } = JSON.parse(savedPos);
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        if (left >= 0 && left < vw - 80 && top >= 0 && top < vh - 40) {
+          el.style.left = `${left}px`;
+          el.style.top = `${top}px`;
+          el.style.right = "auto";
+          el.style.bottom = "auto";
+          el.style.transform = "none";
+        }
+      } catch (e) {}
+    }
+
+    let isDragging = false;
+    let startX = 0;
+    let startY = 0;
+    let initialLeft = 0;
+    let initialTop = 0;
+    let hasMoved = false;
+
+    const onStart = (clientX, clientY, target) => {
+      // Không kích hoạt kéo thả nếu click vào nút, dropdown hoặc bên trong popover
+      if (target.closest("button") || target.closest("select") || target.closest(".tts-float-popover")) {
+        return;
+      }
+
+      isDragging = true;
+      hasMoved = false;
+      startX = clientX;
+      startY = clientY;
+
+      const rect = el.getBoundingClientRect();
+      initialLeft = rect.left;
+      initialTop = rect.top;
+
+      el.style.left = `${rect.left}px`;
+      el.style.top = `${rect.top}px`;
+      el.style.right = "auto";
+      el.style.bottom = "auto";
+      el.style.transform = "none";
+      el.classList.add("is-dragging");
+    };
+
+    const onMove = (clientX, clientY) => {
+      if (!isDragging) return;
+
+      const deltaX = clientX - startX;
+      const deltaY = clientY - startY;
+
+      if (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3) {
+        hasMoved = true;
+      }
+
+      const rect = el.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+
+      // Giới hạn trong viewport an toàn
+      const newLeft = Math.max(8, Math.min(vw - rect.width - 8, initialLeft + deltaX));
+      const newTop = Math.max(8, Math.min(vh - rect.height - 8, initialTop + deltaY));
+
+      el.style.left = `${newLeft}px`;
+      el.style.top = `${newTop}px`;
+
+      // Tự động flip popover nếu widget bị kéo lên sát mép trên màn hình
+      if (this.dom.ttsFloatPopover) {
+        if (newTop < 190) {
+          this.dom.ttsFloatPopover.classList.add("flip-down");
+        } else {
+          this.dom.ttsFloatPopover.classList.remove("flip-down");
+        }
+      }
+    };
+
+    const onEnd = () => {
+      if (!isDragging) return;
+      isDragging = false;
+      el.classList.remove("is-dragging");
+
+      if (hasMoved) {
+        const rect = el.getBoundingClientRect();
+        try {
+          localStorage.setItem("epubpro_tts_floating_pos", JSON.stringify({
+            left: Math.round(rect.left),
+            top: Math.round(rect.top)
+          }));
+        } catch (e) {}
+      }
+    };
+
+    // Sự kiện chuột máy tính
+    el.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      onStart(e.clientX, e.clientY, e.target);
+
+      const onMouseMove = (moveEvent) => onMove(moveEvent.clientX, moveEvent.clientY);
+      const onMouseUp = () => {
+        onEnd();
+        window.removeEventListener("mousemove", onMouseMove);
+        window.removeEventListener("mouseup", onMouseUp);
+      };
+
+      window.addEventListener("mousemove", onMouseMove);
+      window.addEventListener("mouseup", onMouseUp);
+    });
+
+    // Sự kiện cảm ứng thiết bị di động
+    el.addEventListener("touchstart", (e) => {
+      if (e.touches.length !== 1) return;
+      const touch = e.touches[0];
+      onStart(touch.clientX, touch.clientY, e.target);
+    }, { passive: true });
+
+    window.addEventListener("touchmove", (e) => {
+      if (!isDragging || e.touches.length !== 1) return;
+      const touch = e.touches[0];
+      onMove(touch.clientX, touch.clientY);
+    }, { passive: true });
+
+    window.addEventListener("touchend", () => {
+      if (isDragging) onEnd();
+    });
+
+    // Toggle popover cài đặt giọng & tốc độ
+    if (this.dom.ttsFloatSettingsBtn) {
+      this.dom.ttsFloatSettingsBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (this.dom.ttsFloatPopover) {
+          const rect = el.getBoundingClientRect();
+          if (rect.top < 190) {
+            this.dom.ttsFloatPopover.classList.add("flip-down");
+          } else {
+            this.dom.ttsFloatPopover.classList.remove("flip-down");
+          }
+          this.dom.ttsFloatPopover.classList.toggle("active");
+        }
+      });
+    }
+
+    if (this.dom.ttsPopoverCloseBtn) {
+      this.dom.ttsPopoverCloseBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (this.dom.ttsFloatPopover) {
+          this.dom.ttsFloatPopover.classList.remove("active");
+        }
+      });
+    }
+
+    // Đóng popover khi nhấp ra ngoài
+    document.addEventListener("click", (e) => {
+      if (this.dom.ttsFloatPopover && this.dom.ttsFloatPopover.classList.contains("active")) {
+        if (!el.contains(e.target)) {
+          this.dom.ttsFloatPopover.classList.remove("active");
+        }
+      }
+    });
   }
 
   openFullTtsPlayer() {
@@ -1967,17 +2268,61 @@ class EpubProReader {
     // TTS AUDIO EVENTS
     document.getElementById("btn-open-tts").addEventListener("click", () => {
       if (this.tts.isPlaying) {
-        this.openFullTtsPlayer();
+        this.toggleTtsPlayPause();
       } else {
-        this.startTts(0, true);
+        // Tự động tìm đoạn văn đang hiển thị đầu tiên trên màn hình đọc truyện
+        const startIdx = this.getFirstVisibleChunkIndex();
+        this.startTts(startIdx, false);
       }
     });
 
+    // Voice Reader Bar Controls (Đọc trực tiếp tại màn hình truyện)
+    if (this.dom.ttsBarSkipPrev) {
+      this.dom.ttsBarSkipPrev.addEventListener("click", () => {
+        this.playTtsChunk(this.tts.currentChunkIndex - 1);
+      });
+    }
     if (this.dom.ttsMiniPlayBtn) {
       this.dom.ttsMiniPlayBtn.addEventListener("click", () => this.toggleTtsPlayPause());
     }
+    if (this.dom.ttsBarSkipNext) {
+      this.dom.ttsBarSkipNext.addEventListener("click", () => {
+        this.playTtsChunk(this.tts.currentChunkIndex + 1);
+      });
+    }
     if (this.dom.ttsMiniInfoExpand) {
-      this.dom.ttsMiniInfoExpand.addEventListener("click", () => this.openFullTtsPlayer());
+      this.dom.ttsMiniInfoExpand.addEventListener("click", () => {
+        // Cuộn trang sách đến đoạn văn đang đọc
+        const curChunk = this.tts.chunks[this.tts.currentChunkIndex];
+        if (curChunk && curChunk.element) {
+          if (this.settings.readingMode === "paged") {
+            const viewportWidth = window.innerWidth || 1;
+            const rect = curChunk.element.getBoundingClientRect();
+            const targetX = rect.left + (window.scrollX || 0);
+            const targetPage = Math.floor(targetX / viewportWidth);
+            if (targetPage >= 0 && targetPage < this.totalPagesInChapter) {
+              this.goToPage(targetPage, true);
+            }
+          } else {
+            curChunk.element.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        }
+      });
+    }
+    if (this.dom.ttsBarVoiceSelect) {
+      this.dom.ttsBarVoiceSelect.addEventListener("change", (e) => {
+        this.handleVoiceChange(e.target.value);
+      });
+    }
+    if (this.dom.ttsBarSpeedSelect) {
+      this.dom.ttsBarSpeedSelect.addEventListener("change", (e) => {
+        this.handleSpeedChange(parseFloat(e.target.value));
+      });
+    }
+    if (this.dom.btnBarOpenCatalog) {
+      this.dom.btnBarOpenCatalog.addEventListener("click", () => {
+        this.openVoiceCatalogModal();
+      });
     }
     if (this.dom.ttsMiniExpandBtn) {
       this.dom.ttsMiniExpandBtn.addEventListener("click", () => this.openFullTtsPlayer());
@@ -1986,6 +2331,10 @@ class EpubProReader {
       this.dom.ttsMiniCloseBtn.addEventListener("click", () => this.stopTts());
     }
 
+    // Khởi tạo kéo thả tự do cho Floating Widget
+    this.initTtsFloatingDraggable();
+
+    // Full Player Modal Controls
     if (this.dom.ttsFullMinimizeBtn) {
       this.dom.ttsFullMinimizeBtn.addEventListener("click", () => this.closeFullTtsPlayer());
     }
@@ -2016,49 +2365,13 @@ class EpubProReader {
 
     if (this.dom.ttsFullSpeedSelect) {
       this.dom.ttsFullSpeedSelect.addEventListener("change", (e) => {
-        this.tts.speed = parseFloat(e.target.value);
-        if (this.tts.isPlaying) {
-          if (this.audioPlayer && !this.audioPlayer.paused) {
-            const catalog = window.TtsVoiceCatalog || [];
-            const currentModel = catalog.find(v => v.id === this.tts.selectedAiVoiceId) || { id: "ngoc_ngan" };
-            let effectiveRate = this.tts.speed;
-            if (currentModel.id === "ngoc_ngan") effectiveRate *= 0.92;
-            else if (currentModel.id === "quang_minh") effectiveRate *= 0.96;
-            else if (currentModel.id === "ban_mai") effectiveRate *= 1.05;
-            else if (currentModel.id === "tran_thanh") effectiveRate *= 1.10;
-            else if (currentModel.id === "deep_man" || currentModel.id === "duy") effectiveRate *= 0.88;
-            this.audioPlayer.playbackRate = Math.min(2.0, Math.max(0.5, effectiveRate));
-          } else {
-            this.playTtsChunk(this.tts.currentChunkIndex);
-          }
-        }
+        this.handleSpeedChange(parseFloat(e.target.value));
       });
     }
 
     if (this.dom.ttsFullVoiceSelect) {
       this.dom.ttsFullVoiceSelect.addEventListener("change", (e) => {
-        const val = e.target.value;
-        if (val === "__open_catalog__") {
-          this.openVoiceCatalogModal();
-          this.dom.ttsFullVoiceSelect.value = this.tts.selectedAiVoiceId;
-          return;
-        }
-        this.tts.selectedAiVoiceId = val;
-        this.tts.downloadedVoiceIds.add(val);
-        localStorage.setItem("epubpro_selected_ai_voice", val);
-        const catalog = window.TtsVoiceCatalog || [];
-        const model = catalog.find(v => v.id === val);
-        if (model) {
-          this.showToast(`Đã chọn giọng AI: ${model.displayName}`);
-        }
-        this.updateTtsUi();
-        if (this.audioPlayer) {
-          this.audioPlayer.pause();
-          this.audioPlayer.src = "";
-        }
-        if (this.tts.isPlaying) {
-          this.playTtsChunk(this.tts.currentChunkIndex);
-        }
+        this.handleVoiceChange(e.target.value);
       });
     }
 

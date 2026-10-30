@@ -9,6 +9,7 @@ import com.epubpro.core.storage.worker.WebNovelDownloadState
 import com.epubpro.core.designsystem.R
 import com.epubpro.core.storage.ConvertDictionaryStore
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -144,7 +145,8 @@ data class ReaderUiState(
     val isWebNovel: Boolean = false,
     val isAppendingChapters: Boolean = false,
     @androidx.annotation.StringRes val webNovelMessageRes: Int? = null,
-    val webNovelMessageArg: Int = 0
+    val webNovelMessageArg: Int = 0,
+    val webNovelFailedUrl: String? = null
 ) {
     /** true khi đang hiển thị bản Convert Hán-Việt của chương hiện tại. */
     val isShowingConverted: Boolean
@@ -344,6 +346,15 @@ class ReaderViewModel @Inject constructor(
                 .collect { (index, size) ->
                     if (size > 0 && index >= size - AUTO_APPEND_REMAINING_CHAPTERS) loadMoreWebChapters(auto = true)
                 }
+        }
+        viewModelScope.launch {
+            combine(bookRepository.getAllBooks(), _uiState.map { it.book?.filePath }.distinctUntilChanged()) { books, path -> books to path }
+                .collect { (books, currentPath) ->
+                val updated = books.firstOrNull { it.id == bookId } ?: return@collect
+                if (webNovelSourceStore.get(bookId) == null) return@collect
+                withContext(Dispatchers.IO) { webNovelSourceStore.reconcileReplacement(bookId, updated.filePath) }
+                if (currentPath != null && currentPath != updated.filePath) refreshAppendedChapters()
+            }
         }
         viewModelScope.launch {
             // Từ điển hoặc Name thay đổi: convert lại chương hiện tại, giữ nguyên trang đang đọc.
@@ -1205,7 +1216,12 @@ class ReaderViewModel @Inject constructor(
             _uiState.update { it.copy(isAppendingChapters = true) }
             val result = try {
                 val workId = withContext(Dispatchers.IO) { webNovelScheduler.enqueueAppend(bookId, APPEND_BATCH_CHAPTERS) }
-                webNovelScheduler.observe(workId).first { it !is WebNovelDownloadState.Running }
+                webNovelScheduler.observe(workId).first { workState ->
+                    if (workState is WebNovelDownloadState.Running && workState.waitingForNetwork) {
+                        _uiState.update { it.copy(webNovelMessageRes = R.string.reader_web_waiting_network) }
+                    }
+                    workState !is WebNovelDownloadState.Running
+                }
             } catch (error: CancellationException) {
                 throw error
             } catch (_: Exception) {
@@ -1217,20 +1233,19 @@ class ReaderViewModel @Inject constructor(
                 result is WebNovelDownloadState.Succeeded && result.newChapters > 0 -> {
                     refreshAppendedChapters()
                     _uiState.update {
-                        it.copy(webNovelMessageRes = R.string.reader_web_chapters_added, webNovelMessageArg = result.newChapters)
+                        it.copy(webNovelMessageRes = if (result.interrupted) R.string.reader_web_partial else R.string.reader_web_chapters_added, webNovelMessageArg = result.newChapters, webNovelFailedUrl = result.failedUrl)
                     }
                 }
-                auto -> Unit
                 result is WebNovelDownloadState.Succeeded ->
-                    _uiState.update { it.copy(webNovelMessageRes = R.string.web_novel_no_new_chapters) }
-                else -> _uiState.update { it.copy(webNovelMessageRes = R.string.web_novel_download_failed) }
+                    if (!auto) _uiState.update { it.copy(webNovelMessageRes = R.string.web_novel_no_new_chapters) }
+                else -> _uiState.update { it.copy(webNovelMessageRes = R.string.web_novel_download_failed, webNovelFailedUrl = (result as? WebNovelDownloadState.FailedAt)?.url) }
             }
         }
     }
 
     /** Xóa thông báo tải thêm chương đã hiển thị. */
     fun consumeWebNovelMessage() {
-        _uiState.update { it.copy(webNovelMessageRes = null) }
+        _uiState.update { it.copy(webNovelMessageRes = null, webNovelFailedUrl = null) }
     }
 
     /**

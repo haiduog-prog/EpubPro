@@ -12,6 +12,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import com.epubpro.core.storage.OnlineComicProgressStore
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -34,6 +36,8 @@ import com.epubpro.feature.browser.BrowserScreen
 import com.epubpro.feature.browser.BrowserViewModel
 import com.epubpro.feature.comic.ComicReaderScreen
 import com.epubpro.feature.comic.ComicReaderViewModel
+import com.epubpro.feature.comic.OnlineComicReaderScreen
+import com.epubpro.feature.comic.OnlineComicReaderViewModel
 import com.epubpro.feature.library.LibraryScreen
 import com.epubpro.feature.profile.ProfileScreen
 import com.epubpro.feature.profile.sync.SyncScreen
@@ -87,9 +91,7 @@ fun AppNavHost(
 
     LaunchedEffect(navController, openBrowserRequests) {
         openBrowserRequests.collect { url ->
-            navController.navigate(Screen.Browser.createRoute(url)) {
-                launchSingleTop = true
-            }
+            navController.navigate(Screen.Browser.createRoute(url))
         }
     }
 
@@ -196,14 +198,26 @@ fun AppNavHost(
             }
 
             composable(Screen.Bookshelf.route) {
+                val context = LocalContext.current
                 LibraryScreen(
                     onBookClick = { bookId, sourceFormat ->
-                        val route = if (sourceFormat == BookSourceFormat.CBZ) {
+                        val route = if (bookId.startsWith(OnlineComicProgressStore.COMIC_BOOK_ID_PREFIX)) {
+                            val comicKey = bookId.removePrefix(OnlineComicProgressStore.COMIC_BOOK_ID_PREFIX)
+                            val progressStore = OnlineComicProgressStore(context.applicationContext)
+                            val targetUrl = progressStore.getProgressByComicKey(comicKey)?.chapterUrl
+                            if (!targetUrl.isNullOrBlank()) {
+                                Screen.OnlineComicReader.createRoute(targetUrl, resumeProgress = true)
+                            } else {
+                                null
+                            }
+                        } else if (sourceFormat == BookSourceFormat.CBZ) {
                             Screen.ComicReader.createRoute(bookId)
                         } else {
                             Screen.Reader.createRoute(bookId)
                         }
-                        navController.navigate(route)
+                        if (route != null) {
+                            navController.navigate(route)
+                        }
                     },
                     onNavigateToBookmarks = {
                         navController.navigate(Screen.Bookmark.createRoute("global"))
@@ -312,6 +326,7 @@ fun AppNavHost(
             ) {
                 ReaderScreen(
                     onNavigateBack = { navController.popBackStack() },
+                    onOpenWebChapter = { url -> navController.navigate(Screen.Browser.createRoute(url)) },
                     onOpenBookBible = { bookId, chapterNumber ->
                         navController.navigate(Screen.BookBible.createRoute("LOCAL_EPUB", bookId, chapterNumber))
                     }
@@ -330,7 +345,9 @@ fun AppNavHost(
             ) {
                 BrowserScreen(
                     onNavigateBack = { navController.popBackStack() },
-                    onOpenBook = { bookId -> navController.navigate(Screen.Reader.createRoute(bookId)) }
+                    onOpenSavedBook = { bookId, chapterIndex -> navController.navigate(Screen.Reader.createRoute(bookId, chapterIndex)) },
+                    onOpenBook = { bookId -> navController.navigate(Screen.Reader.createRoute(bookId)) },
+                    onOpenComicChapter = { chapterUrl -> navController.navigate(Screen.OnlineComicReader.createRoute(chapterUrl)) }
                 )
             }
 
@@ -339,6 +356,22 @@ fun AppNavHost(
                 arguments = listOf(navArgument(ComicReaderViewModel.ARG_BOOK_ID) { type = NavType.StringType })
             ) {
                 ComicReaderScreen(onNavigateBack = { navController.popBackStack() })
+            }
+
+            composable(
+                route = Screen.OnlineComicReader.route,
+                arguments = listOf(
+                    navArgument(OnlineComicReaderViewModel.ARG_CHAPTER_URL) { type = NavType.StringType },
+                    navArgument(OnlineComicReaderViewModel.ARG_RESUME_PROGRESS) {
+                        type = NavType.BoolType
+                        defaultValue = false
+                    }
+                )
+            ) {
+                OnlineComicReaderScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    onOpenInBrowser = { url -> navController.navigate(Screen.Browser.createRoute(url)) }
+                )
             }
 
             composable(
@@ -409,6 +442,18 @@ sealed class Screen(val route: String) {
     object Browser : Screen("browser?${BrowserViewModel.ARG_URL}={${BrowserViewModel.ARG_URL}}") {
         fun createRoute(url: String?): String =
             if (url.isNullOrBlank()) "browser" else "browser?${BrowserViewModel.ARG_URL}=${Uri.encode(url)}"
+    }
+
+    object OnlineComicReader : Screen("online_comic_reader?${OnlineComicReaderViewModel.ARG_CHAPTER_URL}={${OnlineComicReaderViewModel.ARG_CHAPTER_URL}}&${OnlineComicReaderViewModel.ARG_RESUME_PROGRESS}={${OnlineComicReaderViewModel.ARG_RESUME_PROGRESS}}") {
+        /**
+         * Tạo route mở chương truyện tranh trực tiếp hoặc tiếp tục từ tiến độ đã lưu.
+         *
+         * @param chapterUrl URL chương cần mở.
+         * @param resumeProgress true nếu màn hình được mở từ Kệ sách để khôi phục tiến độ.
+         * @return Route đã mã hóa tham số chương và chế độ khôi phục.
+         */
+        fun createRoute(chapterUrl: String, resumeProgress: Boolean = false): String =
+            "online_comic_reader?${OnlineComicReaderViewModel.ARG_CHAPTER_URL}=${Uri.encode(chapterUrl)}&${OnlineComicReaderViewModel.ARG_RESUME_PROGRESS}=$resumeProgress"
     }
 
     object ComicReader : Screen("comic_reader/{${ComicReaderViewModel.ARG_BOOK_ID}}") {

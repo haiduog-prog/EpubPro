@@ -45,7 +45,7 @@ class EpubWriterAndCrawlerTest {
     fun readChaptersRoundTrip() {
         val target = Files.createTempFile("webnovel", ".epub").toFile()
         val chapters = listOf(
-            WebNovelChapter("Chương 1 <mở đầu>", listOf("Một & hai", "Ba")),
+            WebNovelChapter("Chương 1 <mở đầu>", listOf("Một & hai", "Ba"), "https://example.com/1?a=1&b=2"),
             WebNovelChapter("Chương 2", listOf("Bốn"))
         )
         try {
@@ -71,6 +71,31 @@ class EpubWriterAndCrawlerTest {
 
         assertEquals("https://a.com/2", result.lastChapterUrl)
         assertEquals("https://a.com/3", crawler.findNextChapterUrl("https://a.com/2"))
+    }
+
+    /** Lỗi truy cập chương cuối phải được báo lỗi thay vì coi là hết chương. */
+    @Test
+    fun findNextReportsFetchFailure() = runTest {
+        val crawler = WebNovelCrawler(fetch = { throw WebFetchException(403, "forbidden") }, maxRetries = 0)
+        try {
+            crawler.findNextChapterUrl("https://a.com/1")
+            throw AssertionError("Expected WebFetchException")
+        } catch (_: WebFetchException) {
+            // Lỗi mạng được phân biệt với trường hợp không có chương kế tiếp.
+        }
+    }
+
+    /** Giữ chương đã tải và báo lý do lỗi khi chương kế tiếp không truy cập được. */
+    @Test
+    fun crawlKeepsCompletedChapterWhenNextFetchFails() = runTest {
+        val crawler = WebNovelCrawler(fetch = { url ->
+            if (url.endsWith("/1")) page("https://a.com/2") else throw WebFetchException(403, "forbidden")
+        }, politeDelayMs = 1L, maxRetries = 0)
+        val result = crawler.crawl("https://a.com/1", 10)
+        assertEquals(1, result.chapters.size)
+        assertEquals("https://a.com/1", result.lastChapterUrl)
+        assertEquals(CrawlStopReason.FETCH_FAILED, result.stoppedReason)
+        assertEquals("https://a.com/2", result.failedUrl)
     }
 
     /** Crawler dừng khi gặp vòng lặp và thử lại sau lỗi 429. */

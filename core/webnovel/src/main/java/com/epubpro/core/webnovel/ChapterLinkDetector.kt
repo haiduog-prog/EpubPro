@@ -73,7 +73,7 @@ object ChapterLinkDetector {
      * @return Ứng viên kèm điểm.
      */
     private fun scoreAnchor(anchor: Element, url: String, pageUri: URI): LinkCandidate {
-        val text = normalizeText(anchor.text().ifBlank { anchor.attr("title") })
+        val text = normalizeText(anchor.text().ifBlank { anchor.attr("aria-label").ifBlank { anchor.attr("title") } })
         val rel = anchor.attr("rel").lowercase()
         val idClass = (anchor.id() + " " + anchor.className()).lowercase()
         val shortText = text.length <= MAX_LINK_TEXT_LENGTH

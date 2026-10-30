@@ -10,6 +10,42 @@ import org.junit.Test
 class ArticleExtractorTest {
     private val longLine = "Đây là một câu văn khá dài trong chương truyện để vượt ngưỡng nội dung tối thiểu. "
 
+    /** Nút chỉ có biểu tượng vẫn được nhận diện nhờ aria-label khi URL thay đổi tiền tố. */
+    @Test
+    fun recognizesAccessibleNextLinkAcrossPathVariants() {
+        val html = "<title>Chương 1 - Truyện</title><div class='content'>${longLine.repeat(4)}</div>" +
+            "<a aria-label='Chương sau' href='/ai/book/chuong-2'><svg></svg></a>"
+        val article = ArticleExtractor.extract(html, "https://example.com/book/chuong-1")!!
+        assertEquals("https://example.com/ai/book/chuong-2", article.links.next)
+    }
+
+    /** Chỉ lấy tác giả truyện chuyên biệt, tránh nhầm author của website. */
+    @Test
+    fun readsNovelAuthorWithoutUsingSiteAuthor() {
+        val body = "<div class='content'>${longLine.repeat(4)}</div>"
+        val meta = "<meta name='author' content='Website'><meta property='article:author' content='Tác giả'>"
+        assertEquals("Tác giả", ArticleExtractor.extract("<html><head>$meta</head><body>$body</body></html>", "https://example.com/1")?.author)
+        assertNull(ArticleExtractor.extract("<html><head><meta name='author' content='Website'></head><body>$body</body></html>", "https://example.com/1")?.author)
+    }
+
+    /** Không lưu chuỗi ký hiệu thay thế nội dung, nhưng vẫn chấp nhận văn bản chương. */
+    @Test
+    fun validatesVisibleChapterContent() {
+        val good = WebArticle("https://example.com/1", "Chương 1", null, listOf(longLine.repeat(4)), ChapterLinks())
+        val placeholder = good.copy(paragraphs = listOf("𓂀𓃀𓇋𓏏".repeat(120)))
+        assertTrue(isReadableWebChapter(good))
+        assertTrue(!isReadableWebChapter(placeholder))
+    }
+
+    /** Tiêu đề trang có chương phải được ưu tiên khi h1 là tên truyện. */
+    @Test
+    fun extractsChapterTitleWhenH1IsNovelName() {
+        val html = "<title>Truyện A - Chương 2: Gặp lại</title><h1>Truyện A</h1>" +
+            "<div class='content'>$longLine$longLine$longLine</div>"
+        val article = ArticleExtractor.extract(html, "https://example.com/2")!!
+        assertEquals("Chương 2: Gặp lại", article.title)
+    }
+
     /** Site truyện kiểu `<div>` + `<br>`: lấy đúng nội dung, bỏ menu/bình luận, nhận link chương sau/trước. */
     @Test
     fun extractsBrSeparatedNovelChapter() {

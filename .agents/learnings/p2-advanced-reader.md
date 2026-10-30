@@ -42,6 +42,16 @@
 - **Chi tiết**: Dùng bản `play-services-mlkit-text-recognition*` (model do Play services tải, APK không phình) + `com.google.mlkit:translate` (gói ~30 MB/ngôn ngữ, **chỉ tải sau khi người dùng xác nhận**). OCR chạy trên bản giải mã riêng (rộng 1280 px) theo từng dải, tọa độ chuẩn hóa 0..1 → overlay đúng vị trí ở mọi mức zoom/chế độ. `BubbleGrouper` gom dòng bằng union-find. Engine Hán-Việt tái dùng `ConvertDictionaryStore`. Cache JSON theo (sách, trang, ngôn ngữ, engine).
 - **Files liên quan**: `core/ocr/`, `core/storage/.../ComicTranslationStore.kt`, `feature/comic/.../ComicTranslationUi.kt`
 
+### Lưu chương đang đọc và khôi phục tiến độ truyện tranh online
+- **Ngày**: 2026-10-30
+- **Chi tiết**: Nhận diện sách web bằng `sourceUrl` của từng XHTML trong EPUB; sách cũ thiếu URL chỉ khớp khi nội dung chương trùng chính xác, còn URL đầu/cuối là mốc dự phòng. Chỉ nối chương khi link chương trước trùng URL chương cuối; trường hợp mơ hồ yêu cầu chọn sách. Truyện tranh online lưu chương/trang/chế độ theo hash của host và đường dẫn bộ truyện. Chỉ lối vào từ Kệ sách bật `resumeProgress`; mở trực tiếp giữ nguyên URL người dùng yêu cầu.
+- **Files liên quan**: `core/storage/.../VisibleChapterMatching.kt`, `VisibleWebChapterSaver.kt`, `OnlineComicProgressStore.kt`, `app/.../AppNavigation.kt`
+
+### Reader truyện tranh online dùng parser nguồn và tải ảnh riêng
+- **Ngày**: 2026-10-30
+- **Chi tiết**: `NetTruyenChapterParser` đọc ảnh lazy-load và URL server thay thế từ HTML; `OnlineComicImageLoader` dùng OkHttp không cookie phiên, Referer cho hotlink, giới hạn ảnh 64 MiB, giải mã tối đa hai ảnh đồng thời và cache RAM. Màn hình tái dùng `ComicPageDecoder`/các composable đọc CBZ thay vì nhân đôi pipeline ảnh.
+- **Files liên quan**: `core/comic/.../NetTruyenChapterParser.kt`, `OnlineComicImageLoader.kt`, `feature/comic/.../OnlineComicReaderScreen.kt`
+
 ---
 
 ## Bugs & Solutions
@@ -116,6 +126,20 @@
 - **Fix**: Dùng `info.entryCount?.let { ... } ?: ...`.
 - **Files liên quan**: `feature/profile/.../convert/ConvertDictionaryScreen.kt`
 
+### URL trang giới thiệu truyện không thể suy ra URL chương đầu
+- **Ngày**: 2026-10-30
+- **Vấn đề**: Tự ghép `/chuong-1` hoặc `/chapter-1` làm sai với nguồn dùng quy ước khác; trang giới thiệu cũng có thể bị parser chương coi là chương rỗng.
+- **Root cause**: Dạng URL không thống nhất giữa truyện và site.
+- **Fix**: Nhận diện trang giới thiệu từ tiêu đề/metadata và lấy link chương số 1 cùng host trực tiếp từ DOM; không tự dựng suffix. Khi site không cung cấp link, báo không nhận diện được thay vì tải nhầm.
+- **Files liên quan**: `core/webnovel/.../NovelLandingDetector.kt`, `WebNovelCrawler.kt`
+
+### Mở sách truyện tranh online bị quay về tiến độ cũ ngoài ý muốn
+- **Ngày**: 2026-10-30
+- **Vấn đề**: Khi mở URL chương từ trình duyệt, tiến độ đã lưu có thể thay URL người dùng vừa chọn.
+- **Root cause**: Khôi phục tiến độ được áp dụng cho mọi lần điều hướng.
+- **Fix**: Truyền `resumeProgress=true` riêng khi mở từ Kệ sách; route trực tiếp mặc định giữ chương được yêu cầu. Nút thử lại dùng lại URL chương đang lỗi.
+- **Files liên quan**: `app/.../AppNavigation.kt`, `feature/comic/.../OnlineComicReaderViewModel.kt`
+
 ---
 
 ## How-To
@@ -161,6 +185,15 @@
   6. Chạy test `feature:reader`, `core:reader-renderer`, `core:playback` (có contract test chuyển chương).
 - **Files liên quan**: `feature/reader/.../ReaderViewModel.kt`, `ReaderScreen.kt`, `core/playback/.../TtsChapterPlaybackCoordinator.kt`
 
+### Thêm nguồn truyện tranh online
+- **Ngày**: 2026-10-30
+- **Bước thực hiện**:
+  1. Tạo parser JVM thuần: trích URL ảnh lazy-load, chuẩn hóa relative URL, lọc asset giao diện và nhận diện link chương trước/sau; hỗ trợ URL server thay thế theo cùng thứ tự trang.
+  2. Bổ sung fixture HTML và test parser cho ảnh thiếu, ảnh trùng, URL tương đối và server thay thế.
+  3. Tải ảnh bằng client riêng, gửi Referer khi nguồn chặn hotlink, giới hạn byte khi đọc stream, đóng response và giới hạn giải mã/cache.
+  4. Kết nối ViewModel với UI đọc hiện có; giữ riêng state lỗi, thử lại, đổi server và điều hướng chương.
+- **Files liên quan**: `core/comic/`, `feature/comic/`
+
 ---
 
 ## Patterns
@@ -205,3 +238,8 @@
 - **Ngày**: 2026-10-29
 - **Chi tiết**: Bật JavaScript (site cần) nhưng **không** `addJavascriptInterface`; `allowFileAccess/allowContentAccess = false`; `MIXED_CONTENT_NEVER_ALLOW`; chặn mọi scheme ngoài http(s) trong `shouldOverrideUrlLoading`; ô địa chỉ chuyển `javascript:`/`file:` thành tìm kiếm. Lấy HTML bằng `evaluateJavascript("document.documentElement.outerHTML")` và giải chuỗi JSON qua `JSONArray("[$value]")`.
 - **Files liên quan**: `feature/browser/.../BrowserScreen.kt`
+
+### Thay đổi server ảnh phải giữ đồng bộ toàn bộ trang
+- **Ngày**: 2026-10-30
+- **Chi tiết**: Chỉ hiển thị server thay thế khi parser có đủ URL cho mọi trang; mỗi ảnh thay thế phải cùng chỉ số với ảnh chính. Khi đổi server, tạo lại danh sách trang và reset vị trí đọc phù hợp. Giới hạn kích thước cần kiểm tra cả `Content-Length` lẫn tổng byte đã đọc vì response có thể không khai báo độ dài.
+- **Files liên quan**: `core/comic/.../NetTruyenChapterParser.kt`, `OnlineComicImageLoader.kt`, `feature/comic/.../OnlineComicReaderViewModel.kt`

@@ -643,6 +643,15 @@
     <string name="browser_reload">Tải lại</string>
     <string name="browser_reader_mode">Chế độ đọc</string>
     <string name="browser_save_novel">Lưu thành truyện</string>
+    <string name="browser_save_visible">Lưu chương đang mở</string>
+    <string name="browser_select_start_chapter">Chọn chương bắt đầu</string>
+    <string name="browser_no_start_chapter">Không tìm thấy danh sách chương. Hãy mở chương bạn muốn đọc rồi thử lại.</string>
+    <string name="browser_visible_saved">Đã lưu chương vào sách.</string>
+    <string name="browser_visible_exists">Chương này đã có trong sách.</string>
+    <string name="browser_visible_not_ready">Chưa lấy được nội dung chương. Hãy chờ trang tải xong rồi thử lại.</string>
+    <string name="browser_visible_not_adjacent">Chương này không liền sau chương cuối của sách đã chọn. Hãy chọn sách khác hoặc tạo sách mới.</string>
+    <string name="browser_visible_choose_book">Chọn sách để lưu chương</string>
+    <string name="browser_visible_create_book">Tạo sách mới</string>
     <string name="browser_extracting">Đang lấy nội dung chương…</string>
     <string name="browser_extract_failed">Không tìm thấy nội dung chương trên trang này. Hãy tắt chế độ đọc để xem trang gốc.</string>
     <string name="browser_chapter_previous">Chương trước</string>
@@ -715,7 +724,12 @@
     <string name="comic_translate_ocr_model_pending">Google Play services đang tải mô hình nhận diện chữ cho ngôn ngữ này. Vui lòng thử lại sau ít phút.</string>
     <string name="book_import_error_too_large">File vượt quá giới hạn %1$d MiB cho định dạng này</string>
     <string name="convert_import_too_large">File từ điển vượt quá giới hạn %1$d MiB. Hãy kiểm tra lại file đã chọn.</string>
-    <string name="web_novel_no_new_chapters">Truyện chưa có chương mới.</string>
+    <string name="web_novel_no_new_chapters">Không tìm thấy chương tiếp theo trên trang nguồn.</string>
+    <string name="web_novel_append_partial">Đã thêm %1$d chương vào “%2$s” nhưng quá trình tải bị gián đoạn. Vui lòng thử lại.</string>
+    <string name="reader_web_partial">Đã tải %1$d chương, nhưng quá trình bị gián đoạn. Hãy thử lại.</string>
+    <string name="reader_web_retry">Thử lại</string>
+    <string name="reader_web_open_source">Mở trang web</string>
+    <string name="reader_web_waiting_network">Đang chờ kết nối Internet để tải thêm chương.</string>
     <string name="web_novel_append_success">Đã thêm %1$d chương mới vào “%2$s”</string>
     <string name="browser_open_in_reader">Đọc bằng Reader</string>
     <string name="browser_reader_preparing_title">Đang chuẩn bị truyện</string>
@@ -724,4 +738,17 @@
     <string name="reader_web_load_more">Tải thêm chương</string>
     <string name="reader_web_chapters_loading">Đang tải thêm chương…</string>
     <string name="reader_web_chapters_added">Đã tải thêm %1$d chương</string>
+    <!-- Online Comic Reader -->
+    <string name="browser_open_comic_reader">Đọc truyện tranh</string>
+    <string name="online_comic_reader_title">Đọc online</string>
+    <string name="online_comic_loading_chapter">Đang tải chương…</string>
+    <string name="online_comic_chapter_load_failed">Không tải được chương, giữ chương hiện tại</string>
+    <string name="online_comic_open_source">Mở trang gốc</string>
+    <string name="online_comic_select_server">Chọn server ảnh</string>
+    <string name="online_comic_server_number">Server %1$d</string>
+    <string name="online_comic_no_images">Không tìm thấy ảnh trong chương này</string>
+    <string name="online_comic_chapter_previous">Chương trước</string>
+    <string name="online_comic_chapter_next">Chương sau</string>
+    <string name="online_comic_open_in_browser">Mở trình duyệt</string>
+    <string name="online_comic_load_failed_js_required">Trang yêu cầu xác minh bảo vệ hoặc JavaScript. Vui lòng mở trang gốc.</string>
 </resources>

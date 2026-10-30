@@ -1,4 +1,4 @@
-package com.epubpro.feature.browser
+﻿package com.epubpro.feature.browser
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
@@ -15,9 +15,11 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -26,6 +28,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.AutoStories
+import androidx.compose.material.icons.filled.CollectionsBookmark
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
@@ -44,6 +47,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -82,6 +87,7 @@ private const val READ_HTML_SCRIPT = "document.documentElement.outerHTML"
  *
  * @param onNavigateBack Callback rời trình duyệt khi WebView không còn lịch sử để lùi.
  * @param onOpenBook Callback mở sách (ID) trong Reader EPUB sau khi chuẩn bị xong.
+ * @param onOpenSavedBook Callback mở đúng chương vừa lưu trong Reader.
  * @param viewModel ViewModel trình duyệt.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -89,6 +95,8 @@ private const val READ_HTML_SCRIPT = "document.documentElement.outerHTML"
 fun BrowserScreen(
     onNavigateBack: () -> Unit,
     onOpenBook: (String) -> Unit = {},
+    onOpenSavedBook: (String, Int) -> Unit = { _, _ -> },
+    onOpenComicChapter: (String) -> Unit = {},
     viewModel: BrowserViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -130,10 +138,28 @@ fun BrowserScreen(
         }
     }
     val currentOnOpenBook by rememberUpdatedState(onOpenBook)
+    val currentOnOpenSavedBook by rememberUpdatedState(onOpenSavedBook)
+    val currentOnOpenComicChapter by rememberUpdatedState(onOpenComicChapter)
+    LaunchedEffect(viewModel) {
+        viewModel.openComicChapterEvents.collect { chapterUrl -> currentOnOpenComicChapter(chapterUrl) }
+    }
     LaunchedEffect(viewModel) {
         viewModel.openBookEvents.collect { bookId -> currentOnOpenBook(bookId) }
     }
-    val openInReader = { viewModel.openInReader(webView.settings.userAgentString) }
+    LaunchedEffect(viewModel) {
+        viewModel.savedChapterEvents.collect { saved ->
+            val message = context.getString(if (saved.alreadyExists) R.string.browser_visible_exists else R.string.browser_visible_saved)
+            if (snackbarHostState.showSnackbar(message, actionLabel = context.getString(R.string.browser_open_in_reader), duration = SnackbarDuration.Long) == SnackbarResult.ActionPerformed) {
+                currentOnOpenSavedBook(saved.bookId, saved.chapterIndex)
+            }
+        }
+    }
+    val openInReader = {
+        val url = webView.url.orEmpty()
+        requestPageHtml(webView, url) { html, pageUrl ->
+            if (webView.url == pageUrl) viewModel.resolveChapterStart(html, pageUrl, webView.settings.userAgentString)
+        }
+    }
 
     BackHandler {
         when {
@@ -171,6 +197,16 @@ fun BrowserScreen(
                         )
                     },
                     actions = {
+                        IconButton(
+                            onClick = { webView.url?.let(viewModel::openComicReader) },
+                            enabled = isAllowedBrowserUrl(uiState.currentUrl)
+                        ) {
+                            Icon(
+                                Icons.Default.CollectionsBookmark,
+                                contentDescription = stringResource(R.string.browser_open_comic_reader),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
                         IconButton(
                             onClick = openInReader,
                             enabled = isAllowedBrowserUrl(uiState.currentUrl)
@@ -224,6 +260,20 @@ fun BrowserScreen(
                                     }
                                 )
                                 DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.browser_save_visible)) },
+                                    enabled = isAllowedBrowserUrl(uiState.currentUrl) && !uiState.savingVisibleChapter,
+                                    onClick = {
+                                        showMenu = false
+                                        if (webView.progress < 100) viewModel.reportVisibleNotReady()
+                                        else {
+                                            val url = webView.url.orEmpty()
+                                            requestPageHtml(webView, url) { html, pageUrl ->
+                                                if (webView.url == pageUrl) viewModel.saveVisibleHtml(html, pageUrl, webView.settings.userAgentString)
+                                            }
+                                        }
+                                    }
+                                )
+                                DropdownMenuItem(
                                     text = { Text(stringResource(R.string.browser_save_novel)) },
                                     enabled = isAllowedBrowserUrl(uiState.currentUrl),
                                     onClick = {
@@ -235,7 +285,9 @@ fun BrowserScreen(
                         }
                     }
                 )
-                if (uiState.progress in 1..99) {
+                if (uiState.savingVisibleChapter) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                } else if (uiState.progress in 1..99) {
                     LinearProgressIndicator(
                         progress = { uiState.progress / 100f },
                         modifier = Modifier.fillMaxWidth()
@@ -264,7 +316,49 @@ fun BrowserScreen(
         SaveNovelDialog(
             initialTitle = uiState.article?.novelTitle ?: uiState.pageTitle,
             onDismiss = { viewModel.setSaveDialogVisible(false) },
-            onConfirm = { title, count -> viewModel.saveAsNovel(title, count, webView.settings.userAgentString) }
+            onConfirm = { title, count ->
+                viewModel.setSaveDialogVisible(false)
+                val url = webView.url.orEmpty()
+                requestPageHtml(webView, url) { html, pageUrl ->
+                    if (webView.url == pageUrl) viewModel.resolveChapterStart(html, pageUrl, webView.settings.userAgentString, title, count)
+                }
+            }
+        )
+    }
+    uiState.visibleChapterChoices?.let { books ->
+        AlertDialog(
+            onDismissRequest = viewModel::dismissVisibleChapterChoices,
+            title = { Text(stringResource(R.string.browser_visible_choose_book)) },
+            text = {
+                LazyColumn {
+                    items(books, key = { it.id }) { book ->
+                        TextButton(onClick = { viewModel.chooseVisibleChapterBook(book.id) }, modifier = Modifier.fillMaxWidth()) {
+                            Text(book.title)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { viewModel.chooseVisibleChapterBook(null) }) { Text(stringResource(R.string.browser_visible_create_book)) } },
+            dismissButton = { TextButton(onClick = viewModel::dismissVisibleChapterChoices) { Text(stringResource(R.string.action_cancel)) } }
+        )
+    }
+    uiState.chapterChoices?.let { chapters ->
+        AlertDialog(
+            onDismissRequest = viewModel::dismissChapterChoices,
+            title = { Text(stringResource(R.string.browser_select_start_chapter)) },
+            text = {
+                if (chapters.isEmpty()) Text(stringResource(R.string.browser_no_start_chapter))
+                else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
+                        items(chapters, key = { it.url }) { chapter ->
+                            TextButton(onClick = { viewModel.selectStartChapter(chapter.url) }, modifier = Modifier.fillMaxWidth()) {
+                                Text(chapter.title)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = viewModel::dismissChapterChoices) { Text(stringResource(R.string.action_cancel)) } }
         )
     }
 
@@ -274,6 +368,27 @@ fun BrowserScreen(
             preparation = preparation,
             onBackground = viewModel::continuePreparationInBackground,
             onCancel = viewModel::cancelPreparation
+        )
+    }
+    uiState.preparationFailure?.let { failure ->
+        AlertDialog(
+            onDismissRequest = viewModel::dismissPreparationFailure,
+            text = {
+                Text(if (failure.bookId != null) stringResource(R.string.reader_web_partial, failure.chapters)
+                    else stringResource(R.string.web_novel_download_failed))
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.dismissPreparationFailure()
+                    viewModel.openAddress(failure.url)
+                }) { Text(stringResource(R.string.reader_web_open_source)) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    viewModel.dismissPreparationFailure()
+                    failure.bookId?.let(onOpenBook)
+                }) { Text(stringResource(if (failure.bookId != null) R.string.browser_open_in_reader else R.string.action_cancel)) }
+            }
         )
     }
 }

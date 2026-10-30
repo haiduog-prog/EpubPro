@@ -1,6 +1,8 @@
 package com.epubpro.core.storage.worker
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
@@ -22,19 +24,25 @@ sealed interface WebNovelDownloadState {
      *
      * @property downloaded Số chương đã tải.
      * @property max Số chương tối đa.
+     * @property waitingForNetwork Tác vụ đang chờ kết nối Internet.
      */
-    data class Running(val downloaded: Int, val max: Int) : WebNovelDownloadState
+    data class Running(val downloaded: Int, val max: Int, val waitingForNetwork: Boolean = false) : WebNovelDownloadState
 
     /**
      * Hoàn tất.
      *
      * @property bookId ID sách trong thư viện.
      * @property newChapters Số chương mới được thêm (0 nếu truyện chưa ra chương mới).
+     * @property interrupted Tác vụ đã lưu một phần trước khi bị gián đoạn.
+     * @property failedUrl Trang không tải hoặc bóc tách được.
      */
-    data class Succeeded(val bookId: String, val newChapters: Int) : WebNovelDownloadState
+    data class Succeeded(val bookId: String, val newChapters: Int, val interrupted: Boolean = false, val failedUrl: String? = null) : WebNovelDownloadState
 
     /** Thất bại hoặc bị hủy. */
     data object Failed : WebNovelDownloadState
+
+    /** Tác vụ thất bại tại trang nguồn cụ thể. */
+    data class FailedAt(val url: String) : WebNovelDownloadState
 }
 
 /**
@@ -92,15 +100,32 @@ class WebNovelDownloadScheduler @Inject constructor(
         WorkManager.getInstance(context).getWorkInfoByIdFlow(workId).map { info ->
             when (info?.state) {
                 WorkInfo.State.SUCCEEDED -> info.outputData.getString(WebNovelDownloadWorker.KEY_BOOK_ID)
-                    ?.let { WebNovelDownloadState.Succeeded(it, info.outputData.getInt(WebNovelDownloadWorker.KEY_CHAPTER_COUNT, 0)) }
+                    ?.let {
+                        val reason = info.outputData.getString(WebNovelDownloadWorker.KEY_STOP_REASON)
+                        WebNovelDownloadState.Succeeded(it, info.outputData.getInt(WebNovelDownloadWorker.KEY_CHAPTER_COUNT, 0), reason == "FETCH_FAILED" || reason == "EXTRACTION_FAILED" || reason == "LOOP_DETECTED", info.outputData.getString(WebNovelDownloadWorker.KEY_FAILED_URL))
+                    }
                     ?: WebNovelDownloadState.Failed
-                WorkInfo.State.FAILED, WorkInfo.State.CANCELLED, null -> WebNovelDownloadState.Failed
+                WorkInfo.State.FAILED -> info.outputData.getString(WebNovelDownloadWorker.KEY_FAILED_URL)?.let { WebNovelDownloadState.FailedAt(it) } ?: WebNovelDownloadState.Failed
+                WorkInfo.State.CANCELLED, null -> WebNovelDownloadState.Failed
                 else -> WebNovelDownloadState.Running(
                     downloaded = info.progress.getInt(WebNovelDownloadWorker.KEY_CHAPTER_COUNT, 0),
-                    max = info.progress.getInt(WebNovelDownloadWorker.KEY_MAX_CHAPTERS, 0)
+                    max = info.progress.getInt(WebNovelDownloadWorker.KEY_MAX_CHAPTERS, 0),
+                    waitingForNetwork = info.state == WorkInfo.State.ENQUEUED && !hasInternet()
                 )
             }
         }
+
+    /**
+     * Kiểm tra mạng đang có khả năng truy cập Internet để thông báo khi tác vụ phải chờ.
+     *
+     * @return true nếu mạng đã được hệ thống xác nhận có Internet.
+     */
+    private fun hasInternet(): Boolean {
+        val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val capabilities = manager.getNetworkCapabilities(manager.activeNetwork) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
 
     /**
      * Hủy tác vụ tải.

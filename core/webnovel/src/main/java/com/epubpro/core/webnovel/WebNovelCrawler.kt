@@ -19,12 +19,16 @@ class WebFetchException(val statusCode: Int?, message: String) : java.io.IOExcep
  * @property novelTitle Tên truyện đoán được từ chương đầu tiên.
  * @property stoppedReason Lý do dừng.
  * @property lastChapterUrl URL của chương cuối cùng tải thành công; dùng làm mốc để "tải thêm chương" sau này.
+ * @property failedUrl URL trang không tải hoặc bóc tách được, null nếu không gặp lỗi.
+ * @property author Tác giả truyện nếu trang chương cung cấp.
  */
 data class CrawlResult(
     val chapters: List<WebNovelChapter>,
     val novelTitle: String?,
     val stoppedReason: CrawlStopReason,
-    val lastChapterUrl: String? = null
+    val lastChapterUrl: String? = null,
+    val failedUrl: String? = null,
+    val author: String? = null
 )
 
 /** Lý do dừng thu thập. */
@@ -77,6 +81,7 @@ class WebNovelCrawler(
         val chapters = mutableListOf<WebNovelChapter>()
         val visited = mutableSetOf<String>()
         var novelTitle: String? = null
+        var author: String? = null
         var lastChapterUrl: String? = null
         var url: String? = startUrl
         var reason = CrawlStopReason.NO_NEXT_LINK
@@ -100,24 +105,29 @@ class WebNovelCrawler(
                 null
             } ?: break
             if (novelTitle == null) novelTitle = article.novelTitle
-            chapters += WebNovelChapter(article.title, article.paragraphs)
+            if (author == null) author = article.author
+            chapters += WebNovelChapter(article.title, article.paragraphs, url)
             lastChapterUrl = url
             onProgress(chapters.size, article.title)
             url = article.links.next
             if (url != null && chapters.size < maxChapters) delay(politeDelayMs)
         }
-        return CrawlResult(chapters, novelTitle, reason, lastChapterUrl)
+        return CrawlResult(chapters, novelTitle, reason, lastChapterUrl,
+            url.takeIf { reason == CrawlStopReason.FETCH_FAILED || reason == CrawlStopReason.EXTRACTION_FAILED }, author)
     }
 
     /**
      * Tìm URL chương kế tiếp của một chương đã tải trước đó (truyện đang ra có thể đã có chương mới).
      *
      * @param chapterUrl URL chương cuối đã tải.
-     * @return URL chương sau, hoặc null nếu chưa có chương mới hoặc trang không tải được.
+     * @return URL chương sau, hoặc null nếu chưa có chương mới.
+     * @throws WebFetchException Nếu không tải hoặc bóc tách được trang chương cuối.
      */
     suspend fun findNextChapterUrl(chapterUrl: String): String? {
-        val html = fetchWithRetry(chapterUrl) ?: return null
-        return ArticleExtractor.extract(html, chapterUrl)?.links?.next
+        val html = fetchWithRetry(chapterUrl) ?: throw WebFetchException(null, "Cannot fetch last chapter")
+        val article = ArticleExtractor.extract(html, chapterUrl)
+            ?: throw WebFetchException(null, "Cannot extract last chapter")
+        return article.links.next
     }
 
     /**

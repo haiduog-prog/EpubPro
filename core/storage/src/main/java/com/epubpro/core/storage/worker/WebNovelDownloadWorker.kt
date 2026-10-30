@@ -20,6 +20,7 @@ import com.epubpro.core.reader.engine.EpubPackageStructureParser
 import com.epubpro.core.storage.EpubStorageManager
 import com.epubpro.core.storage.WebNovelSource
 import com.epubpro.core.storage.WebNovelSourceStore
+import com.epubpro.core.storage.WebNovelMutationLock
 import com.epubpro.core.webnovel.CrawlStopReason
 import com.epubpro.core.webnovel.EpubMetadata
 import com.epubpro.core.webnovel.EpubWriter
@@ -39,7 +40,9 @@ import java.util.concurrent.TimeUnit
 import java.util.zip.ZipFile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.withLock
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -75,7 +78,9 @@ class WebNovelDownloadWorker @AssistedInject constructor(
      */
     override suspend fun doWork(): Result {
         val appendBookId = inputData.getString(KEY_APPEND_BOOK_ID)
-        return if (appendBookId != null) appendChapters(appendBookId) else downloadNewNovel()
+        return WebNovelMutationLock.mutex.withLock {
+            if (appendBookId != null) appendChapters(appendBookId) else downloadNewNovel()
+        }
     }
 
     /**
@@ -99,14 +104,14 @@ class WebNovelDownloadWorker @AssistedInject constructor(
                 updateProgress(displayName, count, maxChapters)
             }
             if (result.chapters.isEmpty()) {
-                showResultNotification(displayName, appContext.getString(R.string.web_novel_download_failed_empty))
-                return Result.failure(workDataOf(KEY_STOP_REASON to result.stoppedReason.name))
+                showResultNotification(displayName, appContext.getString(R.string.web_novel_download_failed_empty), result.failedUrl)
+                return Result.failure(workDataOf(KEY_STOP_REASON to result.stoppedReason.name, KEY_FAILED_URL to result.failedUrl))
             }
             val title = titleOverride ?: result.novelTitle ?: result.chapters.first().title
             val sample = result.chapters.first().paragraphs.joinToString("").take(LANGUAGE_SAMPLE_CHARS)
             EpubWriter.write(
                 outputFile,
-                EpubMetadata(title = title, language = guessLanguage(sample), sourceUrl = startUrl),
+                EpubMetadata(title = title, author = result.author.orEmpty(), language = guessLanguage(sample), sourceUrl = startUrl),
                 result.chapters
             )
             val book = epubEngine.parseEpubMetadataStrict(outputFile)
@@ -118,13 +123,16 @@ class WebNovelDownloadWorker @AssistedInject constructor(
             epubEngine.indexBookContent(outputFile, book.id, searchRepository)
             showResultNotification(
                 title,
-                appContext.getString(R.string.web_novel_download_success, title, result.chapters.size)
+                if (result.failedUrl != null) appContext.getString(R.string.web_novel_append_partial, result.chapters.size, title)
+                else appContext.getString(R.string.web_novel_download_success, title, result.chapters.size),
+                result.failedUrl
             )
             Result.success(
                 workDataOf(
                     KEY_BOOK_ID to book.id,
                     KEY_CHAPTER_COUNT to result.chapters.size,
-                    KEY_STOP_REASON to result.stoppedReason.name
+                    KEY_STOP_REASON to result.stoppedReason.name,
+                    KEY_FAILED_URL to result.failedUrl
                 )
             )
         } catch (error: CancellationException) {
@@ -147,6 +155,7 @@ class WebNovelDownloadWorker @AssistedInject constructor(
     private suspend fun appendChapters(bookId: String): Result {
         val maxChapters = inputData.getInt(KEY_MAX_CHAPTERS, DEFAULT_MAX_CHAPTERS).coerceIn(1, MAX_CHAPTERS)
         val book = bookRepository.getBookById(bookId) ?: return Result.failure()
+        sourceStore.reconcileReplacement(bookId, book.filePath)
         val source = sourceStore.get(bookId) ?: return Result.failure()
         source.userAgent?.let { userAgent = it }
 
@@ -160,7 +169,11 @@ class WebNovelDownloadWorker @AssistedInject constructor(
             val result = nextUrl?.let { url ->
                 crawler.crawl(url, maxChapters) { count, _ -> updateProgress(book.title, count, maxChapters) }
             }
-            if (result == null || result.chapters.isEmpty()) {
+            if (result != null && result.chapters.isEmpty()) {
+                showResultNotification(book.title, appContext.getString(R.string.web_novel_download_failed), result.failedUrl)
+                return Result.failure(workDataOf(KEY_STOP_REASON to result.stoppedReason.name, KEY_FAILED_URL to result.failedUrl))
+            }
+            if (result == null) {
                 showResultNotification(book.title, appContext.getString(R.string.web_novel_no_new_chapters))
                 return Result.success(workDataOf(KEY_BOOK_ID to bookId, KEY_CHAPTER_COUNT to 0))
             }
@@ -172,7 +185,7 @@ class WebNovelDownloadWorker @AssistedInject constructor(
                 outputFile,
                 EpubMetadata(
                     title = book.title,
-                    author = book.author.takeUnless { it == UNKNOWN_AUTHOR }.orEmpty(),
+                    author = book.author.takeUnless { it == UNKNOWN_AUTHOR } ?: result.author.orEmpty(),
                     language = guessLanguage(sample),
                     sourceUrl = source.startUrl,
                     identifier = identifier
@@ -180,23 +193,26 @@ class WebNovelDownloadWorker @AssistedInject constructor(
                 existing + result.chapters
             )
             val parsed = epubEngine.parseEpubMetadataStrict(outputFile)
-            replacement.replace(parsed, bookId, identifier, keepAiCache = true)
-            sourceStore.save(bookId, source.copy(lastChapterUrl = result.lastChapterUrl ?: source.lastChapterUrl))
-            // Bản cũ không còn được sách tham chiếu: dọn file và cache cấu trúc theo đường dẫn cũ.
-            epubEngine.deleteBookCache(oldFile.absolutePath)
-            storageManager.deleteBookFile(oldFile.absolutePath)
+            sourceStore.prepareReplacement(bookId, outputFile.absolutePath, source.copy(lastChapterUrl = result.lastChapterUrl ?: source.lastChapterUrl))
+            replacement.replace(parsed, bookId, identifier, keepAiCache = true, expectedFilePath = oldFile.absolutePath)
+            sourceStore.reconcileReplacement(bookId, outputFile.absolutePath)
             showResultNotification(
                 book.title,
-                appContext.getString(R.string.web_novel_append_success, result.chapters.size, book.title)
+                appContext.getString(if (result.stoppedReason == CrawlStopReason.FETCH_FAILED || result.stoppedReason == CrawlStopReason.EXTRACTION_FAILED || result.stoppedReason == CrawlStopReason.LOOP_DETECTED) R.string.web_novel_append_partial else R.string.web_novel_append_success, result.chapters.size, book.title),
+                result.failedUrl
             )
-            Result.success(workDataOf(KEY_BOOK_ID to bookId, KEY_CHAPTER_COUNT to result.chapters.size))
+            Result.success(workDataOf(KEY_BOOK_ID to bookId, KEY_CHAPTER_COUNT to result.chapters.size, KEY_STOP_REASON to result.stoppedReason.name, KEY_FAILED_URL to result.failedUrl))
         } catch (error: CancellationException) {
-            outputFile.delete()
+            withContext(NonCancellable) {
+                if (bookRepository.getBookById(bookId)?.filePath != outputFile.absolutePath) outputFile.delete()
+            }
             throw error
         } catch (error: Exception) {
-            outputFile.delete()
+            withContext(NonCancellable) {
+                if (bookRepository.getBookById(bookId)?.filePath != outputFile.absolutePath) outputFile.delete()
+            }
             showResultNotification(book.title, appContext.getString(R.string.web_novel_download_failed))
-            Result.failure(workDataOf(KEY_STOP_REASON to CrawlStopReason.FETCH_FAILED.name))
+            Result.failure(workDataOf(KEY_STOP_REASON to CrawlStopReason.FETCH_FAILED.name, KEY_FAILED_URL to source.lastChapterUrl))
         }
     }
 
@@ -279,17 +295,30 @@ class WebNovelDownloadWorker @AssistedInject constructor(
      *
      * @param title Tiêu đề notification.
      * @param message Nội dung đã bản địa hóa.
+     * @param failedUrl Trang nguồn gặp lỗi để người dùng mở kiểm tra, hoặc null.
      */
-    private fun showResultNotification(title: String, message: String) {
+    private fun showResultNotification(title: String, message: String, failedUrl: String? = null) {
+        val builder = NotificationCompat.Builder(appContext, CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setAutoCancel(true)
+            .setContentIntent(createLaunchAppPendingIntent())
+        failedUrl?.let { url ->
+            val intent = appContext.packageManager.getLaunchIntentForPackage(appContext.packageName)?.apply {
+                action = Intent.ACTION_SEND
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, url)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            if (intent != null) {
+                val pending = PendingIntent.getActivity(appContext, url.hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                builder.addAction(android.R.drawable.ic_menu_view, appContext.getString(R.string.reader_web_open_source), pending)
+            }
+        }
         notificationManager.notify(
             RESULT_NOTIFICATION_ID,
-            NotificationCompat.Builder(appContext, CHANNEL_ID)
-                .setContentTitle(title)
-                .setContentText(message)
-                .setSmallIcon(android.R.drawable.stat_sys_download_done)
-                .setAutoCancel(true)
-                .setContentIntent(createLaunchAppPendingIntent())
-                .build()
+            builder.build()
         )
     }
 
@@ -327,6 +356,7 @@ class WebNovelDownloadWorker @AssistedInject constructor(
         const val KEY_BOOK_ID = "book_id"
         const val KEY_CHAPTER_COUNT = "chapter_count"
         const val KEY_STOP_REASON = "stop_reason"
+        const val KEY_FAILED_URL = "failed_url"
         const val KEY_USER_AGENT = "user_agent"
         const val KEY_APPEND_BOOK_ID = "append_book_id"
         const val DEFAULT_MAX_CHAPTERS = 50

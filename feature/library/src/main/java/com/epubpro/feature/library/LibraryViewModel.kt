@@ -17,6 +17,7 @@ import com.epubpro.core.storage.ComicPreferencesStore
 import com.epubpro.core.storage.ComicTranslationStore
 import com.epubpro.core.storage.ConvertDictionaryStore
 import com.epubpro.core.storage.EpubStorageManager
+import com.epubpro.core.storage.OnlineComicProgressStore
 import com.epubpro.core.storage.WebNovelSourceStore
 import com.epubpro.core.storage.ReaderResumeSnapshotStore
 import com.epubpro.core.storage.TtsPlaybackSnapshotStore
@@ -149,7 +150,8 @@ class LibraryViewModel @Inject constructor(
     private val comicPreferencesStore: ComicPreferencesStore,
     private val convertDictionaryStore: ConvertDictionaryStore,
     private val comicTranslationStore: ComicTranslationStore,
-    private val webNovelSourceStore: WebNovelSourceStore
+    private val webNovelSourceStore: WebNovelSourceStore,
+    private val onlineComicProgressStore: OnlineComicProgressStore
 ) : ViewModel() {
 
     val pendingLocalImports = localBookImportScheduler.pendingImports
@@ -623,6 +625,10 @@ class LibraryViewModel @Inject constructor(
                     convertDictionaryStore.clearBook(item.book.id)
                     comicTranslationStore.clearBook(item.book.id)
                     webNovelSourceStore.clear(item.book.id)
+                    if (item.book.id.startsWith(OnlineComicProgressStore.COMIC_BOOK_ID_PREFIX)) {
+                        val comicKey = item.book.id.removePrefix(OnlineComicProgressStore.COMIC_BOOK_ID_PREFIX)
+                        onlineComicProgressStore.clearComicKey(comicKey)
+                    }
                     bookRepository.deleteBook(item.book.id)
                 }
             } catch (error: CancellationException) {

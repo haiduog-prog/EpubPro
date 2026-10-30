@@ -49,6 +49,33 @@ class WebNovelSourceStore @Inject constructor(
     }
 
     /**
+     * Ghi mốc phục hồi trước khi database chuyển sang EPUB mới.
+     *
+     * @param bookId ID sách.
+     * @param filePath Đường dẫn EPUB mới.
+     * @param source Nguồn tương ứng với EPUB mới.
+     * @throws IllegalStateException Khi không ghi được mốc phục hồi.
+     */
+    fun prepareReplacement(bookId: String, filePath: String, source: WebNovelSource) {
+        val pending = JSONObject().put("path", filePath).put("source", encode(source)).toString()
+        check(prefs.edit().putString("pending_$bookId", pending).commit())
+    }
+
+    /**
+     * Phục hồi mốc chương khi database đã trỏ tới EPUB mới.
+     *
+     * @param bookId ID sách.
+     * @param filePath Đường dẫn EPUB đang được database tham chiếu.
+     * @throws IllegalStateException Khi không lưu được mốc đã phục hồi.
+     */
+    fun reconcileReplacement(bookId: String, filePath: String) {
+        val pendingKey = "pending_$bookId"
+        val pending = prefs.getString(pendingKey, null)?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return
+        if (pending.optString("path") != filePath) return
+        check(prefs.edit().putString(sourceKey(bookId), pending.getString("source")).remove(pendingKey).commit())
+    }
+
+    /**
      * Tìm sách đã lưu bắt đầu từ URL này.
      *
      * @param startUrl URL chương bắt đầu.
@@ -67,7 +94,7 @@ class WebNovelSourceStore @Inject constructor(
      * @param bookId ID sách.
      */
     fun clear(bookId: String) {
-        prefs.edit().remove(sourceKey(bookId)).apply()
+        prefs.edit().remove(sourceKey(bookId)).remove("pending_$bookId").apply()
     }
 
     /**

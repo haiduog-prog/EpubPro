@@ -57,6 +57,8 @@ import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.outlined.AutoStories
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DividerDefaults
 import androidx.compose.material3.DropdownMenu
@@ -134,6 +136,7 @@ import org.json.JSONObject
 fun ReaderScreen(
     onNavigateBack: () -> Unit,
     onOpenBookBible: (bookId: String, chapterNumber: Int) -> Unit = { _, _ -> },
+    onOpenWebChapter: (String) -> Unit = {},
     viewModel: ReaderViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -706,8 +709,33 @@ fun ReaderScreen(
             )
         }
 
+        val webNovelError = uiState.webNovelMessageRes == R.string.web_novel_download_failed ||
+            uiState.webNovelMessageRes == R.string.reader_web_partial
+        if (webNovelError) {
+            AlertDialog(
+                onDismissRequest = viewModel::consumeWebNovelMessage,
+                text = { Text(stringResource(uiState.webNovelMessageRes!!, uiState.webNovelMessageArg)) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        viewModel.consumeWebNovelMessage()
+                        viewModel.loadMoreWebChapters()
+                    }) { Text(stringResource(R.string.reader_web_retry)) }
+                },
+                dismissButton = {
+                    Row {
+                        uiState.webNovelFailedUrl?.let { url ->
+                            TextButton(onClick = { viewModel.consumeWebNovelMessage(); onOpenWebChapter(url) }) {
+                                Text(stringResource(R.string.reader_web_open_source))
+                            }
+                        }
+                        TextButton(onClick = viewModel::consumeWebNovelMessage) { Text(stringResource(R.string.action_cancel)) }
+                    }
+                }
+            )
+        }
         LaunchedEffect(uiState.webNovelMessageRes) {
             uiState.webNovelMessageRes?.let { messageRes ->
+                if (webNovelError) return@let
                 Toast.makeText(
                     context,
                     context.getString(messageRes, uiState.webNovelMessageArg),

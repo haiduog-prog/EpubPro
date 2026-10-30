@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html><head><title>Truyện Mix Attrs - Chương 1 - NetTruyen</title></head>
+<body>
+<div class="reading-detail">
+  <div class="page-chapter">
+    <!-- Ảnh 1: chỉ có src (không có data-src) -->
+    <img src="https://cdn1.nettruyen.gg/manga/truyen-mix/chap1/001.jpg">
+    <!-- Ảnh 2: có data-lazy-src -->
+    <img data-lazy-src="https://cdn1.nettruyen.gg/manga/truyen-mix/chap1/002.jpg" src="/loading.gif">
+    <!-- Ảnh 3: có data-original -->
+    <img data-original="https://cdn1.nettruyen.gg/manga/truyen-mix/chap1/003.jpg" src="/loading.gif">
+    <!-- Ảnh 4: có data-src (ưu tiên cao nhất) -->
+    <img data-src="https://cdn1.nettruyen.gg/manga/truyen-mix/chap1/004.jpg" data-lazy-src="https://cdn1.nettruyen.gg/manga/truyen-mix/chap1/wrong.jpg" src="/loading.gif">
+    <!-- Ảnh 5: base64 thumbnail nhỏ - phải bị lọc -->
+    <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==" width="1" height="1" alt="placeholder">
+  </div>
+</div>
+</body></html>

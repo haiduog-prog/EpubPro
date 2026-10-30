@@ -25,6 +25,7 @@ class LocalBookReplacement @Inject constructor(
      * @param bookId ID nội bộ được người dùng chọn.
      * @param identifier ID xuất bản bắt buộc trùng ở cả hai bản.
      * @param keepAiCache true khi bản mới chỉ nối thêm chương (các chương cũ không đổi) nên cache AI vẫn đúng.
+     * @param expectedFilePath Đường dẫn nguồn đã đọc; null nếu caller không yêu cầu đối chiếu.
      * @return Metadata sau cập nhật.
      * @throws IllegalStateException Nếu truyện đã bị xóa, thay đổi hoặc ID không còn khớp.
      */
@@ -32,10 +33,12 @@ class LocalBookReplacement @Inject constructor(
         parsed: Book,
         bookId: String,
         identifier: String,
-        keepAiCache: Boolean = false
+        keepAiCache: Boolean = false,
+        expectedFilePath: String? = null
     ): Book = withContext(Dispatchers.IO) {
         val dao = database.bookDao()
         val previous = checkNotNull(dao.getBookById(bookId))
+        if (expectedFilePath != null) check(previous.filePath == expectedFilePath)
         check(identifier.isNotBlank())
         check(ZipFile(parsed.filePath).use {
             EpubPackageStructureParser.readPublicationIdentifier(it)
