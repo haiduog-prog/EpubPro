@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -76,6 +77,50 @@ class WebNovelSourceStore @Inject constructor(
     }
 
     /**
+     * Ghi nhận file EPUB sắp bị thay bằng bản nối thêm chương, để xóa ở lần dọn sau.
+     * Gọi trước khi database chuyển sang file mới; nếu thay file thất bại, file vẫn là bản đang dùng
+     * nên [purgeRetiredFiles] sẽ bỏ qua nó.
+     *
+     * @param bookId ID sách.
+     * @param filePath Đường dẫn EPUB cũ.
+     * @throws IllegalStateException Khi không ghi được danh sách file cần dọn.
+     */
+    fun retireFile(bookId: String, filePath: String) {
+        val paths = retiredFiles(bookId) + filePath
+        check(prefs.edit().putString(retiredKey(bookId), JSONArray(paths.toList()).toString()).commit())
+    }
+
+    /**
+     * Xóa các file EPUB cũ đã ghi nhận của sách, trừ file sách đang dùng. Gọi ở thời điểm Reader/TTS
+     * đã chuyển sang file mới (lần nối chương kế tiếp, hoặc khi xóa sách).
+     *
+     * @param bookId ID sách.
+     * @param currentPath Đường dẫn EPUB database đang tham chiếu; null khi sách đã bị xóa.
+     * @param delete Xóa một file cùng cache của nó; trả về true nếu file không còn tồn tại.
+     */
+    fun purgeRetiredFiles(bookId: String, currentPath: String?, delete: (String) -> Boolean) {
+        val retired = retiredFiles(bookId)
+        if (retired.isEmpty()) return
+        val remaining = retired.filter { it == currentPath || !delete(it) }
+        val editor = prefs.edit()
+        if (remaining.isEmpty()) editor.remove(retiredKey(bookId))
+        else editor.putString(retiredKey(bookId), JSONArray(remaining).toString())
+        editor.apply()
+    }
+
+    /**
+     * Đọc danh sách file EPUB cũ đang chờ dọn của sách.
+     *
+     * @param bookId ID sách.
+     * @return Tập đường dẫn, rỗng nếu không có hoặc dữ liệu hỏng.
+     */
+    private fun retiredFiles(bookId: String): Set<String> {
+        val json = prefs.getString(retiredKey(bookId), null) ?: return emptySet()
+        val array = runCatching { JSONArray(json) }.getOrNull() ?: return emptySet()
+        return (0 until array.length()).mapNotNullTo(LinkedHashSet()) { array.optString(it).takeIf(String::isNotBlank) }
+    }
+
+    /**
      * Tìm sách đã lưu bắt đầu từ URL này.
      *
      * @param startUrl URL chương bắt đầu.
@@ -94,7 +139,7 @@ class WebNovelSourceStore @Inject constructor(
      * @param bookId ID sách.
      */
     fun clear(bookId: String) {
-        prefs.edit().remove(sourceKey(bookId)).remove("pending_$bookId").apply()
+        prefs.edit().remove(sourceKey(bookId)).remove("pending_$bookId").remove(retiredKey(bookId)).apply()
     }
 
     /**
@@ -131,6 +176,14 @@ class WebNovelSourceStore @Inject constructor(
      * @return Khóa SharedPreferences.
      */
     private fun sourceKey(bookId: String): String = KEY_PREFIX + bookId
+
+    /**
+     * Khóa danh sách file EPUB cũ chờ dọn của sách.
+     *
+     * @param bookId ID sách.
+     * @return Khóa SharedPreferences.
+     */
+    private fun retiredKey(bookId: String): String = "retired_$bookId"
 
     private companion object {
         const val KEY_PREFIX = "source_"

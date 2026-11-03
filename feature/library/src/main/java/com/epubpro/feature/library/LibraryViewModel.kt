@@ -3,6 +3,7 @@ package com.epubpro.feature.library
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -17,6 +18,7 @@ import com.epubpro.core.storage.ComicPreferencesStore
 import com.epubpro.core.storage.ComicTranslationStore
 import com.epubpro.core.storage.ConvertDictionaryStore
 import com.epubpro.core.storage.EpubStorageManager
+import com.epubpro.core.storage.OfflineComicStore
 import com.epubpro.core.storage.OnlineComicProgressStore
 import com.epubpro.core.storage.WebNovelSourceStore
 import com.epubpro.core.storage.ReaderResumeSnapshotStore
@@ -39,6 +41,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import java.io.File
 import javax.inject.Inject
 import kotlinx.coroutines.withContext
 
@@ -151,7 +154,8 @@ class LibraryViewModel @Inject constructor(
     private val convertDictionaryStore: ConvertDictionaryStore,
     private val comicTranslationStore: ComicTranslationStore,
     private val webNovelSourceStore: WebNovelSourceStore,
-    private val onlineComicProgressStore: OnlineComicProgressStore
+    private val onlineComicProgressStore: OnlineComicProgressStore,
+    private val offlineComicStore: OfflineComicStore
 ) : ViewModel() {
 
     val pendingLocalImports = localBookImportScheduler.pendingImports
@@ -624,7 +628,14 @@ class LibraryViewModel @Inject constructor(
                     comicPreferencesStore.clear(item.book.id)
                     convertDictionaryStore.clearBook(item.book.id)
                     comicTranslationStore.clearBook(item.book.id)
+                    // Các bản EPUB cũ còn sót từ những lần nối chương của truyện web.
+                    webNovelSourceStore.purgeRetiredFiles(item.book.id, null) { path ->
+                        epubEngine.deleteBookCache(path)
+                        storageManager.deleteBookFile(path)
+                        !File(path).exists()
+                    }
                     webNovelSourceStore.clear(item.book.id)
+                    offlineComicStore.clear(item.book.id)
                     if (item.book.id.startsWith(OnlineComicProgressStore.COMIC_BOOK_ID_PREFIX)) {
                         val comicKey = item.book.id.removePrefix(OnlineComicProgressStore.COMIC_BOOK_ID_PREFIX)
                         onlineComicProgressStore.clearComicKey(comicKey)
@@ -642,5 +653,45 @@ class LibraryViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    /**
+     * Sao chép file sách từ bộ nhớ riêng của app ra vị trí người dùng chọn qua trình chọn nơi lưu
+     * của hệ thống (Download, Google Drive...). Nếu ghi lỗi giữa chừng thì xóa file dở dang.
+     *
+     * @param bookId ID sách cần xuất.
+     * @param uri Document URI do trình chọn nơi lưu trả về.
+     */
+    fun exportBook(bookId: String, uri: Uri) {
+        viewModelScope.launch {
+            val book = bookRepository.getBookById(bookId) ?: return@launch
+            try {
+                withContext(Dispatchers.IO) {
+                    val source = storageManager.getBookFile(book.filePath)
+                    check(bookExportFormat(book.filePath) != null && source.isFile)
+                    try {
+                        val output = checkNotNull(context.contentResolver.openOutputStream(uri))
+                        output.use { target -> source.inputStream().use { it.copyTo(target) } }
+                    } catch (error: Exception) {
+                        runCatching { DocumentsContract.deleteDocument(context.contentResolver, uri) }
+                        throw error
+                    }
+                }
+                _events.send(UserMessage(R.string.library_export_success, listOf(book.title)))
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                _events.send(UserMessage(R.string.library_export_failed, listOf(book.title)))
+            }
+        }
+    }
+
+    /**
+     * Báo lỗi khi máy không có ứng dụng nào nhận yêu cầu chọn nơi lưu file.
+     *
+     * @param title Tên sách đang xuất.
+     */
+    fun reportExportUnavailable(title: String) {
+        viewModelScope.launch { _events.send(UserMessage(R.string.library_export_failed, listOf(title))) }
     }
 }

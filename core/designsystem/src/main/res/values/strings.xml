@@ -30,6 +30,9 @@
     <string name="library_empty_title">Kệ sách chưa có tác phẩm nào</string>
     <string name="library_empty_subtitle">Nhấn nút bên dưới để nạp file sách từ thiết bị</string>
     <string name="library_delete_book">Xóa sách</string>
+    <string name="library_export_book">Xuất %1$s</string>
+    <string name="library_export_success">Đã xuất “%1$s”</string>
+    <string name="library_export_failed">Không xuất được “%1$s”</string>
     <string name="library_loading">Đang tải thư viện...</string>
     <string name="library_search_empty_title">Không tìm thấy “%1$s”</string>
     <string name="library_search_empty_subtitle">Hãy thử một từ khóa khác.</string>
@@ -750,5 +753,14 @@
     <string name="online_comic_chapter_previous">Chương trước</string>
     <string name="online_comic_chapter_next">Chương sau</string>
     <string name="online_comic_open_in_browser">Mở trình duyệt</string>
+    <string name="online_comic_download">Tải về máy</string>
+    <string name="online_comic_download_message">Lưu ảnh truyện thành một cuốn CBZ trên Kệ sách để đọc offline. Bắt đầu từ chương đang đọc; nếu đã tải trước đó thì nối tiếp vào cùng cuốn.</string>
+    <string name="online_comic_download_count">%1$d chương</string>
+    <string name="online_comic_download_started">Đang tải về máy, xem tiến độ ở thanh thông báo.</string>
+    <string name="online_comic_download_done">Đã lưu %1$d chương vào Kệ sách</string>
+    <string name="online_comic_download_partial">Đã lưu %1$d chương vào Kệ sách, nhưng quá trình tải bị gián đoạn. Hãy thử tải tiếp.</string>
+    <string name="online_comic_download_no_new">Không có chương mới để tải</string>
+    <string name="online_comic_download_failed">Không tải được ảnh truyện về máy</string>
+    <string name="online_comic_download_channel_name">Tải truyện tranh về máy</string>
     <string name="online_comic_load_failed_js_required">Trang yêu cầu xác minh bảo vệ hoặc JavaScript. Vui lòng mở trang gốc.</string>
 </resources>

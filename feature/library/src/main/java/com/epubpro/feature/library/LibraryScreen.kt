@@ -2,7 +2,10 @@ package com.epubpro.feature.library
 
 import androidx.compose.foundation.verticalScroll
 import android.Manifest
+import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -44,6 +47,7 @@ import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SearchOff
@@ -182,6 +186,8 @@ fun LibraryScreen(
     var showAddBookBottomSheet by rememberSaveable { mutableStateOf(false) }
     var showDriveImportHelp by rememberSaveable { mutableStateOf(false) }
     var pendingDeleteBookId by rememberSaveable { mutableStateOf<String?>(null) }
+    // Giữ ID sách đang xuất qua lần tạo lại Activity khi trình chọn nơi lưu đang mở.
+    var pendingExportBookId by rememberSaveable { mutableStateOf<String?>(null) }
 
     LaunchedEffect(viewModel, lifecycleOwner, snackbarHostState) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -214,6 +220,17 @@ fun LibraryScreen(
     ) { uri: Uri? ->
         uri?.let {
             viewModel.uploadEpubToServer(it, queryDisplayName(context, it), queryMimeType(context, it))
+        }
+    }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val bookId = pendingExportBookId
+        pendingExportBookId = null
+        val uri = result.data?.data
+        if (result.resultCode == Activity.RESULT_OK && bookId != null && uri != null) {
+            viewModel.exportBook(bookId, uri)
         }
     }
 
@@ -628,7 +645,23 @@ fun LibraryScreen(
                             BookCard(
                                 item = item,
                                 onClick = { onBookClick(item.book.id, item.book.sourceFormat) },
-                                onDelete = { pendingDeleteBookId = item.book.id }
+                                onDelete = { pendingDeleteBookId = item.book.id },
+                                onExport = { format ->
+                                    pendingExportBookId = item.book.id
+                                    val intent = Intent(Intent.ACTION_CREATE_DOCUMENT)
+                                        .addCategory(Intent.CATEGORY_OPENABLE)
+                                        .setType(format.mimeType)
+                                        .putExtra(
+                                            Intent.EXTRA_TITLE,
+                                            bookExportFileName(item.book.title, format)
+                                        )
+                                    try {
+                                        exportLauncher.launch(intent)
+                                    } catch (_: ActivityNotFoundException) {
+                                        pendingExportBookId = null
+                                        viewModel.reportExportUnavailable(item.book.title)
+                                    }
+                                }
                             )
                         }
                     }
@@ -801,14 +834,17 @@ private fun SyncProgressWidget(
  * @param item Dữ liệu cuốn sách và tiến độ đọc.
  * @param onClick Callback khi người dùng chọn đọc sách.
  * @param onDelete Callback khi người dùng chọn xóa sách.
+ * @param onExport Callback khi người dùng chọn xuất file sách ra ngoài, nhận định dạng xuất.
  */
 @Composable
 fun BookCard(
     item: BookItemUiState,
     onClick: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onExport: (BookExportFormat) -> Unit = {}
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    val exportFormat = remember(item.book.filePath) { bookExportFormat(item.book.filePath) }
 
     Card(
         modifier = Modifier
@@ -899,6 +935,23 @@ fun BookCard(
                                 expanded = showMenu,
                                 onDismissRequest = { showMenu = false }
                             ) {
+                                exportFormat?.let { format ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(stringResource(R.string.library_export_book, format.name))
+                                        },
+                                        onClick = {
+                                            showMenu = false
+                                            onExport(format)
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Default.FileDownload,
+                                                contentDescription = null
+                                            )
+                                        }
+                                    )
+                                }
                                 DropdownMenuItem(
                                     text = {
                                         Text(

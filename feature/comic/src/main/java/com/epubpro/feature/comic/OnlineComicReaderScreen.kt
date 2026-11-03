@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListState
@@ -30,10 +31,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.ViewCarousel
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -173,7 +176,7 @@ fun OnlineComicReaderScreen(
 
     LaunchedEffect(uiState.messageRes) {
         uiState.messageRes?.let { resId ->
-            Toast.makeText(context, context.getString(resId), Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(resId, uiState.messageArg), Toast.LENGTH_SHORT).show()
             viewModel.consumeMessage()
         }
     }
@@ -264,7 +267,8 @@ private fun OnlineComicReaderContent(
                 onPreviousChapter = viewModel::navigateToPreviousChapter,
                 onNextChapter = viewModel::navigateToNextChapter,
                 onServerSelected = viewModel::selectImageServer,
-                onOpenInBrowser = { onOpenInBrowser(chapter.chapterUrl) }
+                onOpenInBrowser = { onOpenInBrowser(chapter.chapterUrl) },
+                onDownload = viewModel::downloadChapters
             )
         }
 
@@ -320,6 +324,7 @@ private class OnlinePageNavigator(
  * @param onNextChapter Callback chuyển chương sau.
  * @param onServerSelected Callback chọn server ảnh.
  * @param onOpenInBrowser Callback mở trang gốc.
+ * @param onDownload Callback tải về máy, nhận số chương cần tải.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -331,7 +336,8 @@ private fun OnlineComicReaderControls(
     onPreviousChapter: () -> Unit,
     onNextChapter: () -> Unit,
     onServerSelected: (com.epubpro.core.comic.ComicImageServer) -> Unit,
-    onOpenInBrowser: () -> Unit
+    onOpenInBrowser: () -> Unit,
+    onDownload: (Int) -> Unit
 ) {
     val barColor = Color.Black.copy(alpha = 0.85f)
     val chapter = uiState.chapterInfo ?: return
@@ -396,6 +402,26 @@ private fun OnlineComicReaderControls(
                                 }
                             }
                         }
+                    }
+                    var showDownloadDialog by remember { mutableStateOf(false) }
+                    IconButton(onClick = { showDownloadDialog = true }, enabled = !uiState.isDownloading) {
+                        if (uiState.isDownloading) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(
+                                Icons.Default.Download,
+                                contentDescription = stringResource(R.string.online_comic_download)
+                            )
+                        }
+                    }
+                    if (showDownloadDialog) {
+                        OnlineComicDownloadDialog(
+                            onDismiss = { showDownloadDialog = false },
+                            onConfirm = { count ->
+                                showDownloadDialog = false
+                                onDownload(count)
+                            }
+                        )
                     }
                     IconButton(onClick = onOpenInBrowser) {
                         Icon(
@@ -594,6 +620,34 @@ private fun OnlineComicReaderError(
  * @param keepScreenOn Cờ giữ màn hình sáng.
  * @param showSystemBars Cờ hiện thanh trạng thái và thanh điều hướng.
  */
+/**
+ * Hộp thoại chọn số chương cần tải về máy, tính từ chương đang đọc.
+ *
+ * @param onDismiss Callback đóng hộp thoại.
+ * @param onConfirm Callback khi chọn số chương.
+ */
+@Composable
+private fun OnlineComicDownloadDialog(onDismiss: () -> Unit, onConfirm: (Int) -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.online_comic_download)) },
+        text = {
+            Column {
+                Text(stringResource(R.string.online_comic_download_message))
+                DOWNLOAD_CHAPTER_OPTIONS.forEach { count ->
+                    TextButton(onClick = { onConfirm(count) }, modifier = Modifier.fillMaxWidth()) {
+                        Text(stringResource(R.string.online_comic_download_count, count))
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
+        }
+    )
+}
+
 @Composable
 private fun OnlineReaderWindowEffects(keepScreenOn: Boolean, showSystemBars: Boolean) {
     val view = LocalView.current
@@ -648,3 +702,6 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     is ContextWrapper -> baseContext.findActivity()
     else -> null
 }
+
+/** Các lựa chọn số chương khi tải truyện tranh về máy. */
+private val DOWNLOAD_CHAPTER_OPTIONS = listOf(1, 5, 10, 20, 50)

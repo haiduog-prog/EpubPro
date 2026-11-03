@@ -156,6 +156,8 @@ class WebNovelDownloadWorker @AssistedInject constructor(
         val maxChapters = inputData.getInt(KEY_MAX_CHAPTERS, DEFAULT_MAX_CHAPTERS).coerceIn(1, MAX_CHAPTERS)
         val book = bookRepository.getBookById(bookId) ?: return Result.failure()
         sourceStore.reconcileReplacement(bookId, book.filePath)
+        // Reader/TTS đã chuyển sang bản hiện tại từ lần nối trước: dọn các bản cũ còn sót.
+        sourceStore.purgeRetiredFiles(bookId, book.filePath, ::deleteRetiredFile)
         val source = sourceStore.get(bookId) ?: return Result.failure()
         source.userAgent?.let { userAgent = it }
 
@@ -194,6 +196,8 @@ class WebNovelDownloadWorker @AssistedInject constructor(
             )
             val parsed = epubEngine.parseEpubMetadataStrict(outputFile)
             sourceStore.prepareReplacement(bookId, outputFile.absolutePath, source.copy(lastChapterUrl = result.lastChapterUrl ?: source.lastChapterUrl))
+            // Không xóa ngay vì Reader có thể còn đọc bản cũ; dọn ở lần nối sau hoặc khi xóa sách.
+            sourceStore.retireFile(bookId, oldFile.absolutePath)
             replacement.replace(parsed, bookId, identifier, keepAiCache = true, expectedFilePath = oldFile.absolutePath)
             sourceStore.reconcileReplacement(bookId, outputFile.absolutePath)
             showResultNotification(
@@ -287,7 +291,25 @@ class WebNovelDownloadWorker @AssistedInject constructor(
         } else {
             ForegroundInfo(NOTIFICATION_ID, notification)
         }
-        setForeground(foreground)
+        try {
+            setForeground(foreground)
+        } catch (_: IllegalStateException) {
+            // Android 12+ chặn chạy foreground service khi app ở nền (ForegroundServiceStartNotAllowedException):
+            // vẫn tải tiếp như worker thường, chỉ cập nhật notification tiến độ.
+            notificationManager.notify(NOTIFICATION_ID, notification)
+        }
+    }
+
+    /**
+     * Xóa một bản EPUB cũ đã bị thay bằng bản nối thêm chương, kèm cache cấu trúc theo đường dẫn đó.
+     *
+     * @param filePath Đường dẫn EPUB cũ.
+     * @return true nếu file không còn tồn tại.
+     */
+    private fun deleteRetiredFile(filePath: String): Boolean {
+        epubEngine.deleteBookCache(filePath)
+        storageManager.deleteBookFile(filePath)
+        return !File(filePath).exists()
     }
 
     /**

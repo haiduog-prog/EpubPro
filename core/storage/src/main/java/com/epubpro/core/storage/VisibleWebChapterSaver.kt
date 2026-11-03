@@ -88,11 +88,14 @@ class VisibleWebChapterSaver @Inject constructor(
                     } else {
                         val source = checkNotNull(sources.get(target.id))
                         val old = File(target.filePath)
+                        // Bản hiện tại đã được Reader/TTS dùng: dọn các bản cũ từ lần nối trước.
+                        sources.purgeRetiredFiles(target.id, target.filePath, ::deleteRetiredFile)
                         val chapters = EpubWriter.readChapters(old)
                         val identifier = checkNotNull(ZipFile(old).use { EpubPackageStructureParser.readPublicationIdentifier(it) })
                         EpubWriter.write(output, EpubMetadata(title = target.title, author = target.author.takeUnless { it == "Unknown Author" } ?: article.author.orEmpty(), sourceUrl = source.startUrl, identifier = identifier), chapters + chapter)
                         val parsed = engine.parseEpubMetadataStrict(output)
                         sources.prepareReplacement(target.id, output.absolutePath, source.copy(lastChapterUrl = article.url, userAgent = userAgent ?: source.userAgent))
+                        sources.retireFile(target.id, old.absolutePath)
                         replacement.replace(parsed, target.id, identifier, keepAiCache = true, expectedFilePath = old.absolutePath)
                         sources.reconcileReplacement(target.id, output.absolutePath)
                         VisibleChapterResult.Saved(target.id, chapters.size, false)
@@ -106,4 +109,16 @@ class VisibleWebChapterSaver @Inject constructor(
                 }
             }
         }
+
+    /**
+     * Xóa một bản EPUB cũ đã bị thay bằng bản nối thêm chương, kèm cache cấu trúc theo đường dẫn đó.
+     *
+     * @param filePath Đường dẫn EPUB cũ.
+     * @return true nếu file không còn tồn tại.
+     */
+    private fun deleteRetiredFile(filePath: String): Boolean {
+        engine.deleteBookCache(filePath)
+        storage.deleteBookFile(filePath)
+        return !File(filePath).exists()
+    }
 }

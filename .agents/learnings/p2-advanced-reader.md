@@ -1,7 +1,7 @@
 # P2 Advanced Reader (CBZ/Manga, Trình duyệt web novel, Convert Hán-Việt, OCR dịch truyện tranh)
 
 > Tổng hợp kiến thức về nhóm tính năng P2: đọc truyện tranh CBZ, trình duyệt bóc tách truyện web và lưu EPUB, Convert Hán-Việt offline cho EPUB tiếng Trung, OCR + dịch bóng thoại truyện tranh.
-> Cập nhật lần cuối: 2026-10-30
+> Cập nhật lần cuối: 2026-11-03
 
 ---
 
@@ -28,8 +28,8 @@
 - **Files liên quan**: `core/webnovel/.../ArticleExtractor.kt`, `ChapterLinkDetector.kt`
 
 ### Lưu truyện web = EPUB, HTTP client riêng chống SSRF và hỗ trợ tải nối tiếp
-- **Ngày**: 2026-10-30
-- **Chi tiết**: `WebNovelDownloadWorker` dùng `WebNovelCrawler` + `EpubWriter` tạo EPUB chuẩn. Dùng `OkHttpClient` riêng (không gắn auth interceptor của server EpubPro), lọc địa chỉ qua `PublicAddressPolicy` ở cả `Dns` và network interceptor (kiểm tra socket IP thực tế sau redirect) để chặn SSRF vào localhost/LAN/CGNAT/ULA. `WebNovelSourceStore` lưu `startUrl`, `lastChapterUrl`, `userAgent` (khớp WebView để giữ cookie Cloudflare) phục vụ tải thêm chương mới và cập nhật qua `LocalBookReplacement(..., keepAiCache = true)`.
+- **Ngày**: 2026-11-03
+- **Chi tiết**: `WebNovelDownloadWorker` dùng `WebNovelCrawler` + `EpubWriter` tạo EPUB chuẩn. Dùng `OkHttpClient` riêng (không gắn auth interceptor của server EpubPro), lọc địa chỉ qua `PublicAddressPolicy` ở cả `Dns` và network interceptor (kiểm tra socket IP thực tế sau redirect) để chặn SSRF vào localhost/LAN/CGNAT/ULA. `WebNovelSourceStore` lưu `startUrl`, `lastChapterUrl`, `userAgent` (khớp WebView để giữ cookie Cloudflare) phục vụ tải thêm chương mới và cập nhật qua `LocalBookReplacement(..., keepAiCache = true)`. EPUB cũ sau khi nối **không xóa ngay** (Reader/TTS có thể đang đọc theo đường dẫn): `retireFile` ghi vào danh sách chờ, `purgeRetiredFiles` dọn ở lần nối sau hoặc khi xóa sách, bỏ qua đường dẫn hiện tại và giữ lại file xóa thất bại.
 - **Files liên quan**: `core/storage/.../worker/WebNovelDownloadWorker.kt`, `core/webnovel/.../PublicAddressPolicy.kt`, `core/storage/.../WebNovelSourceStore.kt`, `core/storage/.../worker/LocalBookReplacement.kt`
 
 ### Convert Hán-Việt: từ điển nhị phân mmap, đồng bộ Sanitize & TTS nền
@@ -51,6 +51,21 @@
 - **Ngày**: 2026-10-30
 - **Chi tiết**: `NetTruyenChapterParser` đọc ảnh lazy-load và URL server thay thế từ HTML; `OnlineComicImageLoader` dùng OkHttp không cookie phiên, Referer cho hotlink, giới hạn ảnh 64 MiB, giải mã tối đa hai ảnh đồng thời và cache RAM. Màn hình tái dùng `ComicPageDecoder`/các composable đọc CBZ thay vì nhân đôi pipeline ảnh.
 - **Files liên quan**: `core/comic/.../NetTruyenChapterParser.kt`, `OnlineComicImageLoader.kt`, `feature/comic/.../OnlineComicReaderScreen.kt`
+
+### Tải truyện tranh online về máy = một file CBZ cho cả bộ, nối chương bằng ghi lại
+- **Ngày**: 2026-11-03
+- **Chi tiết**: `OnlineComicDownloadWorker` (unique work `online_comic_download_<comicKey>`, KEEP, cần mạng) đi theo link "chương sau", tải ảnh từng trang (thử server thay thế, kiểm tra magic bytes) ra `cacheDir` rồi mới ghi CBZ để không giữ cả chương trong RAM. `ComicCbzWriter` chép entry cũ + thêm thư mục `%04d Tên chương/`, một `ComicInfo.xml` duy nhất, `NO_COMPRESSION`. Nối chương: ghi file mới, `insertBook` giữ ID, tính lại tiến độ, rồi xóa file cũ. `OfflineComicStore` lưu `comicKey` + danh sách URL chương để biết tải tiếp từ đâu và chặn trùng chương. Ngân sách 95% `ComicReadLimits` để archive luôn mở được.
+- **Files liên quan**: `core/storage/.../worker/OnlineComicDownloadWorker.kt`, `OnlineComicDownloadScheduler.kt`, `core/storage/.../OfflineComicStore.kt`, `core/comic/.../ComicCbzWriter.kt`
+
+### Xuất sách ra bộ nhớ ngoài qua SAF
+- **Ngày**: 2026-11-03
+- **Chi tiết**: Sách nằm trong `filesDir/books/` (người dùng không truy cập được). Xuất bằng `ACTION_CREATE_DOCUMENT` → không cần quyền bộ nhớ; ViewModel chép file ở IO qua `contentResolver.openOutputStream`, lỗi thì `DocumentsContract.deleteDocument` để không để lại file rỗng. `bookExportFormat` trả null cho sách có `filePath` là URL (truyện online). Tên file bỏ ký tự cấm, tối đa 100 ký tự.
+- **Files liên quan**: `feature/library/.../BookExport.kt`, `LibraryViewModel.kt`, `LibraryScreen.kt`
+
+### Truyện tranh online cũng chặn địa chỉ nội bộ ở tầng HTTP
+- **Ngày**: 2026-11-03
+- **Chi tiết**: Lọc URL ảnh lúc parse là chưa đủ (redirect, link chương, DNS rebinding). `ComicPublicAddressPolicy.applyTo(builder)` gắn `Dns` chỉ trả IP công khai + network interceptor kiểm tra IP socket thực tế, dùng cho `OnlineComicFetcher` và `OnlineComicImageLoader`; parser dùng chung `isPublic`. `core:comic` không phụ thuộc `core:webnovel` nên có bản policy riêng — giữ logic giống `PublicAddressPolicy` khi sửa.
+- **Files liên quan**: `core/comic/.../ComicPublicAddressPolicy.kt`, `OnlineComicFetcher.kt`, `OnlineComicImageLoader.kt`
 
 ---
 
@@ -140,6 +155,34 @@
 - **Fix**: Truyền `resumeProgress=true` riêng khi mở từ Kệ sách; route trực tiếp mặc định giữ chương được yêu cầu. Nút thử lại dùng lại URL chương đang lỗi.
 - **Files liên quan**: `app/.../AppNavigation.kt`, `feature/comic/.../OnlineComicReaderViewModel.kt`
 
+### Nối chương vào CBZ nhưng Kệ sách vẫn hiện số trang cũ và "Đã hoàn thành"
+- **Ngày**: 2026-11-03
+- **Vấn đề**: Sau khi tải thêm chương, cuốn đã đọc hết vẫn hiện tổng trang cũ, kẹt ở tab "Đã hoàn thành".
+- **Root cause**: Chỉ cập nhật `Book.totalChapters`; Kệ sách ưu tiên `ReadingProgress.totalChapters` và lọc theo `progressPercentage >= 1f`.
+- **Fix**: Mọi luồng thay file sách phải tính lại `totalChapters`/`progressPercentage` trong `reading_progress` và tăng `updatedAt` (+1, chống tràn `Long.MAX_VALUE`) như `LocalBookReplacement`. Truyện tranh lấy trang từ `parseComicLocator(currentCfi) ?: chapterIndex`. Hạn chế còn lại: Reader đang mở bản cũ sẽ ghi lại số trang cũ khi lật trang, tới lần mở sau mới đúng.
+- **Files liên quan**: `core/storage/.../worker/OnlineComicDownloadWorker.kt`
+
+### `setForeground` ném lỗi làm hỏng tác vụ tải nền
+- **Ngày**: 2026-11-03
+- **Vấn đề**: Android 12+ có thể ném `ForegroundServiceStartNotAllowedException` khi app ở nền; gọi trong vòng tải làm nhảy vào `catch` chung, xóa file đang tải và `Result.failure()`.
+- **Root cause**: Gọi `setForeground` trực tiếp, không bắt lỗi.
+- **Fix**: `try { setForeground(info) } catch (_: IllegalStateException) { notificationManager.notify(id, notification) }` — tác vụ vẫn chạy như worker thường. Bắt `IllegalStateException` thay vì `runCatching` để không nuốt `CancellationException`.
+- **Files liên quan**: `OnlineComicDownloadWorker.kt`, `WebNovelDownloadWorker.kt`, `EpubImportWorker.kt`
+
+### Mở lại màn hình mất trạng thái tác vụ WorkManager đang chạy
+- **Ngày**: 2026-11-03
+- **Vấn đề**: Thoát rồi mở lại Reader truyện tranh online khi đang tải: nút không hiện tiến trình, không báo kết quả.
+- **Root cause**: `isDownloading` chỉ bật khi bấm tải trong phiên ViewModel hiện tại.
+- **Fix**: Scheduler có `findActive(comicKey)` (unique work chưa kết thúc, gọi ở IO); ViewModel gọi trong `init` rồi dùng chung `awaitDownload(workId)` với luồng bấm tải. Bỏ qua nếu người dùng đã bấm tải trong lúc tìm.
+- **Files liên quan**: `OnlineComicDownloadScheduler.kt`, `feature/comic/.../OnlineComicReaderViewModel.kt`
+
+### Tự tải thêm chương truyện web làm mới hai lần và bật thông báo lỗi
+- **Ngày**: 2026-11-03
+- **Vấn đề**: Khi đọc gần hết, tự tải thêm chương gọi refresh thủ công trùng với luồng collect, báo "chờ mạng"/lỗi nhiều lần.
+- **Root cause**: Luồng `combine(getAllBooks, filePath)` đã tự nạp lại khi `filePath` đổi; nhánh tự động dùng chung thông báo với nhánh người dùng bấm.
+- **Fix**: Bỏ `refreshAppendedChapters()` thừa; chỉ báo chờ mạng một lần; với `auto` thì im lặng khi lỗi và chỉ báo "đã thêm chương".
+- **Files liên quan**: `feature/reader/.../ReaderViewModel.kt`
+
 ---
 
 ## How-To
@@ -194,13 +237,28 @@
   4. Kết nối ViewModel với UI đọc hiện có; giữ riêng state lỗi, thử lại, đổi server và điều hướng chương.
 - **Files liên quan**: `core/comic/`, `feature/comic/`
 
+### Thêm một định dạng xuất sách
+- **Ngày**: 2026-11-03
+- **Bước thực hiện**:
+  1. Thêm giá trị vào `BookExportFormat(extension, mimeType)`.
+  2. Cập nhật `bookExportFormat(filePath)` nhận diện phần mở rộng; giữ trả null cho URL.
+  3. Thêm test trong `BookExportTest`; menu "Xuất %1$s" tự dùng `format.name`.
+- **Files liên quan**: `feature/library/.../BookExport.kt`
+
+### Kiểm chứng bản review từ AI khác trước khi sửa
+- **Ngày**: 2026-11-03
+- **Bước thực hiện**:
+  1. Đọc đúng code được trích dẫn và cả code liên quan (ví dụ `ComicArchive` giữ `ZipFile` mở suốt phiên → claim "mở lại ZipFile mỗi trang, xóa file gây FileNotFound" là sai).
+  2. Đối chiếu tên/hằng số được nêu (tên unique work trong review có thể sai dù lỗi có thật).
+  3. Chỉ sửa phần đúng; báo rõ phần sai và hạn chế còn lại.
+
 ---
 
 ## Patterns
 
 ### Sửa file CRLF bằng script Python giữ kiểu xuống dòng
 - **Ngày**: 2026-10-29
-- **Chi tiết**: Phần lớn file trong repo là CRLF. Dùng helper `edit(path, [(old, new)])` tự nhận `\r\n`, assert mỗi `old` xuất hiện đúng 1 lần, ghi lại với `newline=''`; `add_strings()` chèn `<string>` trước `</resources>` và chặn key trùng. Heredoc Python dài trong Bash dễ lỗi quote → ghi script ra file rồi chạy. Sau khi sửa, kiểm tra không lẫn LF bằng `grep -c $'\r$'`.
+- **Chi tiết**: Phần lớn file trong repo là CRLF. Dùng helper `edit(path, [(old, new)])` tự nhận `\r\n`, assert mỗi `old` xuất hiện đúng 1 lần, ghi lại với `newline=''`; `add_strings()` chèn `<string>` trước `</resources>` và chặn key trùng. Heredoc Python dài trong Bash dễ lỗi quote → ghi script ra file rồi chạy. Sau khi sửa, kiểm tra không lẫn LF bằng Python (`grep` của Git Bash không thấy CR). Repo có `core.autocrlf=true`, index lưu LF: xem bằng `git ls-files --eol`; working copy LF chỉ gây cảnh báo "LF will be replaced by CRLF", không đổi nội dung commit — chuẩn hóa về CRLF cho đồng nhất. Heredoc chứa nhiều nháy trong Bash tool dễ lỗi → ghi script bằng Write rồi chạy.
 
 ### Tách logic thuần khỏi Composable/ViewModel để unit test
 - **Ngày**: 2026-10-29
@@ -243,3 +301,8 @@
 - **Ngày**: 2026-10-30
 - **Chi tiết**: Chỉ hiển thị server thay thế khi parser có đủ URL cho mọi trang; mỗi ảnh thay thế phải cùng chỉ số với ảnh chính. Khi đổi server, tạo lại danh sách trang và reset vị trí đọc phù hợp. Giới hạn kích thước cần kiểm tra cả `Content-Length` lẫn tổng byte đã đọc vì response có thể không khai báo độ dài.
 - **Files liên quan**: `core/comic/.../NetTruyenChapterParser.kt`, `OnlineComicImageLoader.kt`, `feature/comic/.../OnlineComicReaderViewModel.kt`
+
+### Xóa/thay file sách khi Reader có thể đang mở
+- **Ngày**: 2026-11-03
+- **Chi tiết**: Trên Android, file đang mở vẫn đọc được sau khi bị xóa. `ComicArchive` giữ `ZipFile` suốt phiên nên xóa CBZ cũ ngay là an toàn. Reader EPUB/TTS mở lại file theo đường dẫn nên phải hoãn xóa (`retireFile`/`purgeRetiredFiles`). Trước khi xóa, kiểm tra reader giữ file descriptor hay mở lại theo path.
+- **Files liên quan**: `core/comic/.../ComicArchive.kt`, `core/storage/.../WebNovelSourceStore.kt`

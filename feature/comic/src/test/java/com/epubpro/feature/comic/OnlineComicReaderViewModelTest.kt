@@ -123,7 +123,9 @@ class OnlineComicReaderViewModelTest {
             imageLoader = mockImageLoader,
             progressStore = mockProgressStore,
             readerPreferences = readerPreferences,
-            bookRepository = mockBookRepository
+            bookRepository = mockBookRepository,
+            offlineStore = mock(),
+            downloadScheduler = mock()
         )
     }
 

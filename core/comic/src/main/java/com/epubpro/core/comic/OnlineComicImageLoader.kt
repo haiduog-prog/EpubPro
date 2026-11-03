@@ -24,7 +24,7 @@ import okhttp3.Request
 @Singleton
 open class OnlineComicImageLoader @Inject constructor() {
 
-    private val httpClient: OkHttpClient = OkHttpClient.Builder()
+    private val httpClient: OkHttpClient = ComicPublicAddressPolicy.applyTo(OkHttpClient.Builder())
         .cookieJar(CookieJar.NO_COOKIES)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
@@ -63,6 +63,17 @@ open class OnlineComicImageLoader @Inject constructor() {
             }.also { pageCache.put(cacheKey, it) }
         }
     }
+
+    /**
+     * Tải nguyên dữ liệu ảnh (không giải mã) để lưu truyện về máy đọc offline.
+     *
+     * @param imageUrl URL tuyệt đối của ảnh.
+     * @param refererUrl URL trang chương dùng làm header Referer để tránh bị chặn hotlinking.
+     * @return Mảng byte của ảnh, tối đa 64 MiB.
+     * @throws IOException Nếu tải thất bại hoặc ảnh vượt giới hạn dung lượng.
+     */
+    open suspend fun downloadImage(imageUrl: String, refererUrl: String? = null): ByteArray =
+        withContext(Dispatchers.IO) { fetchImageBytes(imageUrl, refererUrl) }
 
     /**
      * Xóa toàn bộ bộ nhớ đệm ảnh trong RAM khi đóng trình đọc hoặc giải phóng tài nguyên.

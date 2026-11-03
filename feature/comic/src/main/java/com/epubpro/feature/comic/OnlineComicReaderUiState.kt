@@ -21,6 +21,8 @@ import com.epubpro.domain.model.ComicReadingMode
  * @property volumeKeyNavigation Cho phép lật trang bằng phím âm lượng.
  * @property selectedServer Server ảnh người dùng đang chọn (nếu trang hỗ trợ).
  * @property messageRes Thông báo một lần (toast/snackbar).
+ * @property messageArg Tham số số nguyên cho [messageRes] (ví dụ số chương đã lưu).
+ * @property isDownloading Đang tải truyện về máy thành CBZ.
  */
 data class OnlineComicReaderUiState(
     val isLoading: Boolean = true,
@@ -35,5 +37,7 @@ data class OnlineComicReaderUiState(
     val keepScreenOn: Boolean = false,
     val volumeKeyNavigation: Boolean = false,
     val selectedServer: ComicImageServer? = null,
-    @StringRes val messageRes: Int? = null
+    @StringRes val messageRes: Int? = null,
+    val messageArg: Int = 0,
+    val isDownloading: Boolean = false
 )

@@ -1,7 +1,5 @@
 package com.epubpro.core.comic
 
-import java.net.Inet4Address
-import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.URI
 import org.jsoup.Jsoup
@@ -264,7 +262,7 @@ object NetTruyenChapterParser {
     /**
      * Kiểm tra host có phải địa chỉ Internet công khai không.
      *
-     * Implement inline logic tương tự PublicAddressPolicy từ core/webnovel.
+     * Dùng chung [ComicPublicAddressPolicy] với HTTP client tải chương và ảnh.
      * Trả về true nếu không resolve được DNS (tránh false positive khi offline).
      *
      * @param host Tên miền hoặc địa chỉ IP cần kiểm tra.
@@ -272,42 +270,7 @@ object NetTruyenChapterParser {
      */
     private fun isPublicHost(host: String): Boolean {
         val addresses = runCatching { InetAddress.getAllByName(host) }.getOrNull() ?: return true
-        return addresses.all { isPublicAddress(it) }
-    }
-
-    /**
-     * Kiểm tra một [InetAddress] có phải địa chỉ Internet công khai.
-     *
-     * Chặn loopback, LAN, link-local, CGNAT, multicast và IPv6 ULA.
-     *
-     * @param address Địa chỉ IP đã phân giải.
-     * @return true nếu là địa chỉ công khai.
-     */
-    private fun isPublicAddress(address: InetAddress): Boolean {
-        if (address.isLoopbackAddress || address.isAnyLocalAddress ||
-            address.isLinkLocalAddress || address.isSiteLocalAddress ||
-            address.isMulticastAddress
-        ) return false
-
-        val bytes = address.address
-        return when (address) {
-            is Inet4Address -> {
-                val first = bytes[0].toInt() and 0xFF
-                val second = bytes[1].toInt() and 0xFF
-                !(first == 100 && second in 64..127) && first != 0
-            }
-            is Inet6Address -> {
-                val first = bytes[0].toInt() and 0xFF
-                val ipv4Mapped = bytes.copyOfRange(0, 10).all { it.toInt() == 0 } &&
-                    (bytes[10].toInt() and 0xFF) == 0xFF && (bytes[11].toInt() and 0xFF) == 0xFF
-                when {
-                    first and 0xFE == 0xFC -> false
-                    ipv4Mapped -> isPublicAddress(InetAddress.getByAddress(bytes.copyOfRange(12, 16)))
-                    else -> true
-                }
-            }
-            else -> false
-        }
+        return addresses.all(ComicPublicAddressPolicy::isPublic)
     }
 
     // ---------------------------------------------------------------------------

@@ -27,7 +27,7 @@ class ComicProtectionException(message: String) : IOException(message)
 @Singleton
 open class OnlineComicFetcher @Inject constructor() {
 
-    private val httpClient: OkHttpClient = OkHttpClient.Builder()
+    private val httpClient: OkHttpClient = ComicPublicAddressPolicy.applyTo(OkHttpClient.Builder())
         .cookieJar(CookieJar.NO_COOKIES)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)

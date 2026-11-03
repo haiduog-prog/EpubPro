@@ -1201,9 +1201,10 @@ class ReaderViewModel @Inject constructor(
     }
 
     /**
-     * Tải thêm chương cho truyện lưu từ web, rồi cập nhật mục lục mà không nạp lại trang đang đọc.
+     * Tải thêm chương cho truyện lưu từ web. Mục lục được cập nhật bởi luồng theo dõi đường dẫn file sách
+     * (khi database chuyển sang EPUB mới), không nạp lại trang đang đọc.
      *
-     * @param auto true khi tự kích hoạt lúc đọc gần hết: chỉ chạy một lần mỗi mốc và không báo lỗi.
+     * @param auto true khi tự kích hoạt lúc đọc gần hết: chỉ chạy một lần mỗi mốc và không bật hộp thoại lỗi.
      */
     fun loadMoreWebChapters(auto: Boolean = false) {
         val state = _uiState.value
@@ -1214,10 +1215,13 @@ class ReaderViewModel @Inject constructor(
         flushPendingProgress()
         appendJob = viewModelScope.launch {
             _uiState.update { it.copy(isAppendingChapters = true) }
+            var waitingNotified = false
             val result = try {
                 val workId = withContext(Dispatchers.IO) { webNovelScheduler.enqueueAppend(bookId, APPEND_BATCH_CHAPTERS) }
                 webNovelScheduler.observe(workId).first { workState ->
-                    if (workState is WebNovelDownloadState.Running && workState.waitingForNetwork) {
+                    // Chỉ báo chờ mạng một lần cho mỗi lượt tải, tránh Toast lặp theo từng lần WorkInfo thay đổi.
+                    if (workState is WebNovelDownloadState.Running && workState.waitingForNetwork && !waitingNotified) {
+                        waitingNotified = true
                         _uiState.update { it.copy(webNovelMessageRes = R.string.reader_web_waiting_network) }
                     }
                     workState !is WebNovelDownloadState.Running
@@ -1230,14 +1234,14 @@ class ReaderViewModel @Inject constructor(
                 _uiState.update { it.copy(isAppendingChapters = false) }
             }
             when {
-                result is WebNovelDownloadState.Succeeded && result.newChapters > 0 -> {
-                    refreshAppendedChapters()
+                result is WebNovelDownloadState.Succeeded && result.newChapters > 0 ->
                     _uiState.update {
-                        it.copy(webNovelMessageRes = if (result.interrupted) R.string.reader_web_partial else R.string.reader_web_chapters_added, webNovelMessageArg = result.newChapters, webNovelFailedUrl = result.failedUrl)
+                        // Tự tải bị gián đoạn vẫn chỉ báo Toast số chương đã thêm; hộp thoại lỗi dành cho thao tác thủ công.
+                        it.copy(webNovelMessageRes = if (result.interrupted && !auto) R.string.reader_web_partial else R.string.reader_web_chapters_added, webNovelMessageArg = result.newChapters, webNovelFailedUrl = result.failedUrl)
                     }
-                }
                 result is WebNovelDownloadState.Succeeded ->
                     if (!auto) _uiState.update { it.copy(webNovelMessageRes = R.string.web_novel_no_new_chapters) }
+                auto -> Unit
                 else -> _uiState.update { it.copy(webNovelMessageRes = R.string.web_novel_download_failed, webNovelFailedUrl = (result as? WebNovelDownloadState.FailedAt)?.url) }
             }
         }

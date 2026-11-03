@@ -10,8 +10,11 @@ import com.epubpro.core.comic.ComicProtectionException
 import com.epubpro.core.comic.OnlineComicFetcher
 import com.epubpro.core.comic.OnlineComicImageLoader
 import com.epubpro.core.designsystem.R
+import com.epubpro.core.storage.OfflineComicStore
 import com.epubpro.core.storage.OnlineComicProgressStore
 import com.epubpro.core.storage.ReaderPreferencesManager
+import com.epubpro.core.storage.worker.OnlineComicDownloadScheduler
+import com.epubpro.core.storage.worker.OnlineComicDownloadState
 import com.epubpro.domain.model.Book
 import com.epubpro.domain.model.BookSourceFormat
 import com.epubpro.domain.model.ComicReadingMode
@@ -19,16 +22,20 @@ import com.epubpro.domain.model.ReadingProgress
 import com.epubpro.domain.repository.BookRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.io.IOException
+import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * ViewModel điều khiển trình đọc truyện tranh trực tuyến.
@@ -44,7 +51,9 @@ class OnlineComicReaderViewModel @Inject constructor(
     private val imageLoader: OnlineComicImageLoader,
     private val progressStore: OnlineComicProgressStore,
     private val bookRepository: BookRepository,
-    readerPreferences: ReaderPreferencesManager
+    readerPreferences: ReaderPreferencesManager,
+    private val offlineStore: OfflineComicStore,
+    private val downloadScheduler: OnlineComicDownloadScheduler
 ) : ViewModel() {
 
     private val initialChapterUrl: String = checkNotNull(savedStateHandle[ARG_CHAPTER_URL]) {
@@ -64,6 +73,7 @@ class OnlineComicReaderViewModel @Inject constructor(
 
     private var progressSaveJob: Job? = null
     private var loadChapterJob: Job? = null
+    private var downloadJob: Job? = null
     private var requestedChapterUrl: String = initialChapterUrl
 
     init {
@@ -75,6 +85,7 @@ class OnlineComicReaderViewModel @Inject constructor(
         } else {
             loadChapter(initialChapterUrl, 0)
         }
+        resumeActiveDownload()
     }
 
     /**
@@ -269,6 +280,100 @@ class OnlineComicReaderViewModel @Inject constructor(
     fun navigateToPreviousChapter() {
         val prevUrl = _uiState.value.chapterInfo?.previousChapterUrl ?: return
         loadChapter(prevUrl, targetPage = 0)
+    }
+
+    /**
+     * Tải [count] chương tính từ chương đang đọc về máy thành một cuốn CBZ trên Kệ sách, chạy nền bằng WorkManager.
+     *
+     * Nếu bộ truyện đã có bản offline: chương đang đọc nằm trong bản đó thì tải tiếp sau chương cuối đã lưu;
+     * chương đang đọc liền sau chương cuối đã lưu thì nối vào cùng cuốn; còn lại tạo cuốn mới để không lẫn thứ tự.
+     *
+     * @param count Số chương tối đa cần tải.
+     */
+    fun downloadChapters(count: Int) {
+        val chapter = _uiState.value.chapterInfo ?: return
+        if (_uiState.value.isDownloading) return
+        _uiState.update { it.copy(isDownloading = true, messageRes = R.string.online_comic_download_started) }
+        downloadJob = viewModelScope.launch {
+            val workId = try {
+                withContext(Dispatchers.IO) {
+                    val comicKey = progressStore.computeComicKey(chapter.chapterUrl)
+                    val bookId = offlineStore.findBookId(comicKey)
+                    val source = bookId?.let(offlineStore::get)
+                    val continueFromLast = source != null && chapter.chapterUrl in source.chapterUrls
+                    val append = source != null &&
+                        (continueFromLast || chapter.previousChapterUrl == source.lastChapterUrl)
+                    downloadScheduler.enqueue(
+                        comicKey = comicKey,
+                        startUrl = chapter.chapterUrl,
+                        maxChapters = count,
+                        appendBookId = bookId.takeIf { append },
+                        continueFromLast = continueFromLast
+                    )
+                }
+            } catch (e: CancellationException) {
+                _uiState.update { it.copy(isDownloading = false) }
+                throw e
+            } catch (_: Exception) {
+                _uiState.update { it.copy(isDownloading = false, messageRes = R.string.online_comic_download_failed) }
+                return@launch
+            }
+            awaitDownload(workId)
+        }
+    }
+
+    /**
+     * Theo dõi lại tác vụ tải về máy của bộ truyện nếu vẫn đang chạy nền (người dùng thoát rồi mở lại màn hình),
+     * để nút tải vẫn hiện tiến trình và báo kết quả khi tác vụ xong.
+     */
+    private fun resumeActiveDownload() {
+        downloadJob = viewModelScope.launch {
+            val workId = try {
+                withContext(Dispatchers.IO) {
+                    downloadScheduler.findActive(progressStore.computeComicKey(initialChapterUrl))
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+            // Người dùng đã tự bấm tải trong lúc tìm: luồng đó đang theo dõi cùng tác vụ.
+            if (workId == null || _uiState.value.isDownloading) return@launch
+            awaitDownload(workId)
+        }
+    }
+
+    /**
+     * Chờ tác vụ tải kết thúc rồi báo kết quả; trong lúc chờ nút tải hiện trạng thái đang tải.
+     *
+     * @param workId ID tác vụ WorkManager.
+     */
+    private suspend fun awaitDownload(workId: UUID) {
+        _uiState.update { it.copy(isDownloading = true) }
+        val result = try {
+            downloadScheduler.observe(workId).first { it !is OnlineComicDownloadState.Running }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            OnlineComicDownloadState.Failed
+        } finally {
+            _uiState.update { it.copy(isDownloading = false) }
+        }
+        _uiState.update {
+            when {
+                result is OnlineComicDownloadState.Succeeded && result.newChapters > 0 -> it.copy(
+                    messageRes = if (result.interrupted) {
+                        R.string.online_comic_download_partial
+                    } else {
+                        R.string.online_comic_download_done
+                    },
+                    messageArg = result.newChapters
+                )
+                result is OnlineComicDownloadState.Succeeded ->
+                    it.copy(messageRes = R.string.online_comic_download_no_new)
+                else -> it.copy(messageRes = R.string.online_comic_download_failed)
+            }
+        }
     }
 
     /**
