@@ -149,4 +149,30 @@ class OnlineComicProgressStoreTest {
         val progress = store.getProgress("https://nettruyen.gg/truyen-tranh/chua-tung-doc/chuong-1")
         assertNull("Khi chưa có tiến độ lưu phải trả về null", progress)
     }
+
+    @Test
+    fun computeComicKey_chapterUrlWithNumericId_matchesKeyWithoutId() {
+        val store = createStoreWithFakePrefs(createFakePrefs())
+        val withId1 = store.computeComicKey("https://nettruyen.gg/truyen-tranh/chi-ta-nhin-thay-huong-dan/chuong-1/123456")
+        val withId2 = store.computeComicKey("https://nettruyen.gg/truyen-tranh/chi-ta-nhin-thay-huong-dan/chap-2/123999/")
+
+        assertEquals("Các chương có ID số ở cuối phải chung một khóa", withId1, withId2)
+        assertEquals(
+            "Khóa phải trùng khóa đã lưu của URL không có ID để không mất tiến độ cũ",
+            store.computeComicKey(chapter1OfMangaA),
+            withId1
+        )
+    }
+
+    @Test
+    fun computeComicKey_numericChapterUnderComicSlug_keepsComicsSeparate() {
+        val store = createStoreWithFakePrefs(createFakePrefs())
+        val onePiece = store.computeComicKey("https://example.com/manga/one-piece/1000")
+        val naruto = store.computeComicKey("https://example.com/manga/naruto/1000")
+        val byNumericId = store.computeComicKey("https://example.com/manga/12345/1")
+        val otherNumericId = store.computeComicKey("https://example.com/manga/67890/1")
+
+        assertNotEquals("Chương số dưới slug truyện không được gộp các bộ truyện", onePiece, naruto)
+        assertNotEquals("Truyện chỉ phân biệt bằng ID số không được gộp", byNumericId, otherNumericId)
+    }
 }

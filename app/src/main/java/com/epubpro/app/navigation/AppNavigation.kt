@@ -17,6 +17,7 @@ import com.epubpro.core.storage.OnlineComicProgressStore
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.content.Context
 import android.net.Uri
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -78,12 +79,16 @@ fun AppNavHost(
         }
     }
 
+    val appContext = LocalContext.current.applicationContext
     LaunchedEffect(navController, openComicRequests) {
         openComicRequests.collect { bookId ->
-            if (navController.currentDestination?.route == Screen.ComicReader.route) {
+            // Sách gần nhất có thể là truyện online (ID ONLINE_COMIC_, filePath là URL): phải mở Reader online.
+            val route = comicRouteFor(appContext, bookId) ?: return@collect
+            val currentRoute = navController.currentDestination?.route
+            if (currentRoute == Screen.ComicReader.route || currentRoute == Screen.OnlineComicReader.route) {
                 navController.popBackStack()
             }
-            navController.navigate(Screen.ComicReader.createRoute(bookId)) {
+            navController.navigate(route) {
                 launchSingleTop = true
             }
         }
@@ -201,17 +206,11 @@ fun AppNavHost(
                 val context = LocalContext.current
                 LibraryScreen(
                     onBookClick = { bookId, sourceFormat ->
-                        val route = if (bookId.startsWith(OnlineComicProgressStore.COMIC_BOOK_ID_PREFIX)) {
-                            val comicKey = bookId.removePrefix(OnlineComicProgressStore.COMIC_BOOK_ID_PREFIX)
-                            val progressStore = OnlineComicProgressStore(context.applicationContext)
-                            val targetUrl = progressStore.getProgressByComicKey(comicKey)?.chapterUrl
-                            if (!targetUrl.isNullOrBlank()) {
-                                Screen.OnlineComicReader.createRoute(targetUrl, resumeProgress = true)
-                            } else {
-                                null
-                            }
-                        } else if (sourceFormat == BookSourceFormat.CBZ) {
-                            Screen.ComicReader.createRoute(bookId)
+                        val route = if (
+                            bookId.startsWith(OnlineComicProgressStore.COMIC_BOOK_ID_PREFIX) ||
+                            sourceFormat == BookSourceFormat.CBZ
+                        ) {
+                            comicRouteFor(context.applicationContext, bookId)
                         } else {
                             Screen.Reader.createRoute(bookId)
                         }
@@ -411,6 +410,27 @@ fun AppNavHost(
                 )
             }
         }
+    }
+}
+
+/**
+ * Chọn route mở một truyện tranh trong thư viện, dùng chung cho Kệ sách và tự mở sách gần nhất khi khởi động.
+ *
+ * Truyện online được lưu vào thư viện với ID tiền tố `ONLINE_COMIC_` và `filePath` là URL chương, nên phải mở
+ * bằng Reader online từ tiến độ đã lưu; các truyện CBZ còn lại mở bằng Reader offline.
+ *
+ * @param context Context ứng dụng để đọc tiến độ truyện online.
+ * @param bookId ID sách trong thư viện.
+ * @return Route cần điều hướng, hoặc null nếu là truyện online nhưng không còn tiến độ để biết chương cần mở.
+ */
+private fun comicRouteFor(context: Context, bookId: String): String? {
+    if (!bookId.startsWith(OnlineComicProgressStore.COMIC_BOOK_ID_PREFIX)) {
+        return Screen.ComicReader.createRoute(bookId)
+    }
+    val comicKey = bookId.removePrefix(OnlineComicProgressStore.COMIC_BOOK_ID_PREFIX)
+    val targetUrl = OnlineComicProgressStore(context).getProgressByComicKey(comicKey)?.chapterUrl
+    return targetUrl?.takeIf { it.isNotBlank() }?.let {
+        Screen.OnlineComicReader.createRoute(it, resumeProgress = true)
     }
 }
 

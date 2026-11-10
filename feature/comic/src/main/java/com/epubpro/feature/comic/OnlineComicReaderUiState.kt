@@ -23,6 +23,8 @@ import com.epubpro.domain.model.ComicReadingMode
  * @property messageRes Thông báo một lần (toast/snackbar).
  * @property messageArg Tham số số nguyên cho [messageRes] (ví dụ số chương đã lưu).
  * @property isDownloading Đang tải truyện về máy thành CBZ.
+ * @property requestedChapterUrl URL chương đang được yêu cầu tải; vẫn có khi lần tải đầu thất bại
+ * (chưa có [chapterInfo]) để màn hình lỗi mở được trang gốc trong trình duyệt.
  */
 data class OnlineComicReaderUiState(
     val isLoading: Boolean = true,
@@ -39,5 +41,6 @@ data class OnlineComicReaderUiState(
     val selectedServer: ComicImageServer? = null,
     @StringRes val messageRes: Int? = null,
     val messageArg: Int = 0,
-    val isDownloading: Boolean = false
+    val isDownloading: Boolean = false,
+    val requestedChapterUrl: String? = null
 )

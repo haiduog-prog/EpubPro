@@ -105,7 +105,9 @@ class OnlineComicReaderViewModel @Inject constructor(
         if (hasExistingChapter) {
             _uiState.update { it.copy(isChangingChapter = true) }
         } else {
-            _uiState.update { it.copy(isLoading = true, errorRes = null, isProtectionBlocked = false) }
+            _uiState.update {
+                it.copy(isLoading = true, errorRes = null, isProtectionBlocked = false, requestedChapterUrl = url)
+            }
         }
 
         loadChapterJob = viewModelScope.launch {

@@ -47,7 +47,7 @@ class OnlineComicDownloadScheduler @Inject constructor(
 ) {
     /**
      * Đưa tác vụ tải vào hàng đợi; mỗi bộ truyện chỉ chạy một tác vụ tại một thời điểm.
-     * Phải gọi ngoài main thread vì có truy vấn đồng bộ hàng đợi WorkManager.
+     * Phải gọi ngoài main thread vì có truy vấn đồng bộ hàng đợi WorkManager và chờ tác vụ được ghi xong.
      *
      * @param comicKey Khóa bộ truyện, dùng đặt tên tác vụ duy nhất.
      * @param startUrl URL chương bắt đầu (http/https).
@@ -78,8 +78,13 @@ class OnlineComicDownloadScheduler @Inject constructor(
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .addTag(OnlineComicDownloadWorker.TAG)
             .build()
-        WorkManager.getInstance(context).enqueueUniqueWork(uniqueName(comicKey), ExistingWorkPolicy.KEEP, request)
-        return request.id
+        // Chờ WorkManager ghi xong tác vụ: nếu không, observe() có thể nhận WorkInfo null ngay sau khi enqueue
+        // và báo thất bại trong khi tác vụ vẫn chạy. Với KEEP, tác vụ khác có thể đã giữ tên duy nhất trước.
+        WorkManager.getInstance(context)
+            .enqueueUniqueWork(uniqueName(comicKey), ExistingWorkPolicy.KEEP, request)
+            .result
+            .get()
+        return findActive(comicKey) ?: request.id
     }
 
     /**

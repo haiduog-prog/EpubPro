@@ -239,6 +239,12 @@ class OnlineComicReaderViewModelTest {
             R.string.online_comic_load_failed_js_required,
             state.errorRes
         )
+        assertNull("Lần tải đầu lỗi thì chưa có chapterInfo", state.chapterInfo)
+        assertEquals(
+            "Màn hình lỗi phải có URL chương để mở trong trình duyệt",
+            chapter1Url,
+            state.requestedChapterUrl
+        )
     }
 
     @Test

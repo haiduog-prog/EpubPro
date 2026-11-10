@@ -7,13 +7,19 @@ import java.net.URI
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.CookieJar
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 
 /**
  * Trình tải và giải mã ảnh trang truyện tranh trực tuyến có kiểm soát bộ nhớ.
@@ -33,6 +39,7 @@ open class OnlineComicImageLoader @Inject constructor() {
         .build()
 
     private val decodePermits = Semaphore(MAX_PARALLEL_DECODES)
+    private val downloadPermits = Semaphore(MAX_PARALLEL_DOWNLOADS)
 
     private val pageCache = object : LruCache<String, ComicPageImage>(computeCacheBytes()) {
         override fun sizeOf(key: String, value: ComicPageImage): Int = value.byteCount
@@ -56,9 +63,11 @@ open class OnlineComicImageLoader @Inject constructor() {
         val cacheKey = "$imageUrl:$targetWidth"
         pageCache.get(cacheKey)?.let { return it }
 
+        // Tải mạng có giới hạn riêng và ngoài semaphore giải mã: request chậm của trang đã cuộn qua không
+        // chiếm chỗ giải mã của trang đang xem, và bị hủy khi composable của trang rời màn hình.
+        val bytes = downloadPermits.withPermit { fetchImageBytes(imageUrl, refererUrl) }
         return decodePermits.withPermit {
             pageCache.get(cacheKey) ?: withContext(Dispatchers.IO) {
-                val bytes = fetchImageBytes(imageUrl, refererUrl)
                 ComicPageDecoder.decode(bytes, targetWidth)
             }.also { pageCache.put(cacheKey, it) }
         }
@@ -73,7 +82,7 @@ open class OnlineComicImageLoader @Inject constructor() {
      * @throws IOException Nếu tải thất bại hoặc ảnh vượt giới hạn dung lượng.
      */
     open suspend fun downloadImage(imageUrl: String, refererUrl: String? = null): ByteArray =
-        withContext(Dispatchers.IO) { fetchImageBytes(imageUrl, refererUrl) }
+        fetchImageBytes(imageUrl, refererUrl)
 
     /**
      * Xóa toàn bộ bộ nhớ đệm ảnh trong RAM khi đóng trình đọc hoặc giải phóng tài nguyên.
@@ -83,14 +92,41 @@ open class OnlineComicImageLoader @Inject constructor() {
     }
 
     /**
-     * Tải mảng byte ảnh từ URL.
+     * Tải mảng byte ảnh từ URL; hủy coroutine sẽ hủy luôn request HTTP đang chạy.
      *
      * @param imageUrl URL ảnh.
      * @param refererUrl URL trang tham chiếu (chương truyện).
      * @return Mảng byte của ảnh.
      * @throws IOException Nếu mã phản hồi HTTP không thành công hoặc lỗi mạng.
      */
-    private fun fetchImageBytes(imageUrl: String, refererUrl: String?): ByteArray {
+    private suspend fun fetchImageBytes(imageUrl: String, refererUrl: String?): ByteArray {
+        val call = httpClient.newCall(buildImageRequest(imageUrl, refererUrl))
+        return suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    // Continuation đã bị hủy thì lệnh resume bị bỏ qua.
+                    continuation.resumeWithException(e)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    runCatching { response.use(::readImageBody) }
+                        .onSuccess { continuation.resume(it) }
+                        .onFailure { continuation.resumeWithException(it) }
+                }
+            })
+        }
+    }
+
+    /**
+     * Tạo request tải ảnh kèm User-Agent trình duyệt và Referer chống hotlink.
+     *
+     * @param imageUrl URL ảnh.
+     * @param refererUrl URL trang chương; null thì dùng gốc của host ảnh.
+     * @return Request đã dựng.
+     * @throws IllegalArgumentException Nếu URL ảnh không hợp lệ.
+     */
+    private fun buildImageRequest(imageUrl: String, refererUrl: String?): Request {
         val requestBuilder = Request.Builder()
             .url(imageUrl)
             .header("User-Agent", DEFAULT_USER_AGENT)
@@ -104,35 +140,46 @@ open class OnlineComicImageLoader @Inject constructor() {
         if (!effectiveReferer.isNullOrBlank()) {
             requestBuilder.header("Referer", effectiveReferer)
         }
+        return requestBuilder.build()
+    }
 
-        return httpClient.newCall(requestBuilder.build()).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IOException("Không thể tải ảnh trang truyện (mã HTTP ${response.code})")
-            }
-            val body = response.body ?: throw IOException("Nội dung ảnh trang truyện rỗng")
-            if (body.contentLength() > MAX_IMAGE_BYTES) {
-                throw IOException("Ảnh trang truyện vượt quá giới hạn dung lượng")
-            }
-            body.byteStream().use { input ->
-                val output = ByteArrayOutputStream()
-                val buffer = ByteArray(BUFFER_SIZE)
-                var totalBytes = 0
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    totalBytes += count
-                    if (totalBytes > MAX_IMAGE_BYTES) {
-                        throw IOException("Ảnh trang truyện vượt quá giới hạn dung lượng")
-                    }
-                    output.write(buffer, 0, count)
+    /**
+     * Đọc thân phản hồi ảnh vào bộ nhớ, dừng khi vượt giới hạn dung lượng.
+     *
+     * @param response Phản hồi HTTP; caller chịu trách nhiệm đóng.
+     * @return Mảng byte của ảnh.
+     * @throws IOException Nếu mã HTTP lỗi, thân rỗng hoặc ảnh vượt giới hạn.
+     */
+    private fun readImageBody(response: Response): ByteArray {
+        if (!response.isSuccessful) {
+            throw IOException("Không thể tải ảnh trang truyện (mã HTTP ${response.code})")
+        }
+        val body = response.body ?: throw IOException("Nội dung ảnh trang truyện rỗng")
+        if (body.contentLength() > MAX_IMAGE_BYTES) {
+            throw IOException("Ảnh trang truyện vượt quá giới hạn dung lượng")
+        }
+        return body.byteStream().use { input ->
+            val output = ByteArrayOutputStream()
+            val buffer = ByteArray(BUFFER_SIZE)
+            var totalBytes = 0
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                totalBytes += count
+                if (totalBytes > MAX_IMAGE_BYTES) {
+                    throw IOException("Ảnh trang truyện vượt quá giới hạn dung lượng")
                 }
-                output.toByteArray()
+                output.write(buffer, 0, count)
             }
+            output.toByteArray()
         }
     }
 
     companion object {
         private const val MAX_PARALLEL_DECODES = 2
+
+        /** Số ảnh tải mạng song song; OkHttp mặc định cho tối đa 5 request mỗi host. */
+        private const val MAX_PARALLEL_DOWNLOADS = 4
         private const val MAX_IMAGE_BYTES = 64 * 1024 * 1024
         private const val BUFFER_SIZE = 8 * 1024
         private const val DEFAULT_USER_AGENT =

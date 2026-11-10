@@ -46,11 +46,30 @@ open class OnlineComicProgressStore @Inject constructor(
     open fun computeComicKey(chapterUrl: String): String {
         val uri = runCatching { URI(chapterUrl) }.getOrNull() ?: return sha256(chapterUrl)
         val host = uri.host.orEmpty().lowercase()
-        val path = uri.path.orEmpty().trimEnd('/')
+        val path = stripTrailingChapterId(uri.path.orEmpty().trimEnd('/'))
         // Bỏ segment cuối cùng (thường là tên chương / chuong-x) để lấy đường dẫn truyện
         val comicBasePath = if (path.contains('/')) path.substringBeforeLast('/') else path
         val rawKey = "$host:$comicBasePath"
         return sha256(rawKey)
+    }
+
+    /**
+     * Bỏ ID số ở cuối URL chương dạng `/truyen-tranh/<slug>/chuong-12/123456`, để mọi chương của cùng bộ truyện
+     * cho cùng một khóa.
+     *
+     * Chỉ bỏ khi segment cuối toàn chữ số và segment liền trước là slug chương (`chuong-12`, `chap-1000`...).
+     * URL kiểu `/manga/one-piece/1000` hoặc `/manga/12345/1` giữ nguyên để không gộp nhầm các bộ truyện;
+     * URL không có ID số ở cuối cũng giữ nguyên nên khóa cũ đã lưu không đổi.
+     *
+     * @param path Đường dẫn URL đã bỏ dấu `/` ở cuối.
+     * @return Đường dẫn đã bỏ ID chương, hoặc [path] nếu không khớp mẫu.
+     */
+    private fun stripTrailingChapterId(path: String): String {
+        val last = path.substringAfterLast('/')
+        if (last.isEmpty() || !last.all(Char::isDigit)) return path
+        val parent = path.substringBeforeLast('/', missingDelimiterValue = "")
+        if (!CHAPTER_SLUG.matches(parent.substringAfterLast('/'))) return path
+        return parent
     }
 
     /**
@@ -157,5 +176,8 @@ open class OnlineComicProgressStore @Inject constructor(
     companion object {
         /** Tiền tố định danh sách truyện tranh online lưu trữ trong cơ sở dữ liệu. */
         const val COMIC_BOOK_ID_PREFIX = "ONLINE_COMIC_"
+
+        /** Slug chương phổ biến của các nguồn truyện tranh: `chuong-12`, `chap-1000`, `chapter-5.5`, `tap-3`. */
+        private val CHAPTER_SLUG = Regex("^(chuong|chap|chapter|ch|tap|ep|episode)[-_.]?\\d+([.-]\\d+)?$", RegexOption.IGNORE_CASE)
     }
 }

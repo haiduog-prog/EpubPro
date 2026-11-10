@@ -130,6 +130,9 @@ class ComicReaderViewModel @Inject constructor(
     private val archiveLock = Any()
     private var isCleared = false
     private var progressSaveJob: Job? = null
+
+    /** Tác vụ OCR/dịch đang chạy theo trang; chỉ truy cập trên main thread. */
+    private val translationJobs = mutableMapOf<Int, Job>()
     private val decodePermits = Semaphore(MAX_PARALLEL_DECODES)
     private val pageCache = object : LruCache<String, ComicPageImage>(pageCacheBytes()) {
         override fun sizeOf(key: String, value: ComicPageImage): Int = value.byteCount
@@ -254,6 +257,12 @@ class ComicReaderViewModel @Inject constructor(
      */
     fun updateTranslationSettings(settings: ComicTranslationSettings) {
         translationStore.saveSettings(settings)
+        val previous = _uiState.value.translation
+        if (previous.language != settings.language || previous.engine != settings.engine) {
+            // Kết quả của lượt dịch theo cài đặt cũ không được ghi đè lên trạng thái mới.
+            translationJobs.values.forEach { it.cancel() }
+            translationJobs.clear()
+        }
         _uiState.update { state ->
             val changedSource = state.translation.language != settings.language || state.translation.engine != settings.engine
             state.copy(
@@ -286,7 +295,7 @@ class ComicReaderViewModel @Inject constructor(
         }
         val source = archive ?: return
         setPageTranslation(pageIndex, PageTranslation.Translating)
-        viewModelScope.launch {
+        val job = viewModelScope.launch {
             try {
                 if (settings.engine == ComicTranslationEngine.ON_DEVICE &&
                     !onDeviceTranslator.isModelReady(settings.language)
@@ -299,6 +308,8 @@ class ComicReaderViewModel @Inject constructor(
                     ?: recognizeAndTranslate(source, pageIndex, settings).also { result ->
                         translationStore.savePage(bookId, pageIndex, settings.language, settings.engine, result)
                     }
+                val latest = _uiState.value.translation
+                if (latest.language != settings.language || latest.engine != settings.engine) return@launch
                 setPageTranslation(pageIndex, PageTranslation.Done(bubbles))
                 if (bubbles.isEmpty()) _uiState.update { it.copy(messageRes = R.string.comic_translate_no_text) }
             } catch (error: CancellationException) {
@@ -312,8 +323,13 @@ class ComicReaderViewModel @Inject constructor(
             } catch (_: OutOfMemoryError) {
                 setPageTranslation(pageIndex, PageTranslation.Failed)
                 _uiState.update { it.copy(messageRes = R.string.comic_translate_failed) }
+            } finally {
+                // viewModelScope chạy trên main thread nên map chỉ bị truy cập từ một luồng.
+                if (translationJobs[pageIndex] === coroutineContext[Job]) translationJobs.remove(pageIndex)
             }
         }
+        // launch chạy ngay trên Main.immediate tới điểm suspend đầu tiên; nếu đã xong thì không cần ghi nhớ.
+        if (job.isActive) translationJobs[pageIndex] = job
     }
 
     /**

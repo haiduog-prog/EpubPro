@@ -147,7 +147,7 @@ fun OnlineComicReaderScreen(
             uiState.errorRes != null -> {
                 OnlineComicReaderError(
                     messageRes = checkNotNull(uiState.errorRes),
-                    chapterUrl = uiState.chapterInfo?.chapterUrl,
+                    chapterUrl = uiState.chapterInfo?.chapterUrl ?: uiState.requestedChapterUrl,
                     onNavigateBack = onNavigateBack,
                     onRetry = viewModel::retryCurrentChapter,
                     onOpenInBrowser = onOpenInBrowser,
