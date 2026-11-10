@@ -1,5 +1,6 @@
 plugins {
     id("epubpro.android.library")
+    id("epubpro.android.hilt")
 }
 
 android {
@@ -17,6 +18,9 @@ dependencies {
     implementation(libs.mlkit.text.recognition.japanese)
     implementation(libs.mlkit.text.recognition.korean)
     implementation(libs.mlkit.translate)
+
+    // VietOCR (ONNX, ~39 MiB trong assets/vietocr) nhận dạng lại từng dòng ML Kit tìm được để giữ đúng dấu tiếng Việt.
+    implementation(libs.onnxruntime.android)
 
     testImplementation(libs.junit4)
 }

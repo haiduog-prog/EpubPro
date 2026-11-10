@@ -5,6 +5,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -12,6 +13,8 @@ import android.os.Build
 import android.provider.OpenableColumns
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -106,6 +109,10 @@ import coil.compose.AsyncImage
 import com.epubpro.core.designsystem.R
 import com.epubpro.domain.model.BookSourceFormat
 import com.epubpro.feature.library.components.GeneratedBookCover
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanner
+import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 
 /**
  * Đọc tên hiển thị do Storage Access Framework cung cấp cho URI.
@@ -134,6 +141,32 @@ private fun queryMimeType(context: Context, uri: Uri): String? =
     context.contentResolver.getType(uri)
 
 /**
+ * Tìm Activity chứa Context của Compose (trình quét tài liệu cần Activity để tạo IntentSender).
+ *
+ * @receiver Context hiện tại, có thể là ContextWrapper lồng nhau.
+ * @return Activity hoặc null nếu Context không gắn với Activity.
+ */
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+/**
+ * Tạo client trình quét tài liệu ML Kit: chế độ đầy đủ (cắt viền, nắn phẳng, lọc ảnh),
+ * cho phép nhập thêm ảnh từ thư viện và trả kết quả JPEG từng trang để OCR.
+ *
+ * @return Client trình quét tài liệu.
+ */
+private fun createDocumentScanner(): GmsDocumentScanner = GmsDocumentScanning.getClient(
+    GmsDocumentScannerOptions.Builder()
+        .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
+        .setGalleryImportAllowed(true)
+        .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
+        .build()
+)
+
+/**
  * Màn hình Thư viện sách (Library Screen) theo phong cách thiết kế Material 3 chuẩn Stitch.
  *
  * @param onBookClick Callback điều hướng khi người dùng nhấn chọn một cuốn sách; kèm định dạng nguồn
@@ -154,6 +187,14 @@ fun LibraryScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val pendingImports by viewModel.pendingLocalImports.collectAsStateWithLifecycle()
+    val pendingScanPages by viewModel.pendingScanPages.collectAsStateWithLifecycle()
+    if (pendingScanPages.isNotEmpty()) {
+        ScanBookDetailsDialog(
+            pageCount = pendingScanPages.size,
+            onConfirm = viewModel::importScannedBook,
+            onDismiss = viewModel::dismissScannedPages
+        )
+    }
     pendingImports.firstOrNull()?.let { pending ->
         AlertDialog(
             onDismissRequest = { viewModel.dismissPendingLocalImport(pending.sourcePath) },
@@ -234,6 +275,34 @@ fun LibraryScreen(
         }
     }
 
+    val documentScannerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val pages = GmsDocumentScanningResult.fromActivityResultIntent(result.data)?.pages.orEmpty()
+            viewModel.onScannedPagesSelected(pages.map { it.imageUri })
+        }
+    }
+
+    val pagePhotosLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris: List<Uri> ->
+        viewModel.onScannedPagesSelected(uris)
+    }
+
+    val onScanBook: () -> Unit = {
+        val activity = context.findActivity()
+        if (activity == null) {
+            viewModel.reportScannerUnavailable()
+        } else {
+            createDocumentScanner().getStartScanIntent(activity)
+                .addOnSuccessListener { sender ->
+                    documentScannerLauncher.launch(IntentSenderRequest.Builder(sender).build())
+                }
+                .addOnFailureListener { viewModel.reportScannerUnavailable() }
+        }
+    }
+
     val drivePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -284,7 +353,11 @@ fun LibraryScreen(
             onPickLocalEpub = { filePickerLauncher.launch("*/*") },
             onUploadEpubToServer = onStartUpload,
             onPickDriveBook = { showDriveImportHelp = true },
-            onOpenBrowser = onNavigateToBrowser
+            onOpenBrowser = onNavigateToBrowser,
+            onScanBook = onScanBook,
+            onPickPagePhotos = {
+                pagePhotosLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            }
         )
     }
 

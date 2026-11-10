@@ -28,6 +28,8 @@ dependencies {
 
     implementation(libs.coil.compose)
     implementation(libs.androidx.work.runtime.ktx)
+    // Màn hình quét tài liệu của Google Play services: tự cắt viền/nắn trang, không cần quyền camera.
+    implementation(libs.mlkit.document.scanner)
 
     testImplementation(libs.junit4)
     testImplementation(libs.mockito.core)

@@ -1,11 +1,16 @@
 # Local Book Import
 
-> Tổng hợp kiến thức về luồng nạp EPUB, PRC, MOBI và AZW3 vào thư viện dùng chung reader.
-> Cập nhật lần cuối: 2026-08-27
+> Tổng hợp kiến thức về luồng nạp EPUB, PRC, MOBI, AZW3 và quét sách giấy (OCR) vào thư viện dùng chung reader.
+> Cập nhật lần cuối: 2026-11-10
 
 ---
 
 ## Architecture
+
+### Pipeline quét sách giấy (ML Kit + VietOCR ONNX) thành EPUB
+- **Ngày**: 2026-11-10
+- **Chi tiết**: Quét trang bằng ML Kit Document Scanner (`SCANNER_MODE_FULL`) hoặc chọn ảnh từ Photo Picker, sao lưu vào `files/scanned_pages/<jobId>` rồi chạy `ScannedBookImportWorker` (chia sẻ tag và progress keys với `LocalBookImportWorker`). ML Kit Text Recognition v2 định vị khung dòng chữ, sau đó `VietOcrEngine` (ONNX `vgg_transformer` trong `assets/vietocr`, chép ra `noBackupFilesDir/vietocr/<version>`) đọc lại từng dòng để lấy dấu tiếng Việt chuẩn. `ScannedPageTextAssembler` lọc số trang/running header, nối dòng thành đoạn văn và tách chương để `EpubWriter` ghi thành EPUB, trích ảnh trang đầu làm cover và index FTS.
+- **Files liên quan**: `core/ocr/src/main/java/com/epubpro/core/ocr/BookPageTextRecognizer.kt`, `core/ocr/src/main/java/com/epubpro/core/ocr/VietOcrEngine.kt`, `core/ocr/src/main/java/com/epubpro/core/ocr/ScannedPageTextAssembler.kt`, `core/storage/src/main/java/com/epubpro/core/storage/worker/ScannedBookImportWorker.kt`
 
 ### Pipeline chuyển đổi local dùng chung EPUB reader
 - **Ngày**: 2026-08-27
@@ -25,6 +30,13 @@
 ---
 
 ## Bugs & Solutions
+
+### VietOCR thêm từ rác ở mép dòng, mất gạch hội thoại hoặc sai dấu khi lượng tử hóa
+- **Ngày**: 2026-11-10
+- **Vấn đề**: Khung dòng ML Kit sát chữ làm VietOCR sinh thêm từ ở đầu/cuối hoặc mất dấu gạch lời thoại; lượng tử hóa động Conv hoặc lớp `fc` của decoder làm tăng lỗi dấu tiếng Việt ("ấ" thành "t").
+- **Root cause**: Khung cắt thiếu lề giấy; decoder chạy lại cả chuỗi tốn bộ nhớ/thời gian; các lớp nhạy cảm bị ép về int8 động.
+- **Fix**: Nới khung dòng (`padX = 0.5 * height`, `padY = 0.15 * height`), co ảnh bằng box filter (`VietOcrPreprocessor`), đối chiếu skeleton với chữ ML Kit trong `chooseLineText` để cắt từ thừa ở mép và khôi phục gạch đầu dòng. Khi export ONNX (`export_vietocr.py`), dùng step decoder có KV-cache (`past_i`), lượng tử tĩnh QDQ per-channel cho Conv và giữ fp32 cho lớp `/fc/` của decoder.
+- **Files liên quan**: `core/ocr/src/main/java/com/epubpro/core/ocr/VietOcrEngine.kt`, `core/ocr/src/main/java/com/epubpro/core/ocr/VietOcrLineText.kt`, `core/ocr/src/main/java/com/epubpro/core/ocr/VietOcrPreprocessor.kt`, `tools/vietocr/export_vietocr.py`
 
 ### PalmDOC bị từ chối ở JNI
 - **Ngày**: 2026-08-27
@@ -51,6 +63,14 @@
 
 ## How-To
 
+### Export và cập nhật model VietOCR ONNX
+- **Ngày**: 2026-11-10
+- **Bước thực hiện**:
+  1. Chạy `python tools/vietocr/export_vietocr.py <out_dir> <calib_pages_dir>` để xuất `vietocr_encoder.onnx`, `vietocr_decoder.onnx` và `vietocr_vocab.txt`.
+  2. Chép 3 file vào `core/ocr/src/main/assets/vietocr/` và tăng hằng số `MODEL_VERSION` trong `VietOcrEngine.kt` để thiết bị xóa bản chép cũ trong `noBackupFilesDir`.
+  3. Chạy `./gradlew :core:ocr:testDebugUnitTest` để kiểm tra `VietOcrTest` và `ScannedPageTextAssemblerTest`.
+- **Files liên quan**: `tools/vietocr/export_vietocr.py`, `core/ocr/src/main/java/com/epubpro/core/ocr/VietOcrEngine.kt`, `core/ocr/src/test/java/com/epubpro/core/ocr/VietOcrTest.kt`
+
 ### Thêm một nguồn ebook vào pipeline
 - **Ngày**: 2026-08-27
 - **Bước thực hiện**:
@@ -73,6 +93,11 @@
 ---
 
 ## Patterns
+
+### Hybrid Line Detection + Re-recognition với Fallback an toàn
+- **Ngày**: 2026-11-10
+- **Chi tiết**: Kết hợp bộ dò dòng nhanh/ổn định bố cục (ML Kit) với model chuyên biệt ngôn ngữ (VietOCR ONNX). Mở một `VietOcrSession` duy nhất cho cả cuốn sách và đóng trong `finally`. Nếu model lỗi hoặc độ dài chữ nhận được lệch ngoài ngưỡng `0.6..1.6` so với ML Kit, tự động fallback về chữ ML Kit của dòng đó mà không làm hỏng toàn bộ tác vụ quét.
+- **Files liên quan**: `core/ocr/src/main/java/com/epubpro/core/ocr/BookPageTextRecognizer.kt`, `core/ocr/src/main/java/com/epubpro/core/ocr/VietOcrLineText.kt`
 
 ### Foreground notification cho tác vụ dài
 - **Ngày**: 2026-08-27

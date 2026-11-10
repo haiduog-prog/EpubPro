@@ -74,6 +74,13 @@ android {
         }
     }
 
+    packaging {
+        jniLibs {
+            // sherpa-onnx (TTS) và onnxruntime-android (VietOCR) cùng mang libonnxruntime.so bản 1.27.0.
+            pickFirsts += "lib/*/libonnxruntime.so"
+        }
+    }
+
     lint {
         checkReleaseBuilds = false
         abortOnError = false

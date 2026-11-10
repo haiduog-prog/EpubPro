@@ -8,8 +8,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.DocumentScanner
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -30,6 +32,9 @@ import com.epubpro.core.designsystem.R
  * @param onPickLocalEpub Chọn file từ thiết bị.
  * @param onUploadEpubToServer Chọn file để gửi lên backend.
  * @param onPickDriveBook Mở hướng dẫn chọn truyện từ Google Drive.
+ * @param onOpenBrowser Mở trình duyệt tích hợp.
+ * @param onScanBook Mở trình quét tài liệu để chụp các trang sách giấy.
+ * @param onPickPagePhotos Chọn ảnh các trang sách đã chụp sẵn trong máy.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,7 +44,9 @@ fun AddBookBottomSheet(
     onPickLocalEpub: () -> Unit,
     onUploadEpubToServer: () -> Unit,
     onPickDriveBook: () -> Unit,
-    onOpenBrowser: () -> Unit
+    onOpenBrowser: () -> Unit,
+    onScanBook: () -> Unit,
+    onPickPagePhotos: () -> Unit
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
@@ -97,6 +104,34 @@ fun AddBookBottomSheet(
                 onClick = {
                     onDismissRequest()
                     onPickLocalEpub()
+                }
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            AddBookOptionItem(
+                icon = Icons.Default.DocumentScanner,
+                title = stringResource(R.string.add_book_scan),
+                subtitle = stringResource(R.string.add_book_scan_desc),
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                iconTint = MaterialTheme.colorScheme.onPrimaryContainer,
+                onClick = {
+                    onDismissRequest()
+                    onScanBook()
+                }
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            AddBookOptionItem(
+                icon = Icons.Default.PhotoLibrary,
+                title = stringResource(R.string.add_book_scan_photos),
+                subtitle = stringResource(R.string.add_book_scan_photos_desc),
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                iconTint = MaterialTheme.colorScheme.onSecondaryContainer,
+                onClick = {
+                    onDismissRequest()
+                    onPickPagePhotos()
                 }
             )
 

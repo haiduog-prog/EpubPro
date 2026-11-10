@@ -29,6 +29,9 @@ import com.epubpro.core.storage.worker.EpubImportScheduler
 import com.epubpro.core.storage.worker.EpubImportWorker
 import com.epubpro.core.storage.worker.LocalBookImportScheduler
 import com.epubpro.core.storage.worker.LocalBookImportWorker
+import com.epubpro.core.storage.worker.ScannedBookImportScheduler
+import com.epubpro.core.storage.worker.ScannedBookImportWorker
+import com.epubpro.core.storage.worker.ScannedBookTooManyPagesException
 import com.epubpro.domain.model.Book
 import com.epubpro.domain.model.ImportJobStatus
 import com.epubpro.domain.repository.BookBibleRepository
@@ -146,6 +149,7 @@ class LibraryViewModel @Inject constructor(
     private val epubEngine: EpubEngine,
     private val epubImportScheduler: EpubImportScheduler,
     private val localBookImportScheduler: LocalBookImportScheduler,
+    private val scannedBookImportScheduler: ScannedBookImportScheduler,
     private val snapshotStore: ReaderResumeSnapshotStore,
     private val ttsPlaybackSnapshotStore: TtsPlaybackSnapshotStore,
     private val ttsWidgetStateStore: TtsWidgetStateStore,
@@ -192,6 +196,10 @@ class LibraryViewModel @Inject constructor(
     private val _events = Channel<UserMessage>(capacity = Channel.BUFFERED)
     val events = _events.receiveAsFlow()
     private val _uploadJobState = MutableStateFlow<ImportJobStatus?>(null)
+    private val _pendingScanPages = MutableStateFlow<List<Uri>>(emptyList())
+
+    /** Ảnh trang sách vừa quét/chọn, đang chờ người dùng nhập tên sách; rỗng khi không có. */
+    val pendingScanPages: StateFlow<List<Uri>> = _pendingScanPages.asStateFlow()
     private val _localImportJobState = MutableStateFlow<ImportJobStatus?>(null)
     private var isDialogDismissedByUser = false
     private var hasActiveUploadSession = false
@@ -432,7 +440,13 @@ class LibraryViewModel @Inject constructor(
                             isLocalDialogDismissedByUser = false
                             _localImportJobState.value = null
                             if (shouldNotify) {
-                                _events.send(UserMessage(R.string.library_import_book_failed))
+                                // Sách quét báo lý do cụ thể (không có chữ, model OCR chưa sẵn sàng...).
+                                val scanError = activeWork.outputData.getString(LocalBookImportWorker.KEY_ERROR_MESSAGE)
+                                    ?.takeIf { ScannedBookImportWorker::class.java.name in activeWork.tags }
+                                _events.send(
+                                    if (scanError != null) UserMessage(R.string.scan_book_failed, listOf(scanError))
+                                    else UserMessage(R.string.library_import_book_failed)
+                                )
                             }
                         }
                         WorkInfo.State.CANCELLED -> {
@@ -508,6 +522,68 @@ class LibraryViewModel @Inject constructor(
                 _events.send(UserMessage(R.string.library_import_failed))
             }
         }
+    }
+
+    /**
+     * Ghi nhận ảnh các trang sách giấy vừa quét hoặc chọn để hỏi tên sách trước khi OCR.
+     *
+     * @param pageUris URI ảnh trang theo thứ tự; danh sách rỗng (người dùng hủy) bị bỏ qua.
+     */
+    fun onScannedPagesSelected(pageUris: List<Uri>) {
+        if (pageUris.isNotEmpty()) _pendingScanPages.value = pageUris
+    }
+
+    /** Bỏ các trang đang chờ khi người dùng hủy hộp thoại thông tin sách. */
+    fun dismissScannedPages() {
+        _pendingScanPages.value = emptyList()
+    }
+
+    /**
+     * Lập lịch OCR các trang đang chờ thành EPUB; tiến độ hiển thị qua widget import local.
+     *
+     * @param title Tên sách.
+     * @param author Tác giả, có thể rỗng.
+     */
+    fun importScannedBook(title: String, author: String) {
+        val pages = _pendingScanPages.value
+        if (pages.isEmpty() || title.isBlank()) return
+        _pendingScanPages.value = emptyList()
+        viewModelScope.launch {
+            try {
+                hasActiveLocalImportSession = true
+                isLocalDialogDismissedByUser = false
+                _localImportJobState.value = ImportJobStatus(
+                    jobId = "",
+                    novelId = null,
+                    title = title.trim(),
+                    status = "pending",
+                    currentStep = context.getString(R.string.book_conversion_notification_starting),
+                    currentChapter = 0,
+                    totalChapters = 0,
+                    progressPercentage = 0,
+                    errorMessage = null,
+                    createdAt = null,
+                    completedAt = null
+                )
+                scannedBookImportScheduler.enqueue(pages, title, author)
+            } catch (error: CancellationException) {
+                hasActiveLocalImportSession = false
+                throw error
+            } catch (error: ScannedBookTooManyPagesException) {
+                hasActiveLocalImportSession = false
+                _localImportJobState.value = null
+                _events.send(UserMessage(R.string.scan_book_error_too_many_pages, listOf(error.maxPages)))
+            } catch (_: Exception) {
+                hasActiveLocalImportSession = false
+                _localImportJobState.value = null
+                _events.send(UserMessage(R.string.library_import_failed))
+            }
+        }
+    }
+
+    /** Báo lỗi khi máy không mở được trình quét tài liệu của Google Play services. */
+    fun reportScannerUnavailable() {
+        viewModelScope.launch { _events.send(UserMessage(R.string.scan_book_scanner_unavailable)) }
     }
 
     /**

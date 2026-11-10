@@ -39,3 +39,6 @@
 # Sherpa ONNX TTS
 -keep class com.k2fsa.sherpa.onnx.** { *; }
 
+# ONNX Runtime Java API (VietOCR): JNI tạo và gọi ngược các lớp này.
+-keep class ai.onnxruntime.** { *; }
+

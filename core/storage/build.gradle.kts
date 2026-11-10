@@ -42,5 +42,6 @@ dependencies {
     implementation(project(":core:book-converter"))
     implementation(project(":core:comic"))
     implementation(project(":core:webnovel"))
+    implementation(project(":core:ocr"))
     api(project(":core:convert"))
 }
