@@ -3,6 +3,7 @@ package com.epubpro.core.reader.tts
 import com.epubpro.core.tts.SherpaTtsEngine
 import com.epubpro.core.tts.TtsVoiceCatalog
 import com.epubpro.core.tts.VoiceModelDownloader
+import com.epubpro.domain.model.AiTtsBackend
 import com.epubpro.domain.model.TtsChunk
 import com.epubpro.domain.model.TtsVoice
 import kotlinx.coroutines.CancellationException
@@ -324,7 +325,8 @@ class PiperTtsEngineWrapper @Inject constructor(
                 name = model.displayName,
                 language = model.language,
                 isNetworkRequired = false,
-                isDownloaded = downloader.isModelDownloaded(model.id)
+                isDownloaded = downloader.isModelDownloaded(model.id),
+                aiBackend = AiTtsBackend.SHERPA_VITS
             )
         }
 

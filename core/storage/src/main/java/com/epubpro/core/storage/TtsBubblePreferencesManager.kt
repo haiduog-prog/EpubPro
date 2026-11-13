@@ -44,7 +44,7 @@ internal fun TtsBubblePreferences.normalized(): TtsBubblePreferences = copy(
  * of independent preference keys after a process interruption.
  */
 @Singleton
-class TtsBubblePreferencesManager @Inject constructor(
+open class TtsBubblePreferencesManager @Inject constructor(
     @ApplicationContext context: Context
 ) {
     private val prefs: SharedPreferences = context.getSharedPreferences(
@@ -53,17 +53,17 @@ class TtsBubblePreferencesManager @Inject constructor(
     )
 
     private val _preferencesFlow = MutableStateFlow(readPreferences())
-    val preferencesFlow: StateFlow<TtsBubblePreferences> = _preferencesFlow.asStateFlow()
+    open val preferencesFlow: StateFlow<TtsBubblePreferences> = _preferencesFlow.asStateFlow()
 
-    fun getPreferences(): TtsBubblePreferences = _preferencesFlow.value
+    open fun getPreferences(): TtsBubblePreferences = _preferencesFlow.value
 
     @Synchronized
-    fun updatePreferences(
+    open fun updatePreferences(
         transform: (TtsBubblePreferences) -> TtsBubblePreferences
     ): Boolean = savePreferences(transform(_preferencesFlow.value))
 
     @Synchronized
-    fun savePreferences(preferences: TtsBubblePreferences): Boolean {
+    open fun savePreferences(preferences: TtsBubblePreferences): Boolean {
         val normalized = preferences.normalized()
         if (normalized == _preferencesFlow.value) return true
 
@@ -76,7 +76,7 @@ class TtsBubblePreferencesManager @Inject constructor(
         return committed
     }
 
-    fun setEnabled(enabled: Boolean): Boolean = updatePreferences {
+    open fun setEnabled(enabled: Boolean): Boolean = updatePreferences {
         it.copy(
             enabled = enabled,
             pendingEnable = false,
@@ -84,7 +84,7 @@ class TtsBubblePreferencesManager @Inject constructor(
         )
     }
 
-    fun setPendingEnable(pending: Boolean): Boolean = updatePreferences {
+    open fun setPendingEnable(pending: Boolean): Boolean = updatePreferences {
         it.copy(pendingEnable = pending)
     }
 
@@ -92,7 +92,7 @@ class TtsBubblePreferencesManager @Inject constructor(
         it.copy(side = side, normalizedY = normalizedY)
     }
 
-    fun setPowerMode(mode: TtsBubblePowerMode): Boolean = updatePreferences { it.copy(powerMode = mode) }
+    open fun setPowerMode(mode: TtsBubblePowerMode): Boolean = updatePreferences { it.copy(powerMode = mode) }
 
     fun setHiddenForCurrentSession(hidden: Boolean): Boolean = updatePreferences {
         it.copy(hiddenForCurrentSession = hidden)

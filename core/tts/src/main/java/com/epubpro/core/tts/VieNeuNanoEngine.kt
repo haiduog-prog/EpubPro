@@ -2,17 +2,21 @@ package com.epubpro.core.tts
 
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtLoggingLevel
 import ai.onnxruntime.OrtSession
+import android.util.Log
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.Closeable
 import java.io.File
-import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
+import java.util.Collections
 import java.util.Random
-import java.util.zip.ZipFile
+import java.util.concurrent.CancellationException
+import java.util.zip.ZipInputStream
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
@@ -23,81 +27,251 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /**
- * Engine thử nghiệm (PoC) cho VieNeu-TTS v3 Nano: model flow-matching 48M tham số chạy hoàn toàn bằng
- * ONNX Runtime trên CPU, xuất audio 24 kHz.
+ * Thông tin một giọng mẫu preset được nạp từ `voices_v3_nano.json`.
  *
- * Port trực tiếp từ `OnnxV3NanoEngine.infer` của repo gốc (github.com/pnnbao97/VieNeu-TTS, `v3nano.py`):
- * text_encoder → duration_predictor → N bước Euler trên vector_estimator (có classifier-free guidance)
- * → codec_decoder. Đầu vào là chuỗi phoneme đã phiên âm sẵn bằng sea-g2p; engine chưa tự phiên âm.
- *
- * Mỗi instance giữ khoảng 280 MiB model trong bộ nhớ native nên cần [close] khi xong.
- *
- * @param modelDir Thư mục chứa `text_encoder.onnx`, `duration_predictor.onnx`, `vector_estimator.onnx`,
- * `codec_decoder.onnx`, `config.json` và `constants.npz` tải từ repo HF `pnnbao-ump/VieNeu-TTS-v3-Nano`.
- * @param threads Số luồng intra-op cho ONNX Runtime.
- * @throws IOException Nếu thiếu file model hoặc file cấu hình không đọc được.
+ * @property name Tên hiển thị của giọng đọc (ví dụ: `"Minh Quân"`).
+ * @property description Mô tả chất giọng và vùng miền.
+ * @property gender Giới tính (`"male"` hoặc `"female"`).
+ * @property speakerEmbedding Vector đặc trưng người nói kích thước 192.
+ * @property style Ma trận style kích thước `[50, 256]`.
  */
-class VieNeuNanoEngine(modelDir: File, threads: Int) : Closeable {
-
-    private val environment = OrtEnvironment.getEnvironment()
-    private val options = OrtSession.SessionOptions().apply {
-        setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-        setIntraOpNumThreads(threads.coerceAtLeast(1))
-        setInterOpNumThreads(1)
-        addConfigEntry("session.intra_op.allow_spinning", "0")
+data class VieNeuNanoVoice(
+    val name: String,
+    val description: String,
+    val gender: String,
+    val speakerEmbedding: FloatArray,
+    val style: Array<FloatArray>,
+) {
+    /**
+     * Trả về vector style phẳng `[50 * 256]` để tạo nhanh `OnnxTensor`.
+     */
+    internal val flatStyle: FloatArray by lazy {
+        val rows = style.size
+        val cols = if (rows > 0) style[0].size else 0
+        FloatArray(rows * cols).also { out ->
+            for (r in 0 until rows) {
+                style[r].copyInto(out, destinationOffset = r * cols)
+            }
+        }
     }
-    private val vocab: Map<Char, Long>
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is VieNeuNanoVoice) return false
+        return name == other.name &&
+            description == other.description &&
+            gender == other.gender &&
+            speakerEmbedding.contentEquals(other.speakerEmbedding) &&
+            style.contentDeepEquals(other.style)
+    }
+
+    override fun hashCode(): Int {
+        var result = name.hashCode()
+        result = 31 * result + description.hashCode()
+        result = 31 * result + gender.hashCode()
+        result = 31 * result + speakerEmbedding.contentHashCode()
+        result = 31 * result + style.contentDeepHashCode()
+        return result
+    }
+
+    companion object {
+        /**
+         * Đọc toàn bộ danh sách giọng preset từ file `voices_v3_nano.json`.
+         *
+         * @param file File JSON chứa bảng preset giọng đọc.
+         * @return Danh sách [VieNeuNanoVoice] theo thứ tự khai báo trong file.
+         */
+        fun loadPresets(file: File): List<VieNeuNanoVoice> =
+            VieNeuNanoEngine.loadPresets(file.readText(Charsets.UTF_8)).voices
+    }
+}
+
+/**
+ * Danh sách giọng preset và tên giọng mặc định đọc từ `voices_v3_nano.json`.
+ *
+ * @property defaultVoiceName Tên giọng mặc định khuyến nghị từ cấu hình model.
+ * @property voices Danh sách tất cả giọng preset khả dụng.
+ */
+data class VoiceCatalog(
+    val defaultVoiceName: String,
+    val voices: List<VieNeuNanoVoice>,
+)
+
+/**
+ * Engine tổng hợp giọng nói VieNeu-TTS v3-Nano chạy hoàn toàn offline trên CPU bằng ONNX Runtime.
+ *
+ * Kiến trúc gồm 4 session ONNX (`text_encoder`, `duration_predictor`, `vector_estimator`, `codec_decoder`),
+ * xuất audio PCM float32 24 kHz mono. Hỗ trợ hủy hợp tác giữa các bước Euler thông qua `isCancelled`.
+ *
+ * @param modelDir Thư mục chứa 4 file `.onnx`, `config.json` và `constants.npz`.
+ * @param threads Số luồng intra-op ONNX Runtime CPU (`>= 1`).
+ */
+class VieNeuNanoEngine(modelDir: File, threads: Int = DEFAULT_THREADS) : Closeable {
+    private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
+    private val lock = Any()
+
+    @Volatile
+    private var closed: Boolean = false
+
+    private val vocab: Map<String, Int>
+    private val emotionMap: Map<String, String>
     private val bosId: Long
     private val eosId: Long
-    private val framesPerSecond: Float
-    private val nullSpeaker: FloatArray
-    private val nullStyle: FloatArray
-    private val sessions = ArrayList<OrtSession>(4)
-    private val textEncoder: OrtSession
-    private val durationPredictor: OrtSession
-    private val vectorEstimator: OrtSession
-    private val codecDecoder: OrtSession
-    private val nullContext: FloatArray
-    private val nullContextLength = 2
+    private val padId: Long
+    private val fps: Double
+
+    private val nullSpkData: FloatArray
+    private val nullSpkShape: LongArray
+    private val nullStyleData: FloatArray
+    private val nullStyleShape: LongArray
+    private val nullCtxData: FloatArray
+    private val nullCtxShape: LongArray
+    private val nullMaskData: BooleanArray
+    private val nullMaskShape: LongArray
+
+    private val textEncoderSession: OrtSession
+    private val durationPredictorSession: OrtSession
+    private val vectorEstimatorSession: OrtSession
+    private val codecDecoderSession: OrtSession
+    private val oovWarned = Collections.synchronizedSet(HashSet<Char>())
 
     init {
-        val config = JSONObject(requireFile(modelDir, CONFIG_FILE).readText(Charsets.UTF_8))
-        val vocabJson = config.getJSONObject("vocab")
-        vocab = vocabJson.keys().asSequence()
-            .filter { it.length == 1 }
-            .associate { it[0] to vocabJson.getLong(it) }
-        bosId = config.getLong("bos_id")
-        eosId = config.getLong("eos_id")
-        framesPerSecond = config.optDouble("flow_fps", DEFAULT_FLOW_FPS).toFloat()
+        for (fileName in REQUIRED_FILES) {
+            val f = File(modelDir, fileName)
+            require(f.isFile) { "Thiếu file model bắt buộc: ${f.absolutePath}" }
+        }
 
-        val constants = readNpzFloats(requireFile(modelDir, CONSTANTS_FILE))
-        nullSpeaker = constants["null_spk"] ?: throw IOException("constants.npz thiếu null_spk")
-        nullStyle = constants["null_style"] ?: throw IOException("constants.npz thiếu null_style")
+        val configJson = JSONObject(File(modelDir, "config.json").readText(Charsets.UTF_8))
+        val vocabObj = configJson.getJSONObject("vocab")
+        val vocabMap = LinkedHashMap<String, Int>(vocabObj.length())
+        val vocabKeys = vocabObj.keys()
+        while (vocabKeys.hasNext()) {
+            val k = vocabKeys.next()
+            vocabMap[k] = vocabObj.getInt(k)
+        }
+        vocab = vocabMap
 
+        val emotionObj = configJson.optJSONObject("emotion_tags")
+        val emotions = LinkedHashMap<String, String>()
+        if (emotionObj != null) {
+            val emoKeys = emotionObj.keys()
+            while (emoKeys.hasNext()) {
+                val tag = emoKeys.next()
+                emotions[tag] = emotionObj.getString(tag)
+            }
+        }
+        emotionMap = emotions
+
+        bosId = configJson.getLong("bos_id")
+        eosId = configJson.getLong("eos_id")
+        padId = configJson.getLong("pad_id")
+        fps = configJson.optDouble("flow_fps", DEFAULT_FLOW_FPS)
+
+        val npzEntries = readNpzFloatArrays(File(modelDir, "constants.npz"))
+        val rawNullSpk = npzEntries["null_spk.npy"]
+            ?: error("constants.npz thiếu null_spk.npy")
+        val rawNullStyle = npzEntries["null_style.npy"]
+            ?: error("constants.npz thiếu null_style.npy")
+
+        nullSpkData = rawNullSpk.data
+        nullSpkShape = longArrayOf(1L, rawNullSpk.shape[0].toLong())
+        nullStyleData = rawNullStyle.data
+        nullStyleShape = longArrayOf(
+            1L,
+            rawNullStyle.shape[0].toLong(),
+            rawNullStyle.shape[1].toLong(),
+        )
+
+        val sessionOptions = OrtSession.SessionOptions().apply {
+            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            setInterOpNumThreads(1)
+            setIntraOpNumThreads(threads.coerceAtLeast(1))
+            addConfigEntry("session.intra_op.allow_spinning", "0")
+            setSessionLogLevel(OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR)
+        }
+
+        var sText: OrtSession? = null
+        var sDur: OrtSession? = null
+        var sVe: OrtSession? = null
+        var sDec: OrtSession? = null
         try {
-            textEncoder = openSession(modelDir, TEXT_ENCODER_FILE)
-            durationPredictor = openSession(modelDir, DURATION_PREDICTOR_FILE)
-            vectorEstimator = openSession(modelDir, VECTOR_ESTIMATOR_FILE)
-            codecDecoder = openSession(modelDir, CODEC_DECODER_FILE)
-            // Ngữ cảnh "không điều kiện" của CFG không phụ thuộc giọng nên chỉ tính một lần.
-            nullContext = encodeText(longArrayOf(bosId, eosId), nullStyle)
-        } catch (error: Throwable) {
-            close()
-            throw error
+            sText = env.createSession(File(modelDir, "text_encoder.onnx").absolutePath, sessionOptions)
+            sDur = env.createSession(File(modelDir, "duration_predictor.onnx").absolutePath, sessionOptions)
+            sVe = env.createSession(File(modelDir, "vector_estimator.onnx").absolutePath, sessionOptions)
+            sDec = env.createSession(File(modelDir, "codec_decoder.onnx").absolutePath, sessionOptions)
+
+            val nullIds = longArrayOf(bosId, eosId)
+            val nullIdsShape = longArrayOf(1L, 2L)
+            nullMaskData = BooleanArray(nullIds.size) { idx -> nullIds[idx] != padId }
+            nullMaskShape = nullIdsShape
+
+            OnnxTensor.createTensor(env, LongBuffer.wrap(nullIds), nullIdsShape).use { idsTensor ->
+                OnnxTensor.createTensor(env, FloatBuffer.wrap(nullStyleData), nullStyleShape).use { styleTensor ->
+                    sText.run(
+                        mapOf("ids" to idsTensor, "style" to styleTensor),
+                    ).use { result ->
+                        val ctxTensor = result[0] as OnnxTensor
+                        nullCtxShape = ctxTensor.info.shape
+                        nullCtxData = readFloatTensor(ctxTensor)
+                    }
+                }
+            }
+            textEncoderSession = sText
+            durationPredictorSession = sDur
+            vectorEstimatorSession = sVe
+            codecDecoderSession = sDec
+        } catch (t: Throwable) {
+            runCatching { sDec?.close() }
+            runCatching { sVe?.close() }
+            runCatching { sDur?.close() }
+            runCatching { sText?.close() }
+            throw t
+        } finally {
+            sessionOptions.close()
         }
     }
 
     /**
-     * Tổng hợp một chunk phoneme (tối đa ~15 giây audio) thành waveform 24 kHz.
+     * Mã hoá chuỗi âm vị IPA (có thể chứa `<|emotion_k|>`) thành mảng token ID cho `text_encoder`.
      *
-     * @param phonemes Chuỗi phoneme do sea-g2p sinh ra; ký tự ngoài vocab bị bỏ qua giống bản Python.
-     * @param voice Giọng đọc (x-vector + style token) lấy từ preset.
-     * @param steps Số bước Euler; 16 là mặc định, 8 nhanh gấp đôi (nên dùng kèm `sway = -1`).
-     * @param cfg Hệ số classifier-free guidance; 0 giảm một nửa tính toán nhưng giảm độ rõ.
-     * @param sway Độ cong lịch thời gian Euler, âm thì dồn bước về đầu quỹ đạo.
-     * @param speed Hệ số tốc độ đọc, lớn hơn 1 là nhanh hơn.
-     * @param seed Seed cho nhiễu khởi tạo để tái lập kết quả.
-     * @return Mẫu PCM float trong khoảng [-1, 1], đã cắt im lặng và fade hai đầu.
+     * @param phonemes Chuỗi âm vị từ `sea-g2p`.
+     * @return Mảng ID dạng `[bos, ..., eos]`.
+     */
+    fun encodePhones(phonemes: String): LongArray = encodePhones(
+        phonemes = phonemes,
+        vocab = vocab,
+        emotionMap = emotionMap,
+        bosId = bosId,
+        eosId = eosId,
+    ) { oovChar ->
+        if (oovWarned.add(oovChar)) {
+            logWarn("v3-Nano bỏ qua ký tự ngoài vocab: '$oovChar' (U+${oovChar.code.toString(16).uppercase()})")
+        }
+    }
+
+    /**
+     * Ghi log cảnh báo qua `android.util.Log` một cách an toàn khi chạy cả trên JVM unit test.
+     *
+     * @param message Nội dung cảnh báo cần ghi.
+     */
+    private fun logWarn(message: String) {
+        runCatching { Log.w(TAG, message) }
+    }
+
+    /**
+     * Tổng hợp một chunk âm vị IPA thành waveform PCM float32 24 kHz.
+     *
+     * @param phonemes Chuỗi âm vị IPA của chunk.
+     * @param voice Giọng đọc preset đã chọn.
+     * @param steps Số bước Euler (`4..24`).
+     * @param cfg Hệ số classifier-free guidance (`0` bỏ unconditional pass).
+     * @param sway Hệ số dịch lịch bước thời gian (`-1f` khuyên dùng khi `steps = 8`).
+     * @param speed Tốc độ đọc (`1.0f` mặc định).
+     * @param seed Hạt giống sinh nhiễu (tuỳ chọn).
+     * @param isCancelled Hàm kiểm tra huỷ hợp tác giữa các bước Euler.
+     * @return Mảng mẫu audio PCM float32 ở 24 kHz đã trim/fade hai đầu.
+     * @throws CancellationException Nếu bị huỷ qua [isCancelled].
+     * @throws IllegalStateException Nếu engine đã bị đóng.
      */
     fun synthesize(
         phonemes: String,
@@ -106,352 +280,453 @@ class VieNeuNanoEngine(modelDir: File, threads: Int) : Closeable {
         cfg: Float = DEFAULT_CFG,
         sway: Float = 0f,
         speed: Float = 1f,
-        seed: Long = 0L
+        seed: Long? = null,
+        isCancelled: () -> Boolean = { false },
     ): FloatArray {
-        val ids = encodePhonemes(phonemes)
-        val context = encodeText(ids, voice.style)
-        val seconds = min(exp(predictLogSeconds(context, ids.size, voice)) / max(speed, 1e-3f), MAX_CHUNK_SECONDS)
-        val frames = max(MIN_FRAMES, (seconds * framesPerSecond).roundToInt())
-
-        val random = Random(seed)
-        val latent = FloatArray(LATENT_CHANNELS * frames) { random.nextGaussian().toFloat() }
-        val schedule = eulerSchedule(max(1, steps), sway)
-        for (step in 0 until schedule.size - 1) {
-            val time = schedule[step]
-            val conditional = estimateVelocity(latent, frames, time, context, ids.size, voice.speakerEmbedding, voice.style)
-            val dt = schedule[step + 1] - time
-            if (cfg > 0f) {
-                val unconditional = estimateVelocity(
-                    latent, frames, time, nullContext, nullContextLength, nullSpeaker, nullStyle
-                )
-                for (i in latent.indices) {
-                    val guided = unconditional[i] + cfg * (conditional[i] - unconditional[i])
-                    latent[i] += dt * guided
-                }
-            } else {
-                for (i in latent.indices) latent[i] += dt * conditional[i]
-            }
+        check(!closed) { "VieNeuNanoEngine đã được đóng" }
+        require(voice.style.isNotEmpty() && voice.style[0].isNotEmpty()) {
+            "Style của giọng ${voice.name} không hợp lệ"
         }
-        return trimAndFade(decode(latent, frames))
-    }
+        synchronized(lock) {
+            check(!closed) { "VieNeuNanoEngine đã được đóng" }
+            if (isCancelled()) throw CancellationException("Tổng hợp bị huỷ trước khi bắt đầu")
 
-    /**
-     * Giải phóng toàn bộ phiên ONNX và tùy chọn phiên; gọi nhiều lần vẫn an toàn.
-     */
-    override fun close() {
-        sessions.forEach { it.close() }
-        sessions.clear()
-        options.close()
-    }
+            val ids = encodePhones(phonemes)
+            val idsShape = longArrayOf(1L, ids.size.toLong())
+            val maskData = BooleanArray(ids.size) { idx -> ids[idx] != padId }
+            val styleShape = longArrayOf(1L, voice.style.size.toLong(), voice.style[0].size.toLong())
+            val styleFlat = voice.flatStyle
+            val spkShape = longArrayOf(1L, voice.speakerEmbedding.size.toLong())
 
-    /**
-     * Đổi chuỗi phoneme sang id theo vocab, bọc bởi BOS/EOS.
-     *
-     * @param phonemes Chuỗi phoneme đầu vào.
-     * @return Mảng id dạng `[bos, ..., eos]`.
-     */
-    private fun encodePhonemes(phonemes: String): LongArray {
-        val ids = ArrayList<Long>(phonemes.length + 2)
-        ids += bosId
-        phonemes.forEach { char -> vocab[char]?.let(ids::add) }
-        ids += eosId
-        return ids.toLongArray()
-    }
+            lateinit var ctxData: FloatArray
+            lateinit var ctxShape: LongArray
 
-    /**
-     * Chạy text_encoder để lấy ngữ cảnh văn bản `[1, L, 256]`.
-     *
-     * @param ids Id phoneme đã có BOS/EOS.
-     * @param style Style token `[50, 256]` của giọng (dạng phẳng).
-     * @return Ngữ cảnh văn bản dạng phẳng.
-     */
-    private fun encodeText(ids: LongArray, style: FloatArray): FloatArray {
-        OnnxTensor.createTensor(environment, LongBuffer.wrap(ids), longArrayOf(1, ids.size.toLong())).use { idsTensor ->
-            styleTensor(style).use { styleTensor ->
-                textEncoder.run(mapOf("ids" to idsTensor, "style" to styleTensor)).use { result ->
-                    return (result[0] as OnnxTensor).floatBuffer.toArray()
-                }
-            }
-        }
-    }
-
-    /**
-     * Dự đoán log độ dài (giây) của câu từ ngữ cảnh và giọng đọc.
-     *
-     * @param context Ngữ cảnh văn bản từ [encodeText].
-     * @param length Số token phoneme (kể cả BOS/EOS).
-     * @param voice Giọng đọc đang dùng.
-     * @return Log của số giây audio dự kiến.
-     */
-    private fun predictLogSeconds(context: FloatArray, length: Int, voice: VieNeuNanoVoice): Float {
-        contextTensor(context, length).use { ctx ->
-            maskTensor(length).use { mask ->
-                speakerTensor(voice.speakerEmbedding).use { spk ->
-                    durationPredictor.run(mapOf("ctx" to ctx, "ctx_mask" to mask, "spk" to spk)).use { result ->
-                        return (result[0] as OnnxTensor).floatBuffer.get(0)
+            OnnxTensor.createTensor(env, LongBuffer.wrap(ids), idsShape).use { idsTensor ->
+                OnnxTensor.createTensor(env, FloatBuffer.wrap(styleFlat), styleShape).use { styleTensor ->
+                    textEncoderSession.run(
+                        mapOf("ids" to idsTensor, "style" to styleTensor),
+                    ).use { res ->
+                        val t = res[0] as OnnxTensor
+                        ctxShape = t.info.shape
+                        ctxData = readFloatTensor(t)
                     }
                 }
             }
-        }
-    }
 
-    /**
-     * Chạy một lượt vector_estimator để lấy vận tốc flow tại thời điểm [time].
-     *
-     * @param latent Latent hiện tại `[1, 144, frames]` dạng phẳng.
-     * @param frames Số frame latent.
-     * @param time Thời điểm trên quỹ đạo flow, trong khoảng [0, 1].
-     * @param context Ngữ cảnh văn bản dạng phẳng.
-     * @param length Số token tương ứng với [context].
-     * @param speaker X-vector 192 chiều.
-     * @param style Style token `[50, 256]` dạng phẳng.
-     * @return Vận tốc cùng shape với [latent].
-     */
-    private fun estimateVelocity(
-        latent: FloatArray,
-        frames: Int,
-        time: Float,
-        context: FloatArray,
-        length: Int,
-        speaker: FloatArray,
-        style: FloatArray
-    ): FloatArray {
-        val shape = longArrayOf(1, LATENT_CHANNELS.toLong(), frames.toLong())
-        val inputs = linkedMapOf(
-            "x" to OnnxTensor.createTensor(environment, FloatBuffer.wrap(latent), shape),
-            "t" to OnnxTensor.createTensor(environment, FloatBuffer.wrap(floatArrayOf(time)), longArrayOf(1)),
-            "ctx" to contextTensor(context, length),
-            "ctx_mask" to maskTensor(length),
-            "spk" to speakerTensor(speaker),
-            "style" to styleTensor(style)
-        )
-        try {
-            vectorEstimator.run(inputs).use { result ->
-                return (result[0] as OnnxTensor).floatBuffer.toArray()
-            }
-        } finally {
-            inputs.values.forEach { it.close() }
-        }
-    }
+            if (isCancelled()) throw CancellationException("Tổng hợp bị huỷ sau text_encoder")
 
-    /**
-     * Giải mã latent thành waveform bằng codec_decoder và kẹp biên độ về [-1, 1].
-     *
-     * @param latent Latent cuối `[1, 144, frames]` dạng phẳng.
-     * @param frames Số frame latent.
-     * @return Mẫu PCM float 24 kHz.
-     */
-    private fun decode(latent: FloatArray, frames: Int): FloatArray {
-        val shape = longArrayOf(1, LATENT_CHANNELS.toLong(), frames.toLong())
-        OnnxTensor.createTensor(environment, FloatBuffer.wrap(latent), shape).use { x ->
-            codecDecoder.run(mapOf("x" to x)).use { result ->
-                val wav = (result[0] as OnnxTensor).floatBuffer.toArray()
-                for (i in wav.indices) wav[i] = wav[i].coerceIn(-1f, 1f)
-                return wav
-            }
-        }
-    }
-
-    /**
-     * Tạo tensor ngữ cảnh `[1, L, 256]`.
-     *
-     * @param context Ngữ cảnh dạng phẳng.
-     * @param length Số token L.
-     * @return Tensor ONNX mới, người gọi chịu trách nhiệm đóng.
-     */
-    private fun contextTensor(context: FloatArray, length: Int): OnnxTensor =
-        OnnxTensor.createTensor(environment, FloatBuffer.wrap(context), longArrayOf(1, length.toLong(), CONTEXT_DIM))
-
-    /**
-     * Tạo mask `[1, L]` toàn `true` vì mỗi lượt chỉ có một chuỗi, không có padding.
-     *
-     * @param length Số token L.
-     * @return Tensor bool mới, người gọi chịu trách nhiệm đóng.
-     */
-    private fun maskTensor(length: Int): OnnxTensor =
-        OnnxTensor.createTensor(environment, arrayOf(BooleanArray(length) { true }))
-
-    /**
-     * Tạo tensor x-vector `[1, 192]`.
-     *
-     * @param speaker X-vector của giọng.
-     * @return Tensor ONNX mới, người gọi chịu trách nhiệm đóng.
-     */
-    private fun speakerTensor(speaker: FloatArray): OnnxTensor =
-        OnnxTensor.createTensor(environment, FloatBuffer.wrap(speaker), longArrayOf(1, speaker.size.toLong()))
-
-    /**
-     * Tạo tensor style token `[1, 50, 256]`.
-     *
-     * @param style Style token dạng phẳng.
-     * @return Tensor ONNX mới, người gọi chịu trách nhiệm đóng.
-     */
-    private fun styleTensor(style: FloatArray): OnnxTensor =
-        OnnxTensor.createTensor(environment, FloatBuffer.wrap(style), longArrayOf(1, STYLE_TOKENS, CONTEXT_DIM))
-
-    /**
-     * Mở một phiên ONNX và ghi nhận để [close] giải phóng sau.
-     *
-     * @param modelDir Thư mục model.
-     * @param name Tên file `.onnx`.
-     * @return Phiên đã mở.
-     * @throws IOException Nếu file không tồn tại.
-     */
-    private fun openSession(modelDir: File, name: String): OrtSession =
-        environment.createSession(requireFile(modelDir, name).absolutePath, options).also(sessions::add)
-
-    companion object {
-        const val SAMPLE_RATE = 24_000
-        const val DEFAULT_STEPS = 16
-        const val DEFAULT_CFG = 3f
-
-        private const val TEXT_ENCODER_FILE = "text_encoder.onnx"
-        private const val DURATION_PREDICTOR_FILE = "duration_predictor.onnx"
-        private const val VECTOR_ESTIMATOR_FILE = "vector_estimator.onnx"
-        private const val CODEC_DECODER_FILE = "codec_decoder.onnx"
-        private const val CONFIG_FILE = "config.json"
-        private const val CONSTANTS_FILE = "constants.npz"
-
-        private const val LATENT_CHANNELS = 144
-        private const val CONTEXT_DIM = 256L
-        private const val STYLE_TOKENS = 50L
-        private const val DEFAULT_FLOW_FPS = 24_000.0 / 256 / 6
-        private const val MAX_CHUNK_SECONDS = 15f
-        private const val MIN_FRAMES = 2
-
-        private const val EDGE_THRESH_DB = -45.0
-        private const val EDGE_KEEP_SECONDS = 0.04f
-        private const val EDGE_FADE_SECONDS = 0.015f
-        private const val EDGE_WINDOW_SECONDS = 0.01f
-
-        /**
-         * Lịch thời gian Euler `u + sway * (cos(pi/2 * u) - 1 + u)` với `u` chia đều [0, 1].
-         *
-         * @param steps Số bước Euler.
-         * @param sway Độ cong lịch thời gian.
-         * @return Mảng `steps + 1` mốc thời gian.
-         */
-        internal fun eulerSchedule(steps: Int, sway: Float): FloatArray = FloatArray(steps + 1) { i ->
-            val u = i.toDouble() / steps
-            (u + sway * (cos(PI / 2 * u) - 1 + u)).toFloat()
-        }
-
-        /**
-         * Cắt im lặng hai đầu (giữ lại 40 ms) rồi fade cosine 15 ms ở hai mép, giống `trim_and_fade`
-         * trong `vieneu_utils/core_utils.py`, để các chunk nối nhau không bị click.
-         *
-         * @param wav Waveform 24 kHz.
-         * @return Bản sao đã cắt và fade; mảng rỗng trả nguyên.
-         */
-        internal fun trimAndFade(wav: FloatArray): FloatArray {
-            if (wav.isEmpty()) return wav
-            val window = max(1, (EDGE_WINDOW_SECONDS * SAMPLE_RATE).toInt())
-            val windows = wav.size / window
-            val threshold = 10.0.pow(EDGE_THRESH_DB / 20).toFloat()
-            var first = -1
-            var last = -1
-            for (w in 0 until windows) {
-                var sum = 0f
-                for (i in w * window until (w + 1) * window) sum += abs(wav[i])
-                if (sum / window > threshold) {
-                    if (first < 0) first = w
-                    last = w
+            val logDuration = OnnxTensor.createTensor(env, FloatBuffer.wrap(ctxData), ctxShape).use { ctxTensor ->
+                OnnxTensor.createTensor(env, maskTo2dBooleanArray(maskData)).use { maskTensor ->
+                    OnnxTensor.createTensor(env, FloatBuffer.wrap(voice.speakerEmbedding), spkShape).use { spkTensor ->
+                        durationPredictorSession.run(
+                            mapOf("ctx" to ctxTensor, "ctx_mask" to maskTensor, "spk" to spkTensor),
+                        ).use { res ->
+                            val durTensor = res[0] as OnnxTensor
+                            durTensor.floatBuffer.get(0)
+                        }
+                    }
                 }
             }
-            val lead = if (first < 0) wav.size else first * window
-            val tail = if (first < 0) 0 else wav.size - (last + 1) * window
-            val keep = (EDGE_KEEP_SECONDS * SAMPLE_RATE).toInt()
+
+            val secs = min(exp(logDuration.toDouble()) / max(speed.toDouble(), 1e-3), MAX_CHUNK_SECONDS)
+            val tFrames = max(MIN_FRAMES, (secs * fps).roundToInt())
+            val latentSize = LATENT_CHANNELS * tFrames
+            val x = FloatArray(latentSize)
+            val rng = if (seed != null) Random(seed) else Random()
+            for (k in x.indices) {
+                x[k] = rng.nextGaussian().toFloat()
+            }
+
+            val nSteps = max(1, steps)
+            val tg = DoubleArray(nSteps + 1) { stepIdx ->
+                val u = stepIdx.toDouble() / nSteps.toDouble()
+                u + sway.toDouble() * (cos(PI / 2.0 * u) - 1.0 + u)
+            }
+            val xShape = longArrayOf(1L, LATENT_CHANNELS.toLong(), tFrames.toLong())
+            val tShape = longArrayOf(1L)
+            val tBuf = FloatArray(1)
+            val v = FloatArray(latentSize)
+            val vu = if (cfg > 0f) FloatArray(latentSize) else null
+
+            OnnxTensor.createTensor(env, FloatBuffer.wrap(ctxData), ctxShape).use { ctxTensor ->
+                OnnxTensor.createTensor(env, maskTo2dBooleanArray(maskData)).use { maskTensor ->
+                    OnnxTensor.createTensor(env, FloatBuffer.wrap(voice.speakerEmbedding), spkShape).use { spkTensor ->
+                        OnnxTensor.createTensor(env, FloatBuffer.wrap(styleFlat), styleShape).use { styleTensor ->
+                            OnnxTensor.createTensor(env, FloatBuffer.wrap(nullCtxData), nullCtxShape).use { nCtxTensor ->
+                                OnnxTensor.createTensor(env, maskTo2dBooleanArray(nullMaskData)).use { nMaskTensor ->
+                                    OnnxTensor.createTensor(env, FloatBuffer.wrap(nullSpkData), nullSpkShape).use { nSpkTensor ->
+                                        OnnxTensor.createTensor(env, FloatBuffer.wrap(nullStyleData), nullStyleShape).use { nStyleTensor ->
+                                            for (stepIdx in 0 until nSteps) {
+                                                if (isCancelled()) {
+                                                    throw CancellationException("Tổng hợp bị huỷ tại bước Euler $stepIdx/$nSteps")
+                                                }
+                                                tBuf[0] = tg[stepIdx].toFloat()
+                                                OnnxTensor.createTensor(env, FloatBuffer.wrap(x), xShape).use { xTensor ->
+                                                    OnnxTensor.createTensor(env, FloatBuffer.wrap(tBuf), tShape).use { tTensor ->
+                                                        vectorEstimatorSession.run(
+                                                            mapOf(
+                                                                "x" to xTensor,
+                                                                "t" to tTensor,
+                                                                "ctx" to ctxTensor,
+                                                                "ctx_mask" to maskTensor,
+                                                                "spk" to spkTensor,
+                                                                "style" to styleTensor,
+                                                            ),
+                                                        ).use { condRes ->
+                                                            readFloatTensorInto(condRes[0] as OnnxTensor, v)
+                                                        }
+
+                                                        if (cfg > 0f && vu != null) {
+                                                            vectorEstimatorSession.run(
+                                                                mapOf(
+                                                                    "x" to xTensor,
+                                                                    "t" to tTensor,
+                                                                    "ctx" to nCtxTensor,
+                                                                    "ctx_mask" to nMaskTensor,
+                                                                    "spk" to nSpkTensor,
+                                                                    "style" to nStyleTensor,
+                                                                ),
+                                                            ).use { uncondRes ->
+                                                                readFloatTensorInto(uncondRes[0] as OnnxTensor, vu)
+                                                            }
+                                                            for (k in v.indices) {
+                                                                v[k] = vu[k] + cfg * (v[k] - vu[k])
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                val dt = (tg[stepIdx + 1] - tg[stepIdx]).toFloat()
+                                                for (k in x.indices) {
+                                                    x[k] += dt * v[k]
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (isCancelled()) throw CancellationException("Tổng hợp bị huỷ trước codec_decoder")
+
+            val rawWav = OnnxTensor.createTensor(env, FloatBuffer.wrap(x), xShape).use { xTensor ->
+                codecDecoderSession.run(mapOf("x" to xTensor)).use { res ->
+                    readFloatTensor(res[0] as OnnxTensor)
+                }
+            }
+            for (k in rawWav.indices) {
+                rawWav[k] = rawWav[k].coerceIn(-1f, 1f)
+            }
+            return trimAndFade(rawWav, SAMPLE_RATE)
+        }
+    }
+
+    /**
+     * Giải phóng toàn bộ các session ONNX Runtime khi không sử dụng.
+     */
+    override fun close() {
+        synchronized(lock) {
+            if (closed) return
+            closed = true
+            runCatching { textEncoderSession.close() }
+            runCatching { durationPredictorSession.close() }
+            runCatching { vectorEstimatorSession.close() }
+            runCatching { codecDecoderSession.close() }
+        }
+    }
+
+    /**
+     * Gói mảng boolean 1D thành mảng 2D `[1, L]` để truyền cho tensor `ctx_mask`.
+     *
+     * @param mask Mặt nạ 1D theo độ dài chuỗi token.
+     * @return Mảng boolean 2D `[1, L]`.
+     */
+    private fun maskTo2dBooleanArray(mask: BooleanArray): Array<BooleanArray> = arrayOf(mask)
+
+    /**
+     * Sao chép toàn bộ giá trị float32 từ một [OnnxTensor] sang [FloatArray] mới.
+     *
+     * @param tensor Tensor đầu ra của ONNX Runtime.
+     * @return Mảng [FloatArray] chứa dữ liệu của tensor.
+     */
+    private fun readFloatTensor(tensor: OnnxTensor): FloatArray {
+        val fb = tensor.floatBuffer
+        val out = FloatArray(fb.remaining())
+        fb.get(out)
+        return out
+    }
+
+    /**
+     * Đọc dữ liệu float32 từ [OnnxTensor] trực tiếp vào mảng đích [dest] để tránh cấp phát lặp.
+     *
+     * @param tensor Tensor nguồn.
+     * @param dest Mảng đích đã được cấp phát sẵn.
+     */
+    private fun readFloatTensorInto(tensor: OnnxTensor, dest: FloatArray) {
+        val fb = tensor.floatBuffer
+        val count = min(fb.remaining(), dest.size)
+        fb.get(dest, 0, count)
+    }
+
+    internal class NpyFloatArray(val shape: IntArray, val data: FloatArray)
+
+    companion object {
+        private const val TAG = "VieNeuNanoEngine"
+        const val SAMPLE_RATE = 24_000
+        const val DEFAULT_STEPS = 8
+        const val DEFAULT_CFG = 3.0f
+        const val DEFAULT_SWAY = -1.0f
+        const val DEFAULT_THREADS = 4
+        private const val DEFAULT_FLOW_FPS = 24_000.0 / 256.0 / 6.0
+        private const val LATENT_CHANNELS = 144
+        private const val MAX_CHUNK_SECONDS = 15.0
+        private const val MIN_FRAMES = 2
+        private const val EDGE_THRESH_DB = -45.0f
+        private const val EDGE_KEEP_S = 0.04f
+        private const val EDGE_FADE_S = 0.015f
+
+        val REQUIRED_FILES = listOf(
+            "text_encoder.onnx",
+            "duration_predictor.onnx",
+            "vector_estimator.onnx",
+            "codec_decoder.onnx",
+            "config.json",
+            "constants.npz",
+        )
+
+        /**
+         * Mã hoá chuỗi âm vị IPA (có thể chứa `<|emotion_k|>`) thành mảng ID token theo `vocab`.
+         *
+         * @param phonemes Chuỗi âm vị từ `sea-g2p`.
+         * @param vocab Bảng ánh xạ ký tự âm vị sang ID.
+         * @param emotionMap Bảng ánh xạ tag `<|emotion_k|>` sang ký tự đặc biệt trong vocab.
+         * @param bosId ID token bắt đầu câu.
+         * @param eosId ID token kết thúc câu.
+         * @param onOov Callback gọi khi gặp ký tự nằm ngoài vocab.
+         * @return Mảng ID dạng `[bos, ..., eos]`.
+         */
+        internal fun encodePhones(
+            phonemes: String,
+            vocab: Map<String, Int>,
+            emotionMap: Map<String, String>,
+            bosId: Long,
+            eosId: Long,
+            onOov: ((Char) -> Unit)? = null,
+        ): LongArray {
+            var expanded = phonemes
+            for ((tag, ch) in emotionMap) {
+                if (expanded.contains(tag)) {
+                    expanded = expanded.replace(tag, ch)
+                }
+            }
+            val ids = LongArray(expanded.length + 2)
+            var count = 0
+            ids[count++] = bosId
+            for (i in expanded.indices) {
+                val ch = expanded[i]
+                val mapped = vocab[ch.toString()]
+                if (mapped == null) {
+                    onOov?.invoke(ch)
+                    continue
+                }
+                ids[count++] = mapped.toLong()
+            }
+            ids[count++] = eosId
+            return if (count == ids.size) ids else ids.copyOf(count)
+        }
+
+        /**
+         * Giải nén toàn bộ mảng `.npy` kiểu float32 trong file `constants.npz`.
+         *
+         * @param npzFile Đường dẫn file `constants.npz`.
+         * @return Bản đồ ánh xạ từ tên entry sang [NpyFloatArray].
+         */
+        internal fun readNpzFloatArrays(npzFile: File): Map<String, NpyFloatArray> {
+            val entries = LinkedHashMap<String, NpyFloatArray>()
+            ZipInputStream(npzFile.inputStream().buffered()).use { zip ->
+                while (true) {
+                    val entry = zip.nextEntry ?: break
+                    if (entry.name.endsWith(".npy")) {
+                        val bytes = readAllBytes(zip)
+                        entries[entry.name] = parseNpyFloat32(bytes)
+                    }
+                    zip.closeEntry()
+                }
+            }
+            return entries
+        }
+
+        /**
+         * Đọc trọn vẹn luồng byte của entry hiện tại trong [ZipInputStream].
+         *
+         * @param zip Luồng nén đang mở.
+         * @return Mảng byte của entry hiện tại.
+         */
+        private fun readAllBytes(zip: ZipInputStream): ByteArray {
+            val out = ByteArrayOutputStream()
+            val buf = ByteArray(8192)
+            while (true) {
+                val n = zip.read(buf)
+                if (n < 0) break
+                out.write(buf, 0, n)
+            }
+            return out.toByteArray()
+        }
+
+        /**
+         * Phân tích phần header và payload float32 little-endian của định dạng NumPy `.npy`.
+         *
+         * @param bytes Dữ liệu thô của file `.npy`.
+         * @return Cấu trúc [NpyFloatArray] gồm kích thước và mảng float32.
+         */
+        internal fun parseNpyFloat32(bytes: ByteArray): NpyFloatArray {
+            require(bytes.size >= 10) { "File NPY quá ngắn" }
+            val major = bytes[6].toInt() and 0xFF
+            val headerLen: Int
+            val dataOffset: Int
+            if (major == 1) {
+                headerLen = ByteBuffer.wrap(bytes, 8, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
+                dataOffset = 10 + headerLen
+            } else {
+                headerLen = ByteBuffer.wrap(bytes, 8, 4).order(ByteOrder.LITTLE_ENDIAN).int
+                dataOffset = 12 + headerLen
+            }
+            val header = String(bytes, dataOffset - headerLen, headerLen, Charsets.ISO_8859_1)
+            require(header.contains("'<f4'")) { "Định dạng NPY không phải float32 little-endian: $header" }
+            val shapeMatch = Regex("""'shape':\s*\(([^)]*)\)""").find(header)
+                ?: error("Không đọc được shape từ header NPY: $header")
+            val shape = shapeMatch.groupValues[1]
+                .split(',')
+                .mapNotNull { it.trim().takeIf { s -> s.isNotEmpty() }?.toInt() }
+                .toIntArray()
+            val floatCount = (bytes.size - dataOffset) / Float.SIZE_BYTES
+            val floats = FloatArray(floatCount)
+            ByteBuffer.wrap(bytes, dataOffset, floatCount * Float.SIZE_BYTES)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .asFloatBuffer()
+                .get(floats)
+            return NpyFloatArray(shape, floats)
+        }
+
+        /**
+         * Đọc toàn bộ danh sách giọng mẫu preset từ nội dung JSON `voices_v3_nano.json`.
+         *
+         * @param jsonText Nội dung chuỗi JSON của `voices_v3_nano.json`.
+         * @return [VoiceCatalog] chứa giọng mặc định và danh sách các giọng preset.
+         */
+        fun loadPresets(jsonText: String): VoiceCatalog {
+            val root = JSONObject(jsonText)
+            val defaultVoice = root.optString("default_voice", "Minh Quân")
+            val presetsObj = root.getJSONObject("presets")
+            val voices = mutableListOf<VieNeuNanoVoice>()
+            val names = presetsObj.keys()
+            while (names.hasNext()) {
+                val name = names.next()
+                val obj = presetsObj.getJSONObject(name)
+                val spkArr = obj.getJSONArray("speaker_emb")
+                val spk = FloatArray(spkArr.length()) { idx -> spkArr.getDouble(idx).toFloat() }
+                val styleArr = obj.getJSONArray("style")
+                val style = Array(styleArr.length()) { r ->
+                    val row = styleArr.getJSONArray(r)
+                    FloatArray(row.length()) { c -> row.getDouble(c).toFloat() }
+                }
+                voices += VieNeuNanoVoice(
+                    name = name,
+                    description = obj.optString("description", ""),
+                    gender = obj.optString("gender", ""),
+                    speakerEmbedding = spk,
+                    style = style,
+                )
+            }
+            return VoiceCatalog(defaultVoiceName = defaultVoice, voices = voices)
+        }
+
+        /**
+         * Đo số mẫu im lặng ở đầu và cuối một đoạn waveform theo ngưỡng -45 dBFS.
+         *
+         * @param wav Mảng mẫu PCM float32 mono.
+         * @param sampleRate Tần số lấy mẫu (Hz).
+         * @return Cặp `(leadSamples, tailSamples)`.
+         */
+        fun edgeSilence(wav: FloatArray, sampleRate: Int = SAMPLE_RATE): Pair<Int, Int> {
+            val nSamp = wav.size
+            val win = max(1, (0.01f * sampleRate).toInt())
+            val nWin = nSamp / win
+            if (nWin == 0) return nSamp to 0
+            val thresh = 10.0.pow(EDGE_THRESH_DB.toDouble() / 20.0).toFloat()
+            var firstAbove = -1
+            var lastAbove = -1
+            for (w in 0 until nWin) {
+                val base = w * win
+                var sumAbs = 0f
+                for (k in 0 until win) {
+                    sumAbs += abs(wav[base + k])
+                }
+                if (sumAbs / win > thresh) {
+                    if (firstAbove == -1) firstAbove = w
+                    lastAbove = w
+                }
+            }
+            if (firstAbove == -1) return nSamp to 0
+            val lead = firstAbove * win
+            val tail = nSamp - (lastAbove + 1) * win
+            return lead to tail
+        }
+
+        /**
+         * Cắt im lặng thừa ở hai đầu chunk và tạo fade cosine 15 ms để nối mượt không click.
+         *
+         * @param wav Mảng mẫu audio đầu vào.
+         * @param sampleRate Tần số lấy mẫu (Hz).
+         * @return Mảng mẫu audio sau khi cắt và fade mượt hai đầu.
+         */
+        fun trimAndFade(wav: FloatArray, sampleRate: Int = SAMPLE_RATE): FloatArray {
+            if (wav.isEmpty()) return wav
+            val (lead, tail) = edgeSilence(wav, sampleRate)
+            val keep = (EDGE_KEEP_S * sampleRate).toInt()
             val start = max(0, lead - keep)
             val end = wav.size - max(0, tail - keep)
-            val out = if (start < end) wav.copyOfRange(start, end) else FloatArray(0)
-            val fade = min((EDGE_FADE_SECONDS * SAMPLE_RATE).toInt(), out.size / 2)
-            for (i in 0 until fade) {
-                val ramp = (0.5 - 0.5 * cos(PI * i / max(1, fade - 1))).toFloat()
-                out[i] *= ramp
-                out[out.size - 1 - i] *= ramp
+            if (end <= start) return FloatArray(0)
+            val out = wav.copyOfRange(start, end)
+            val fadeLen = min((EDGE_FADE_S * sampleRate).toInt(), out.size / 2)
+            if (fadeLen > 0) {
+                for (i in 0 until fadeLen) {
+                    val u = if (fadeLen > 1) i.toDouble() / (fadeLen - 1).toDouble() else 1.0
+                    val gain = (0.5 - 0.5 * cos(PI * u)).toFloat()
+                    out[i] *= gain
+                    out[out.size - 1 - i] *= gain
+                }
             }
             return out
         }
 
         /**
-         * Đọc các mảng float32 little-endian (`<f4`) trong file `.npz` của numpy.
+         * Tính số mẫu số 0 cần chèn giữa [prevWav] và [nextWav] để tổng khoảng nghỉ đạt chuẩn [gap].
          *
-         * @param file File `.npz`.
-         * @return Map tên mảng (bỏ đuôi `.npy`) sang dữ liệu dạng phẳng; mảng khác kiểu bị bỏ qua.
-         * @throws IOException Nếu file hỏng.
+         * @param prevWav Waveform chunk liền trước.
+         * @param nextWav Waveform chunk kế tiếp.
+         * @param gap Loại ranh giới ngắt nghỉ.
+         * @param sampleRate Tần số lấy mẫu (Hz).
+         * @return Số mẫu im lặng cần chèn thêm (`>= 0`).
          */
-        internal fun readNpzFloats(file: File): Map<String, FloatArray> = ZipFile(file).use { zip ->
-            zip.entries().asSequence().filter { it.name.endsWith(".npy") }.mapNotNull { entry ->
-                val bytes = zip.getInputStream(entry).use { it.readBytes() }
-                val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-                val major = bytes[6].toInt()
-                val headerLength = if (major == 1) buffer.getShort(8).toInt() and 0xFFFF else buffer.getInt(8)
-                val headerStart = if (major == 1) 10 else 12
-                val header = String(bytes, headerStart, headerLength, Charsets.ISO_8859_1)
-                if (!header.contains("'<f4'")) return@mapNotNull null
-                buffer.position(headerStart + headerLength)
-                val floats = FloatArray(buffer.remaining() / 4)
-                buffer.asFloatBuffer().get(floats)
-                entry.name.removeSuffix(".npy") to floats
-            }.toMap()
-        }
-
-        /**
-         * Lấy file trong thư mục model, báo lỗi rõ ràng nếu thiếu.
-         *
-         * @param dir Thư mục model.
-         * @param name Tên file.
-         * @return File tồn tại.
-         * @throws IOException Nếu file không tồn tại.
-         */
-        private fun requireFile(dir: File, name: String): File =
-            File(dir, name).takeIf { it.isFile } ?: throw IOException("Thiếu file model VieNeu Nano: $name")
-
-        /**
-         * Sao chép nội dung còn lại của [FloatBuffer] ra mảng mới.
-         *
-         * @return Mảng float mới.
-         */
-        private fun FloatBuffer.toArray(): FloatArray = FloatArray(remaining()).also { get(it) }
-    }
-}
-
-/**
- * Giọng đọc VieNeu Nano: x-vector 192 chiều và 50 × 256 style token (lưu dạng phẳng).
- *
- * @property name Tên giọng hiển thị trong file preset.
- * @property speakerEmbedding X-vector của người nói.
- * @property style Style token theo thứ tự hàng `[50, 256]`.
- */
-class VieNeuNanoVoice(
-    val name: String,
-    val speakerEmbedding: FloatArray,
-    val style: FloatArray
-) {
-    companion object {
-        /**
-         * Đọc toàn bộ preset trong `voices_v3_nano.json` của SDK VieNeu (`src/vieneu/assets`).
-         *
-         * @param file File JSON preset.
-         * @return Danh sách giọng theo thứ tự trong file.
-         */
-        fun loadPresets(file: File): List<VieNeuNanoVoice> {
-            val presets = JSONObject(file.readText(Charsets.UTF_8)).getJSONObject("presets")
-            return presets.keys().asSequence().map { name ->
-                val preset = presets.getJSONObject(name)
-                val speaker = preset.getJSONArray("speaker_emb")
-                val rows = preset.getJSONArray("style")
-                val style = ArrayList<Float>(rows.length() * 256)
-                for (r in 0 until rows.length()) {
-                    val row = rows.getJSONArray(r)
-                    for (c in 0 until row.length()) style += row.getDouble(c).toFloat()
-                }
-                VieNeuNanoVoice(
-                    name = name,
-                    speakerEmbedding = FloatArray(speaker.length()) { speaker.getDouble(it).toFloat() },
-                    style = style.toFloatArray()
-                )
-            }.toList()
+        fun computePausePadSamples(
+            prevWav: FloatArray,
+            nextWav: FloatArray,
+            gap: ChunkGap,
+            sampleRate: Int = SAMPLE_RATE,
+        ): Int {
+            val targetPauseSec = when (gap) {
+                ChunkGap.FIRST -> return 0
+                ChunkGap.PARA -> 0.70f
+                ChunkGap.SENTENCE -> 0.50f
+                ChunkGap.MINOR -> 0.30f
+            }
+            val (leadPrev, tailRaw) = edgeSilence(prevWav, sampleRate)
+            val tail = if (leadPrev == prevWav.size) prevWav.size else tailRaw
+            val (leadNext, _) = edgeSilence(nextWav, sampleRate)
+            return max(0, (targetPauseSec * sampleRate).toInt() - tail - leadNext)
         }
     }
 }

@@ -30,8 +30,11 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -53,6 +56,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -79,6 +83,11 @@ import androidx.lifecycle.LifecycleEventObserver
 import com.epubpro.core.designsystem.R
 import com.epubpro.core.storage.TtsBubblePowerMode
 import com.epubpro.core.reader.tts.TtsService
+import com.epubpro.core.tts.TtsVoiceCatalog
+import com.epubpro.domain.model.AiTtsBackend
+import com.epubpro.domain.model.TtsSettings
+import com.epubpro.domain.model.VieNeuQualityPreset
+import kotlin.math.roundToInt
 
 private fun Context.hasTtsBubbleNotificationPermission(): Boolean {
     return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
@@ -247,6 +256,64 @@ fun AudioSettingsScreen(
                         )
                     }
 
+                    if (uiState.isAiVoice) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = stringResource(R.string.audio_ai_backend_label),
+                            fontWeight = FontWeight.Medium,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        if (uiState.isVieNeuSupported) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                FilterChip(
+                                    selected = uiState.selectedAiBackend == AiTtsBackend.VIENEU_NANO,
+                                    onClick = { viewModel.onAiBackendSelected(AiTtsBackend.VIENEU_NANO) },
+                                    label = {
+                                        Column(Modifier.padding(vertical = 4.dp)) {
+                                            Text(
+                                                text = stringResource(R.string.audio_ai_backend_vieneu),
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(
+                                                text = stringResource(R.string.audio_ai_backend_vieneu_badge),
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                FilterChip(
+                                    selected = uiState.selectedAiBackend == AiTtsBackend.SHERPA_VITS,
+                                    onClick = { viewModel.onAiBackendSelected(AiTtsBackend.SHERPA_VITS) },
+                                    label = {
+                                        Column(Modifier.padding(vertical = 4.dp)) {
+                                            Text(
+                                                text = stringResource(R.string.audio_ai_backend_sherpa),
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(
+                                                text = stringResource(R.string.audio_ai_backend_sherpa_badge),
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        } else {
+                            Text(
+                                text = stringResource(R.string.audio_ai_vieneu_unsupported),
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
                     HorizontalDivider()
                     Text("2. Ngôn ngữ và giọng", fontWeight = FontWeight.SemiBold)
                     Row(
@@ -281,12 +348,17 @@ fun AudioSettingsScreen(
                         }
 
                         Box(modifier = Modifier.weight(0.6f)) {
+                            val backendAiVoices = uiState.filteredAiVoices
                             val selectedVoiceName = if (uiState.isAiVoice) {
-                                uiState.aiVoices.firstOrNull { it.id == uiState.selectedVoiceId }?.name
-                                    ?: "Ch\u1ecdn gi\u1ecdng AI"
+                                backendAiVoices.firstOrNull { it.id == uiState.selectedVoiceId }?.name
+                                    ?: if (uiState.selectedAiBackend == AiTtsBackend.VIENEU_NANO) {
+                                        stringResource(R.string.audio_vieneu_voice_fallback)
+                                    } else {
+                                        stringResource(R.string.audio_sherpa_voice_fallback)
+                                    }
                             } else {
                                 uiState.systemVoices.firstOrNull { it.id == uiState.selectedVoiceId }?.name
-                                    ?: "Mặc định hệ thống"
+                                    ?: stringResource(R.string.tts_setup_system_default_voice)
                             }
                             SettingSelector(
                                 text = selectedVoiceName,
@@ -298,13 +370,28 @@ fun AudioSettingsScreen(
                                 onDismissRequest = { showVoiceMenu = false }
                             ) {
                                 if (uiState.isAiVoice) {
-                                    uiState.aiVoices.forEach { voice ->
+                                    backendAiVoices.forEach { voice ->
+                                        val statusText = if (voice.backend == AiTtsBackend.VIENEU_NANO) {
+                                            val readyTag = if (voice.isDownloaded) {
+                                                stringResource(R.string.audio_vieneu_voice_downloaded)
+                                            } else {
+                                                stringResource(R.string.audio_vieneu_voice_not_downloaded)
+                                            }
+                                            if (voice.description.isNotBlank()) "${voice.description} · $readyTag" else readyTag
+                                        } else {
+                                            val stateLabel = if (voice.isDownloaded) {
+                                                stringResource(R.string.tts_setup_downloaded)
+                                            } else {
+                                                stringResource(R.string.audio_vieneu_voice_not_downloaded)
+                                            }
+                                            "${voice.size} · $stateLabel"
+                                        }
                                         DropdownMenuItem(
                                             text = {
                                                 Column {
                                                     Text(voice.name)
                                                     Text(
-                                                        text = "${voice.size} · ${if (voice.isDownloaded) "Đã tải" else "Chưa tải"}",
+                                                        text = statusText,
                                                         fontSize = 12.sp,
                                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                                     )
@@ -345,7 +432,16 @@ fun AudioSettingsScreen(
                     }
 
                     if (uiState.isAiVoice) {
-                        AiDownloadSection(uiState = uiState, onDownload = viewModel::downloadCurrentVoice)
+                        if (uiState.selectedAiBackend == AiTtsBackend.VIENEU_NANO) {
+                            VieNeuDownloadSection(
+                                uiState = uiState,
+                                onDownload = viewModel::downloadVieNeuPackage,
+                                onCancel = viewModel::cancelVieNeuDownload,
+                                onClear = viewModel::clearVieNeuModel,
+                            )
+                        } else {
+                            AiDownloadSection(uiState = uiState, onDownload = viewModel::downloadCurrentVoice)
+                        }
                     }
 
                     HorizontalDivider()
@@ -368,24 +464,52 @@ fun AudioSettingsScreen(
                             steps = 10,
                             onValueChange = viewModel::onPitchChanged
                         )
+                    } else if (uiState.selectedAiBackend == AiTtsBackend.VIENEU_NANO) {
+                        VieNeuTuningCard(
+                            uiState = uiState,
+                            onPresetSelected = viewModel::onVieNeuPresetSelected,
+                            onStepsChanged = viewModel::onVieNeuStepsChanged,
+                            onCfgChanged = viewModel::onVieNeuCfgChanged,
+                            onSwayChanged = viewModel::onVieNeuSwayChanged,
+                            onThreadsSelected = viewModel::onVieNeuThreadsSelected,
+                            onResetDefaults = viewModel::resetVieNeuDefaults,
+                        )
                     }
 
+                    val vieNeuSampleText = stringResource(R.string.audio_vieneu_preview_sample)
+                    val canPlayAiPreview = if (uiState.selectedAiBackend == AiTtsBackend.VIENEU_NANO) {
+                        uiState.selectedVoiceId != null && uiState.isVieNeuSupported && uiState.isVieNeuModelReady
+                    } else {
+                        uiState.selectedVoiceId != null && uiState.isModelDownloaded
+                    }
                     OutlinedButton(
-                        onClick = if (uiState.isAiVoice) viewModel::testVoice else viewModel::testSystemVoice,
-                        enabled = if (uiState.isAiVoice) {
-                            uiState.selectedVoiceId != null && uiState.isModelDownloaded && !uiState.isPlaying
-                        } else {
-                            uiState.isSystemTtsReady
+                        onClick = {
+                            when {
+                                uiState.isPlaying -> viewModel.stopActivePreview()
+                                uiState.isAiVoice -> {
+                                    if (uiState.selectedAiBackend == AiTtsBackend.VIENEU_NANO) {
+                                        viewModel.testVoice(vieNeuSampleText)
+                                    } else {
+                                        viewModel.testVoice()
+                                    }
+                                }
+                                else -> viewModel.testSystemVoice()
+                            }
                         },
+                        enabled = uiState.isPlaying || if (uiState.isAiVoice) canPlayAiPreview else uiState.isSystemTtsReady,
                         modifier = Modifier.fillMaxWidth().height(48.dp)
                     ) {
                         if (uiState.isPlaying) {
                             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Icon(Icons.Default.Stop, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text(stringResource(R.string.tts_action_stop))
                         } else {
                             Icon(Icons.Default.VolumeUp, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(stringResource(R.string.audio_test_play))
                         }
-                        Spacer(Modifier.width(8.dp))
-                        Text(if (uiState.isPlaying) stringResource(R.string.audio_playing) else stringResource(R.string.audio_test_play))
                     }
                 }
             }
@@ -634,5 +758,237 @@ private fun SettingSlider(
             valueRange = range,
             steps = steps
         )
+    }
+}
+
+/**
+ * Thẻ quản lý tải xuống, tạm dừng và xoá gói tài nguyên dùng chung của VieNeu-TTS v3-Nano (~345 MB).
+ *
+ * @param uiState Trạng thái hiện tại của màn hình cài đặt âm thanh.
+ * @param onDownload Callback bắt đầu hoặc tiếp tục tải gói model VieNeu.
+ * @param onCancel Callback tạm dừng tải xuống để lần sau resume tiếp.
+ * @param onClear Callback xoá bộ file model VieNeu khỏi máy.
+ */
+@Composable
+private fun VieNeuDownloadSection(
+    uiState: AudioSettingsUiState,
+    onDownload: () -> Unit,
+    onCancel: () -> Unit,
+    onClear: () -> Unit,
+) {
+    val statusText = when {
+        !uiState.isVieNeuSupported -> stringResource(R.string.audio_ai_vieneu_unsupported)
+        uiState.isVieNeuDownloading -> stringResource(
+            R.string.audio_vieneu_package_downloading,
+            uiState.vieNeuCurrentFile,
+            uiState.vieNeuDownloadedMb,
+            uiState.vieNeuTotalMb,
+        )
+        uiState.isVieNeuModelReady -> stringResource(
+            R.string.audio_vieneu_package_ready,
+            uiState.vieNeuTotalMb,
+        )
+        else -> stringResource(
+            R.string.audio_vieneu_package_missing,
+            TtsVoiceCatalog.VIENEU_SHARED_PACKAGE_SIZE,
+        )
+    }
+
+    OutlinedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = if (uiState.isVieNeuModelReady) Icons.Default.Check else Icons.Default.CloudDownload,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.audio_vieneu_package_title),
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = statusText,
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            if (uiState.isVieNeuDownloading) {
+                LinearProgressIndicator(
+                    progress = { uiState.vieNeuDownloadProgress },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            if (uiState.isVieNeuSupported) {
+                when {
+                    uiState.isVieNeuDownloading -> {
+                        OutlinedButton(
+                            onClick = onCancel,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(stringResource(R.string.audio_vieneu_package_cancel_btn))
+                        }
+                    }
+                    uiState.isVieNeuModelReady -> {
+                        OutlinedButton(
+                            onClick = onClear,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(stringResource(R.string.audio_vieneu_package_delete_btn))
+                        }
+                    }
+                    else -> {
+                        Button(
+                            onClick = onDownload,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                stringResource(
+                                    R.string.audio_vieneu_package_download_btn,
+                                    TtsVoiceCatalog.VIENEU_SHARED_PACKAGE_SIZE,
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+            uiState.vieNeuDownloadError?.let { error ->
+                Text(error, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+/**
+ * Bảng tinh chỉnh preset và tham số tổng hợp giọng nói VieNeu-TTS v3-Nano (`steps`, `cfg`, `sway`, `threads`).
+ *
+ * @param uiState Trạng thái chứa cấu hình VieNeu hiện hành.
+ * @param onPresetSelected Callback khi người dùng chọn preset chất lượng.
+ * @param onStepsChanged Callback khi người dùng thay đổi số bước Euler.
+ * @param onCfgChanged Callback khi người dùng thay đổi hệ số CFG.
+ * @param onSwayChanged Callback khi người dùng thay đổi tham số Sway.
+ * @param onThreadsSelected Callback khi người dùng chọn số luồng CPU (`2` hoặc `4`).
+ * @param onResetDefaults Callback khôi phục thông số tối ưu mặc định (`FAST`).
+ */
+@Composable
+private fun VieNeuTuningCard(
+    uiState: AudioSettingsUiState,
+    onPresetSelected: (VieNeuQualityPreset) -> Unit,
+    onStepsChanged: (Int) -> Unit,
+    onCfgChanged: (Float) -> Unit,
+    onSwayChanged: (Float) -> Unit,
+    onThreadsSelected: (Int) -> Unit,
+    onResetDefaults: () -> Unit,
+) {
+    val presetItems = listOf(
+        VieNeuQualityPreset.FAST to R.string.audio_vieneu_preset_fast,
+        VieNeuQualityPreset.BALANCED to R.string.audio_vieneu_preset_balanced,
+        VieNeuQualityPreset.TURBO to R.string.audio_vieneu_preset_turbo,
+        VieNeuQualityPreset.CUSTOM to R.string.audio_vieneu_preset_custom,
+    )
+
+    OutlinedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = stringResource(R.string.audio_vieneu_config_title),
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = stringResource(R.string.audio_vieneu_config_subtitle),
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                presetItems.chunked(2).forEach { rowItems ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        rowItems.forEach { (preset, labelRes) ->
+                            FilterChip(
+                                selected = uiState.vieNeuPreset == preset,
+                                onClick = { onPresetSelected(preset) },
+                                label = { Text(stringResource(labelRes), maxLines = 1) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            }
+
+            SettingSlider(
+                label = stringResource(R.string.audio_vieneu_steps_label),
+                valueLabel = stringResource(R.string.audio_vieneu_steps_value, uiState.vieNeuSteps),
+                value = uiState.vieNeuSteps.toFloat(),
+                range = TtsSettings.MIN_VIENEU_STEPS.toFloat()..TtsSettings.MAX_VIENEU_STEPS.toFloat(),
+                steps = (TtsSettings.MAX_VIENEU_STEPS - TtsSettings.MIN_VIENEU_STEPS) - 1,
+                onValueChange = { onStepsChanged(it.roundToInt()) }
+            )
+
+            SettingSlider(
+                label = stringResource(R.string.audio_vieneu_cfg_label),
+                valueLabel = String.format("%.1f", uiState.vieNeuCfg),
+                value = uiState.vieNeuCfg,
+                range = TtsSettings.MIN_VIENEU_CFG..TtsSettings.MAX_VIENEU_CFG,
+                steps = 49,
+                onValueChange = onCfgChanged
+            )
+
+            SettingSlider(
+                label = stringResource(R.string.audio_vieneu_sway_label),
+                valueLabel = String.format("%.1f", uiState.vieNeuSway),
+                value = uiState.vieNeuSway,
+                range = TtsSettings.MIN_VIENEU_SWAY..TtsSettings.MAX_VIENEU_SWAY,
+                steps = 9,
+                onValueChange = onSwayChanged
+            )
+
+            Text(
+                text = stringResource(R.string.audio_vieneu_threads_label),
+                fontWeight = FontWeight.Medium,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                listOf(2, 4).forEach { threadCount ->
+                    FilterChip(
+                        selected = uiState.vieNeuThreads == threadCount,
+                        onClick = { onThreadsSelected(threadCount) },
+                        label = { Text(stringResource(R.string.audio_vieneu_threads_value, threadCount)) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            TextButton(
+                onClick = onResetDefaults,
+                modifier = Modifier.align(Alignment.End)
+            ) {
+                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(stringResource(R.string.audio_vieneu_reset_default))
+            }
+        }
     }
 }

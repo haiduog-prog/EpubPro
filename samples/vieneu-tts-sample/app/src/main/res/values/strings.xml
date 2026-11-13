@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">VieNeu-TTS Sample</string>
+    <string name="app_subtitle">Offline Vietnamese TTS • v3-Nano + sea-g2p</string>
+
+    <!-- Model & G2P Resources -->
+    <string name="section_resources">Tài nguyên &amp; Engine</string>
+    <string name="status_missing_files">Chưa đủ file (%1$d/%2$d • cần tải ~%3$s)</string>
+    <string name="status_ready_to_load">Đã sẵn sàng trong máy (%1$s)</string>
+    <string name="status_downloading">Đang tải %1$s (%2$d%%)</string>
+    <string name="status_downloading_detail">%1$s / %2$s</string>
+    <string name="status_loading_engine">Đang nạp sea-g2p &amp; 4 model ONNX…</string>
+    <string name="status_engine_loaded">Engine sẵn sàng (nạp %1$d ms • ABI v%2$d)</string>
+    <string name="btn_download_models">Tải model &amp; G2P (~331 MB)</string>
+    <string name="btn_cancel_download">Hủy tải</string>
+    <string name="btn_load_engine">Nạp Engine</string>
+    <string name="btn_unload_engine">Giải phóng RAM</string>
+    <string name="label_storage_dir">Thư mục: %1$s</string>
+    <string name="unit_mb">%1$.1f MB</string>
+
+    <!-- Preset Voices -->
+    <string name="section_voices">Giọng mẫu Preset (%1$d)</string>
+    <string name="voice_default_badge">Mặc định</string>
+    <string name="voice_gender_male">Nam</string>
+    <string name="voice_gender_female">Nữ</string>
+    <string name="voice_selected_info">%1$s — %2$s</string>
+
+    <!-- Input Text -->
+    <string name="section_input">Văn bản thử nghiệm</string>
+    <string name="input_label">Nhập tiếng Việt, số, ngày tháng, từ tiếng Anh hoặc [cười] / [thở dài]</string>
+    <string name="btn_clear_text">Xóa nội dung</string>
+    <string name="sample_chip_news">Tin tức + số liệu</string>
+    <string name="sample_chip_paragraph">Đa đoạn văn</string>
+    <string name="sample_chip_emotion">Cảm xúc [cười]</string>
+    <string name="sample_chip_bilingual">Song ngữ EN-VI</string>
+
+    <string name="sample_text_news">Hôm nay là ngày 13 tháng 11 năm 2026. Nhiệt độ tại Hà Nội khoảng 24 độ C, tỷ lệ hoàn thành dự án đạt 98,5% với 2.400 cuốn sách điện tử.</string>
+    <string name="sample_text_paragraph">Chương một, buổi sáng trên bến cảng.\n\nÁnh nắng nhẹ xuyên qua màn sương mỏng. Cô bước chậm dọc theo con đường lát đá, lắng nghe tiếng sóng vỗ đều đặn vào mạn thuyền.\n\n\"Chuyến tàu hôm nay có khởi hành đúng giờ không ạ?\" — cô khẽ hỏi người lái đò.</string>
+    <string name="sample_text_emotion">Xin chào bạn [cười], hôm nay đọc sách cùng mình nhé! Đôi khi câu chuyện hơi buồn một chút [thở dài], nhưng kết thúc sẽ rất ấm áp.</string>
+    <string name="sample_text_bilingual">Ứng dụng EpubPro hỗ trợ đọc EPUB offline bằng VieNeu-TTS v3 Nano với sea-g2p ngay trên CPU điện thoại Android, không cần server GPU.</string>
+
+    <!-- Synthesis Settings -->
+    <string name="section_settings">Cấu hình tổng hợp</string>
+    <string name="label_speed">Tốc độ đọc: %1$.2fx</string>
+    <string name="label_quality_preset">Chế độ chất lượng</string>
+    <string name="quality_balanced">Chuẩn (16 steps, CFG 3.0)</string>
+    <string name="quality_fast">Nhanh (8 steps, Sway -1, CFG 3.0)</string>
+    <string name="quality_turbo">Siêu nhanh (8 steps, CFG 0)</string>
+    <string name="label_threads">Số luồng ONNX CPU</string>
+    <string name="threads_option">%1$d luồng</string>
+    <string name="hint_reload_threads">Đổi số luồng sẽ áp dụng ở lần nạp Engine tiếp theo.</string>
+
+    <!-- Playback & Telemetry -->
+    <string name="section_playback">Phát &amp; Đo hiệu năng</string>
+    <string name="btn_speak">Đọc ngay</string>
+    <string name="btn_stop">Dừng phát</string>
+    <string name="playback_idle">Chưa phát</string>
+    <string name="playback_preparing">Đang tách đoạn &amp; chuyển IPA qua sea-g2p…</string>
+    <string name="playback_synthesizing">Đang tổng hợp chunk %1$d/%2$d…</string>
+    <string name="playback_done">Hoàn tất %1$d chunk (%2$.1f s audio)</string>
+    <string name="playback_stopped">Đã dừng</string>
+    <string name="metric_ttfa">TTFA: %1$d ms</string>
+    <string name="metric_rtf">RTF: %1$.2fx</string>
+    <string name="metric_total_time">Tổng xử lý: %1$d ms</string>
+    <string name="metric_audio_len">Audio: %1$.1f s</string>
+    <string name="label_phoneme_preview">Kết quả sea-g2p (chunk đã tách)</string>
+    <string name="phoneme_chunk_header">Chunk %1$d [%2$s]: %3$s</string>
+    <string name="phoneme_line">IPA: %1$s</string>
+    <string name="phoneme_timing">%1$d ms • %2$.2f s • RTF %3$.2fx</string>
+    <string name="gap_first">Bắt đầu</string>
+    <string name="gap_para">Ngắt đoạn</string>
+    <string name="gap_sentence">Ngắt câu</string>
+    <string name="gap_minor">Ngắt ngắn</string>
+    <string name="error_banner_prefix">Lỗi: %1$s</string>
+    <string name="error_no_text">Vui lòng nhập nội dung cần đọc.</string>
+    <string name="error_no_voice">Chưa chọn giọng đọc hợp lệ.</string>
+</resources>

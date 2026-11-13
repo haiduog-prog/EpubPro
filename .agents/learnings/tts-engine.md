@@ -1,11 +1,26 @@
 # Android Text-to-Speech & Background Media Architecture
 
-> Tổng hợp kiến thức về hệ thống TTS Engine, Sherpa-ONNX Offline AI Voice, Foreground Service, MediaSessionCompat và đồng bộ Highlight trong WebView EPUB Reader.
-> Cập nhật lần cuối: 2026-10-29
+> Tổng hợp kiến thức về hệ thống TTS Engine, Sherpa-ONNX, VieNeu-TTS v3-Nano (`sea-g2p`), Foreground Service, MediaSessionCompat và đồng bộ Highlight trong WebView EPUB Reader.
+> Cập nhật lần cuối: 2026-11-13
 
 ---
 
 ## Architecture
+
+### Dual AI TTS Backend (`VieNeu v3-Nano` + `Sherpa VITS`) & `arm64-v8a` Guard
+- **Ngày**: 2026-11-13
+- **Chi tiết**: Giữ nguyên 25 giọng `Sherpa VITS` để đảm bảo tương thích mọi ABI (`arm64-v8a` và `armeabi-v7a`) và bổ sung backend `VieNeu v3-Nano` chạy 4 graph ONNX flow-matching (`text_encoder`, `duration_predictor`, `vector_estimator`, `codec_decoder`) cùng `sea-g2p` JNI/Rust. CMake chỉ biên dịch `sea_g2p_jni` trên `arm64-v8a`, còn runtime chặn an toàn qua `VieNeuDeviceSupportChecker.isSupported()` để máy 32-bit tự fallback về Sherpa/Native mà không crash `UnsatisfiedLinkError`.
+- **Files liên quan**: `domain/src/main/java/com/epubpro/domain/model/TtsModels.kt`, `core/tts/build.gradle.kts`, `core/tts/src/main/cpp/CMakeLists.txt`, `core/tts/src/main/java/com/epubpro/core/tts/VieNeuDeviceSupport.kt`, `core/tts/src/main/java/com/epubpro/core/tts/TtsVoiceCatalog.kt`
+
+### Shared VieNeu Package, Singleton Runtime & Flagship Tuning
+- **Ngày**: 2026-11-13
+- **Chi tiết**: 11 giọng preset `VieNeu v3-Nano` (`vieneu:` prefix) đọc embedding/style từ asset `voices_v3_nano.json` và dùng chung duy nhất 1 gói tài nguyên ~345 MB tại `files/vieneu-nano/` thay vì tải riêng từng giọng như Sherpa. `@Singleton VieNeuDownloadCoordinator` và `VieNeuRuntimeManager` (khoá `Mutex`) chia sẻ một phiên bản engine (~280 MB native RAM) an toàn giữa `TtsService` và nghe thử trong `AudioSettingsViewModel`, với cấu hình mặc định flagship (`FAST`: `8` bước, `CFG 3.0`, `Sway -1.0`, `4` luồng).
+- **Files liên quan**: `core/tts/src/main/java/com/epubpro/core/tts/VieNeuDownloadCoordinator.kt`, `core/tts/src/main/java/com/epubpro/core/tts/VieNeuRuntimeManager.kt`, `core/tts/src/main/java/com/epubpro/core/tts/VieNeuModelDownloader.kt`, `feature/profile/src/main/java/com/epubpro/feature/profile/audio/AudioSettingsViewModel.kt`
+
+### Cooperatively Cancellable Flow-Matching & Streaming Audio Track
+- **Ngày**: 2026-11-13
+- **Chi tiết**: `VieNeuNanoEngine` kiểm tra lambda `isCancelled` trong từng bước vòng lặp Euler để Next/Pause/Stop dừng tổng hợp ngay thay vì chờ hết câu. `VieNeuTtsEngineWrapper` chia câu ngắn, chuẩn hoá pause/trim-fade và phát liên tục qua 1 `AudioTrack` PCM float32 24 kHz (`VieNeuPcmPlayer`), đồng thời giữ cache prefetch 1 chunk tiếp theo keyed theo `voice + speed + steps + cfg + sway + threads`.
+- **Files liên quan**: `core/tts/src/main/java/com/epubpro/core/tts/VieNeuNanoEngine.kt`, `core/tts/src/main/java/com/epubpro/core/tts/VieNeuPcmPlayer.kt`, `core/tts/src/main/java/com/epubpro/core/tts/VieNeuTextChunker.kt`, `core/playback/src/main/java/com/epubpro/core/reader/tts/VieNeuTtsEngineWrapper.kt`
 
 ### IndexedDB Database Isolation cho Voice Storage
 - **Ngày**: 2026-10-29
@@ -82,6 +97,34 @@
 
 ---
 ## Bugs & Solutions
+
+### Eager Android Fields, Direct `Log.*` Calls & Cross-Module Constructor Visibility Breaking JVM Unit Tests
+- **Ngày**: 2026-11-13
+- **Vấn đề**: Unit test trên JVM cho `VieNeuTtsEngineWrapper` và `AudioSettingsViewModel` sập với `Method setUsage in android.media.AudioAttributes$Builder not mocked`, `Method d in android.util.Log not mocked`, hoặc không tạo/mock được class cross-module vì `isReturnDefaultValues` chưa bật.
+- **Root cause**: `VieNeuPcmPlayer` khởi tạo `AudioAttributes.Builder()` ở field initializer (chạy ngay cả khi subclass fake); `AudioSettingsViewModel` gọi thẳng `Log.d/e`; constructor kiểm thử của `VieNeuModelDownloader`/`VieNeuDownloadCoordinator`/`VieNeuRuntimeManager` để `internal` và `TtsBubblePreferencesManager` thiếu `open`.
+- **Fix**: Đổi `AudioAttributes`/`OnAudioFocusChangeListener` thành `by lazy`, bọc `Log` bằng helper bắt `Throwable`, mở `open`/public test constructor cho các class TTS/storage.
+- **Files liên quan**: `core/tts/src/main/java/com/epubpro/core/tts/VieNeuPcmPlayer.kt`, `core/tts/src/main/java/com/epubpro/core/tts/VieNeuRuntimeManager.kt`, `core/storage/src/main/java/com/epubpro/core/storage/TtsBubblePreferencesManager.kt`, `feature/profile/src/main/java/com/epubpro/feature/profile/audio/AudioSettingsViewModel.kt`
+
+### Cắt đuôi audio dài do timeout drain cứng & thiếu kiểm tra AudioFocus
+- **Ngày**: 2026-11-13
+- **Vấn đề**: Khi đọc đoạn văn dài hoặc thiết bị có HAL buffer lớn, phần cuối câu có thể bị cắt cụt; khi khởi tạo `AudioTrack` lỗi vẫn giữ object hỏng và không nhường tiếng khi app khác lấy AudioFocus.
+- **Root cause**: Cơ chế drain dùng trần timeout cố định (`10_000 ms`) không dựa trên tốc độ rút buffer thật của `playbackHeadPosition`, và bỏ qua `AudioTrack.state != AudioTrack.STATE_INITIALIZED`.
+- **Fix**: Theo dõi tiến độ `playbackHeadPosition` kèm deadline động theo frame còn lại (`MAX_STALL_WAIT_MS = 2_500L`), chặn `AudioTrack.state != STATE_INITIALIZED`, và gắn `AudioFocusRequest` (`AUDIOFOCUS_GAIN_TRANSIENT`) có release đồng bộ.
+- **Files liên quan**: `core/tts/src/main/java/com/epubpro/core/tts/VieNeuPcmPlayer.kt`, `samples/vieneu-tts-sample/app/src/main/java/com/vieneu/tts/sample/audio/PcmAudioPlayer.kt`
+
+### Rò rỉ `OrtSession` khi init lỗi một phần & mất cleanup coroutine vì thiếu `NonCancellable`
+- **Ngày**: 2026-11-13
+- **Vấn đề**: Nạp 4 model ONNX nếu file thứ 3–4 lỗi sẽ rò rỉ các `OrtSession` đã mở trước đó; khi người dùng hủy giữa chừng lúc tải hoặc nạp engine, trạng thái UI/handle native có thể kẹt.
+- **Root cause**: Khối init thiếu cleanup rollback các session mở dở; khối `catch`/`finally` gọi `withContext(Dispatchers.IO)` mà thiếu `+ NonCancellable` nên `CancellationException` bỏ qua dọn tài nguyên.
+- **Fix**: Đóng toàn bộ session đã mở nếu khởi tạo `VieNeuNanoEngine` thất bại, gắn `NonCancellable` cho cleanup, và log OOV một lần qua `oovWarned` thay vì bỏ qua im lặng.
+- **Files liên quan**: `core/tts/src/main/java/com/epubpro/core/tts/VieNeuNanoEngine.kt`, `samples/vieneu-tts-sample/app/src/main/java/com/vieneu/tts/sample/ui/VieNeuSampleViewModel.kt`
+
+### Trùng lặp UI do `edit_file` dùng anchor ngắn & lỗi `InvalidTestClassError` với `runBlocking`
+- **Ngày**: 2026-11-13
+- **Vấn đề**: Truyền một dòng phổ biến (`HorizontalDivider()`) làm `Target` khiến `edit_file` chèn trùng khối UI hai chỗ trong `AudioSettingsScreen`; viết instrumentation test `fun test() = runBlocking { ... Log.i(...) }` khiến JUnit4 báo `Method should be void`.
+- **Root cause**: `edit_file` thay thế **mọi** lần xuất hiện của `Target` trong file; còn expression-body `= runBlocking { ... }` suy luận kiểu trả về `Int` từ `Log.i(...)` ở dòng cuối.
+- **Fix**: Luôn kèm ngữ cảnh nhiều dòng duy nhất cho `Target`, và viết `@Test fun foo() { runBlocking { ... } }` trả về `Unit`.
+- **Files liên quan**: `feature/profile/src/main/java/com/epubpro/feature/profile/audio/AudioSettingsScreen.kt`, `core/tts/src/androidTest/java/com/epubpro/core/tts/VieNeuRuntimeInstrumentedTest.kt`
 
 ### Dropdown Giọng AI hiển thị sai model so với audio đang phát do IndexedDB blocked
 - **Ngày**: 2026-10-29
@@ -232,6 +275,21 @@
 ---
 ## How-To
 
+### Biên dịch chéo Rust C-ABI (`sea-g2p`) + JNI cho Android `arm64-v8a` (2026-11-13)
+- **Khi nào dùng:** Khi cập nhật thư viện G2P Rust `sea-g2p` cho `VieNeu-TTS` trên Android `arm64-v8a`.
+- **Cách thực hiện:**
+  1. Build crate Rust ở chế độ release cho target `aarch64-linux-android` với Android NDK toolchain để tạo thư viện động `libsea_g2p_rs.so`.
+  2. Đặt `libsea_g2p_rs.so` vào `core/tts/src/main/jniLibs/arm64-v8a/` để Gradle đóng gói cùng JNI wrapper ở `core/tts/src/main/cpp/` và `SeaG2pEngine.kt`.
+  3. Kiểm tra `core/tts/consumer-rules.pro` và `app/proguard-rules.pro` giữ lại các symbol JNI trước khi build `:app:assembleRelease`.
+
+### Kiểm thử `VieNeu-TTS` trên thiết bị thật qua ADB không cần tải lại gói model (2026-11-13)
+- **Khi nào dùng:** Khi chạy `VieNeuRuntimeInstrumentedTest` trên thiết bị `arm64-v8a` (như `SM_S936B`) để đo E2E synthesis mà không tải lại model từ mạng.
+- **Cách thực hiện:**
+  1. Dùng `adb push` đẩy thư mục model `vieneu-nano` tạm lên `/data/local/tmp/` trên thiết bị.
+  2. Dùng `adb shell run-as com.epubpro.core.tts.test` chép model vào thư mục `files/vieneu-nano` của package test.
+  3. Chạy `VieNeuRuntimeInstrumentedTest` và kiểm tra log `VieNeuInstrumented` (`chunks`, `audio`, `total`, `peak`).
+  4. Dọn sạch file model tạm trên thiết bị sau khi hoàn tất kiểm thử.
+
 ### Đồng bộ danh mục giọng đọc AI giữa Local Python Server và Web Reader
 - **Ngày**: 2026-10-29
 - **Bước thực hiện**:
@@ -308,6 +366,21 @@
 
 ---
 ## Patterns
+
+### Cầu nối JNI `jbyteArray` UTF-8 thay `GetStringUTFChars` (2026-11-13)
+- **Áp dụng cho:** Tích hợp thư viện C/C++ hoặc Rust FFI trên Android cần nhận/trả chuỗi tiếng Việt/Unicode chuẩn.
+- **Mẫu chuẩn:** Ở `SeaG2pEngine.kt` (`SeaG2pNative`) và `sea_g2p_jni.cpp` (`toStdUtf8`, `toJavaBytes`), luôn mã hoá chuỗi phía Kotlin thành `ByteArray` (`UTF_8`) và dùng `jbyteArray` (`GetByteArrayRegion` / `SetByteArrayRegion`) thay cho `jstring` (`GetStringUTFChars` / `NewStringUTF`).
+- **Lý do:** JNI `jstring` dùng Modified UTF-8 nên dễ sai lệch byte với chuỗi UTF-8 chuẩn mà `CStr`/Rust mong đợi; truyền `jbyteArray` giữ nguyên vẹn UTF-8 hai chiều và có thể kiểm tra lỗi native rồi ném `IllegalStateException`.
+
+### Config-Keyed Prefetch Cache kèm Epoch-Guarded PCM Flush (2026-11-13)
+- **Áp dụng cho:** TTS neural sinh PCM từng câu có hỗ trợ prefetch câu kế tiếp và seek/stop tức thời (`VieNeuTtsEngineWrapper`).
+- **Mẫu chuẩn:** Khóa entry prefetch theo toàn bộ cấu hình (`buildCacheKey` gồm `voiceId`, `steps`, `cfg`, `sway`, `speed`, `threads`, `text`), gọi `clearPrefetch()` khi đổi tham số và `consumePrefetchedIfMatch` để huỷ entry lệch key. Phía phát audio truyền `activeEpoch` từ `pcmPlayer.ensureStarted()` vào `writeSamples`/`writeSilence` và gọi `pauseAndFlush()` khi dừng.
+- **Lý do:** Ngăn phát nhầm âm thanh câu/giọng cũ còn kẹt trong buffer khi user tua nhanh hoặc đổi thông số đọc.
+
+### HTTP Range (`.tmp`) Resumable Download với Backoff (2026-11-13)
+- **Áp dụng cho:** Tải gói model AI dung lượng lớn trên thiết bị di động (`VieNeuModelDownloader`, `VieNeuDownloadCoordinator`).
+- **Mẫu chuẩn:** Tải dữ liệu vào file tạm `.tmp`, đọc kích thước hiện có để gửi header HTTP `Range` xin nối tiếp khi nối lại (hoặc tải lại từ đầu nếu server không trả partial content), thử lại theo backoff khi lỗi mạng tạm thời, và chỉ rename sang file đích sau khi hoàn tất/đối chiếu hợp lệ.
+- **Lý do:** Tránh mất công tải lại hàng trăm MB khi rớt mạng và đảm bảo file model hỏng/dở dang không bao giờ làm sập ONNX Runtime.
 
 ### Invariant Selected-Is-Downloaded Pattern
 - **Ngày**: 2026-10-29

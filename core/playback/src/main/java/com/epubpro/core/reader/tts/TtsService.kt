@@ -65,6 +65,9 @@ class TtsService : Service() {
     lateinit var piperTtsEngineWrapper: PiperTtsEngineWrapper
 
     @Inject
+    lateinit var vieNeuTtsEngineWrapper: VieNeuTtsEngineWrapper
+
+    @Inject
     lateinit var chapterPlaybackCoordinator: TtsChapterPlaybackCoordinator
 
     @Inject
@@ -1130,13 +1133,11 @@ class TtsService : Service() {
     fun getAvailableVoices(
         isAiVoice: Boolean? = null,
         language: String = "vi"
-    ): List<com.epubpro.domain.model.TtsVoice> {
-        val engine = when (isAiVoice) {
-            true -> piperTtsEngineWrapper
-            false -> nativeTtsEngine
-            null -> currentEngine
-        }
-        return engine.getAvailableVoices(language)
+    ): List<com.epubpro.domain.model.TtsVoice> = when (isAiVoice) {
+        true -> vieNeuTtsEngineWrapper.getAvailableVoices(language) +
+            piperTtsEngineWrapper.getAvailableVoices(language)
+        false -> nativeTtsEngine.getAvailableVoices(language)
+        null -> currentEngine.getAvailableVoices(language)
     }
 
     fun speakPreview(
@@ -1149,6 +1150,14 @@ class TtsService : Service() {
         testEngine.setSpeed(normalized.speed)
         testEngine.setPitch(normalized.pitch)
         testEngine.setVoice(normalized.voiceId)
+        if (testEngine is VieNeuTtsEngineWrapper) {
+            testEngine.setSynthesisConfig(
+                steps = normalized.vieNeuSteps,
+                cfg = normalized.vieNeuCfg,
+                sway = normalized.vieNeuSway,
+                threads = normalized.vieNeuThreads
+            )
+        }
         testEngine.speak(
             chunk = TtsChunk(id = PREVIEW_CHUNK_ID, paragraphIndex = 0, text = sampleText),
             onChunkStart = {},
@@ -1527,14 +1536,29 @@ class TtsService : Service() {
         nativeTtsEngine.setPitch(settings.pitch)
         nativeTtsEngine.setVoice(settings.voiceId.takeUnless { settings.isAiVoice })
 
+        val isVieNeuVoice = settings.isAiVoice && TtsSettings.isVieNeuVoiceId(settings.voiceId)
         piperTtsEngineWrapper.setLanguage(settings.language)
         piperTtsEngineWrapper.setSpeed(settings.speed)
         piperTtsEngineWrapper.setPitch(1.0f)
-        piperTtsEngineWrapper.setVoice(settings.voiceId.takeIf { settings.isAiVoice })
+        piperTtsEngineWrapper.setVoice(settings.voiceId.takeIf { settings.isAiVoice && !isVieNeuVoice })
+
+        vieNeuTtsEngineWrapper.setLanguage(settings.language)
+        vieNeuTtsEngineWrapper.setSpeed(settings.speed)
+        vieNeuTtsEngineWrapper.setPitch(1.0f)
+        vieNeuTtsEngineWrapper.setVoice(settings.voiceId.takeIf { isVieNeuVoice })
+        vieNeuTtsEngineWrapper.setSynthesisConfig(
+            steps = settings.vieNeuSteps,
+            cfg = settings.vieNeuCfg,
+            sway = settings.vieNeuSway,
+            threads = settings.vieNeuThreads
+        )
     }
 
-    private fun engineFor(settings: TtsSettings): TtsEngine =
-        if (settings.isAiVoice) piperTtsEngineWrapper else nativeTtsEngine
+    private fun engineFor(settings: TtsSettings): TtsEngine = when {
+        !settings.isAiVoice -> nativeTtsEngine
+        TtsSettings.isVieNeuVoiceId(settings.voiceId) -> vieNeuTtsEngineWrapper
+        else -> piperTtsEngineWrapper
+    }
 
     private fun ensureStartedSession() {
         if (startedSession) return
@@ -2190,6 +2214,7 @@ class TtsService : Service() {
         audioFocusController.abandonFocus()
         nativeTtsEngine.shutdown()
         piperTtsEngineWrapper.shutdown()
+        vieNeuTtsEngineWrapper.shutdown()
         if (::bubbleRuntime.isInitialized) bubbleRuntime.close()
         serviceJob.cancel()
         mediaSessionManager.release()

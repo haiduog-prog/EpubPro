@@ -28,6 +28,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
@@ -42,11 +43,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.epubpro.core.designsystem.R
+import com.epubpro.domain.model.AiTtsBackend
 import com.epubpro.domain.model.TtsSettings
 import com.epubpro.domain.model.TtsVoice
+import com.epubpro.domain.model.VieNeuQualityPreset
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,27 +67,68 @@ fun TtsSetupBottomSheet(
     var pitch by remember { mutableStateOf(if (currentSettings.isAiVoice) 1.0f else currentSettings.pitch) }
     var language by remember { mutableStateOf(if (currentSettings.isAiVoice) "vi" else currentSettings.language) }
     var selectedVoiceId by remember { mutableStateOf(currentSettings.voiceId) }
+    var vieNeuPreset by remember { mutableStateOf(currentSettings.vieNeuPreset) }
+    var selectedBackend by remember {
+        mutableStateOf(
+            if (!currentSettings.isAiVoice || TtsSettings.isVieNeuVoiceId(currentSettings.voiceId) || currentSettings.voiceId == null) {
+                AiTtsBackend.VIENEU_NANO
+            } else {
+                AiTtsBackend.SHERPA_VITS
+            }
+        )
+    }
     var showLanguageMenu by remember { mutableStateOf(false) }
     var showVoiceMenu by remember { mutableStateOf(false) }
 
     val availableVoices = onGetAvailableVoices(isAiVoice, language)
+    val hasVieNeuVoices = availableVoices.any { it.aiBackend == AiTtsBackend.VIENEU_NANO }
+    val hasSherpaVoices = availableVoices.any {
+        it.aiBackend == AiTtsBackend.SHERPA_VITS || it.aiBackend == null
+    }
+
     LaunchedEffect(isAiVoice, language, availableVoices) {
         if (isAiVoice && language != "vi") language = "vi"
-        if (selectedVoiceId != null && availableVoices.none { it.id == selectedVoiceId }) {
+        if (isAiVoice && availableVoices.isNotEmpty()) {
+            if (selectedVoiceId != null && availableVoices.none { it.id == selectedVoiceId }) {
+                selectedVoiceId = null
+            }
+            val matchedVoice = availableVoices.firstOrNull { it.id == selectedVoiceId }
+            if (matchedVoice != null) {
+                selectedBackend = when {
+                    matchedVoice.aiBackend == AiTtsBackend.VIENEU_NANO ||
+                        TtsSettings.isVieNeuVoiceId(matchedVoice.id) -> AiTtsBackend.VIENEU_NANO
+                    else -> AiTtsBackend.SHERPA_VITS
+                }
+            } else if (selectedBackend == AiTtsBackend.VIENEU_NANO && !hasVieNeuVoices && hasSherpaVoices) {
+                selectedBackend = AiTtsBackend.SHERPA_VITS
+            }
+        } else if (!isAiVoice && selectedVoiceId != null && availableVoices.none { it.id == selectedVoiceId }) {
             selectedVoiceId = null
         }
     }
 
-    val selectedVoice = availableVoices.firstOrNull { it.id == selectedVoiceId }
+    val displayedVoices = if (isAiVoice) {
+        availableVoices.filter { voice ->
+            when (selectedBackend) {
+                AiTtsBackend.VIENEU_NANO -> voice.aiBackend == AiTtsBackend.VIENEU_NANO
+                AiTtsBackend.SHERPA_VITS -> voice.aiBackend == AiTtsBackend.SHERPA_VITS || voice.aiBackend == null
+            }
+        }
+    } else {
+        availableVoices
+    }
+
+    val selectedVoice = displayedVoices.firstOrNull { it.id == selectedVoiceId }
+        ?: availableVoices.firstOrNull { it.id == selectedVoiceId }
     val canUseSelection = !isAiVoice || selectedVoice?.isDownloaded == true
-    val draft = TtsSettings(
+    val draft = currentSettings.copy(
         isConfigured = true,
         isAiVoice = isAiVoice,
         language = if (isAiVoice) "vi" else language,
         voiceId = selectedVoiceId,
         speed = speed,
         pitch = if (isAiVoice) 1.0f else pitch
-    )
+    ).withVieNeuPreset(vieNeuPreset)
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -129,12 +175,59 @@ fun TtsSetupBottomSheet(
                 )
             }
 
+            if (isAiVoice && (hasVieNeuVoices || hasSherpaVoices)) {
+                Text(
+                    text = stringResource(R.string.audio_ai_backend_label),
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 14.sp
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    FilterChip(
+                        selected = selectedBackend == AiTtsBackend.VIENEU_NANO,
+                        enabled = hasVieNeuVoices,
+                        onClick = {
+                            if (selectedBackend != AiTtsBackend.VIENEU_NANO) {
+                                selectedBackend = AiTtsBackend.VIENEU_NANO
+                                val vieNeuList = availableVoices.filter { it.aiBackend == AiTtsBackend.VIENEU_NANO }
+                                selectedVoiceId = vieNeuList.firstOrNull { it.isDownloaded }?.id
+                                    ?: vieNeuList.firstOrNull()?.id
+                            }
+                        },
+                        label = { Text(stringResource(R.string.audio_ai_backend_vieneu), maxLines = 1) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilterChip(
+                        selected = selectedBackend == AiTtsBackend.SHERPA_VITS,
+                        enabled = hasSherpaVoices,
+                        onClick = {
+                            if (selectedBackend != AiTtsBackend.SHERPA_VITS) {
+                                selectedBackend = AiTtsBackend.SHERPA_VITS
+                                val sherpaList = availableVoices.filter {
+                                    it.aiBackend == AiTtsBackend.SHERPA_VITS || it.aiBackend == null
+                                }
+                                selectedVoiceId = sherpaList.firstOrNull { it.isDownloaded }?.id
+                                    ?: sherpaList.firstOrNull()?.id
+                            }
+                        },
+                        label = { Text(stringResource(R.string.audio_ai_backend_sherpa), maxLines = 1) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                if (!hasVieNeuVoices) {
+                    Text(
+                        text = stringResource(R.string.audio_ai_vieneu_unsupported),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
             HorizontalDivider()
             Text("2. Ngôn ngữ và giọng", fontWeight = FontWeight.SemiBold)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Box(Modifier.weight(1f)) {
                     SetupSelector(
-                        text = if (language == "en") "English" else "Tiếng Việt",
+                        text = if (language == "en") stringResource(R.string.audio_lang_en) else stringResource(R.string.audio_lang_vi),
                         enabled = !isAiVoice,
                         onClick = { showLanguageMenu = true }
                     )
@@ -143,7 +236,7 @@ fun TtsSetupBottomSheet(
                         onDismissRequest = { showLanguageMenu = false }
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Tiếng Việt") },
+                            text = { Text(stringResource(R.string.audio_lang_vi)) },
                             onClick = {
                                 language = "vi"
                                 selectedVoiceId = null
@@ -151,7 +244,7 @@ fun TtsSetupBottomSheet(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("English") },
+                            text = { Text(stringResource(R.string.audio_lang_en)) },
                             onClick = {
                                 language = "en"
                                 selectedVoiceId = null
@@ -164,7 +257,11 @@ fun TtsSetupBottomSheet(
                 Box(Modifier.weight(1f)) {
                     SetupSelector(
                         text = selectedVoice?.name
-                            ?: if (isAiVoice) "Chưa chọn giọng" else "Mặc định hệ thống",
+                            ?: if (isAiVoice) {
+                                stringResource(R.string.tts_setup_select_voice_prompt)
+                            } else {
+                                stringResource(R.string.tts_setup_system_default_voice)
+                            },
                         enabled = true,
                         onClick = { showVoiceMenu = true }
                     )
@@ -174,22 +271,33 @@ fun TtsSetupBottomSheet(
                     ) {
                         if (!isAiVoice) {
                             DropdownMenuItem(
-                                text = { Text("Mặc định hệ thống") },
+                                text = { Text(stringResource(R.string.tts_setup_system_default_voice)) },
                                 onClick = {
                                     selectedVoiceId = null
                                     showVoiceMenu = false
                                 }
                             )
                         }
-                        availableVoices.forEach { voice ->
+                        displayedVoices.forEach { voice ->
+                            val stateText = if (voice.isDownloaded) {
+                                stringResource(R.string.tts_setup_downloaded)
+                            } else {
+                                stringResource(R.string.tts_setup_hint_download_in_settings)
+                            }
+                            val subtitleText = if (!voice.description.isNullOrBlank()) {
+                                "${voice.description} · $stateText"
+                            } else {
+                                stateText
+                            }
                             DropdownMenuItem(
                                 text = {
                                     Column {
                                         Text(voice.name)
                                         if (isAiVoice) {
                                             Text(
-                                                if (voice.isDownloaded) "Đã tải" else "Chưa tải · vào Cài đặt âm thanh để tải",
-                                                fontSize = 11.sp
+                                                subtitleText,
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
                                     }
@@ -209,15 +317,20 @@ fun TtsSetupBottomSheet(
 
             if (isAiVoice && selectedVoice != null && !selectedVoice.isDownloaded) {
                 Text(
-                    "Model này chưa được tải. Hãy mở Cài đặt âm thanh để tải trước khi nghe.",
-                    fontSize = 12.sp
+                    text = if (selectedVoice.aiBackend == AiTtsBackend.VIENEU_NANO) {
+                        stringResource(R.string.tts_setup_vieneu_missing_hint)
+                    } else {
+                        stringResource(R.string.tts_setup_hint_download_in_settings)
+                    },
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
             HorizontalDivider()
             Text("3. Điều chỉnh và nghe thử", fontWeight = FontWeight.SemiBold)
             SetupSlider(
-                label = "Tốc độ đọc",
+                label = stringResource(R.string.audio_speech_rate),
                 valueText = String.format("%.1fx", speed),
                 value = speed,
                 range = 0.5f..2.0f,
@@ -226,13 +339,46 @@ fun TtsSetupBottomSheet(
             )
             if (!isAiVoice) {
                 SetupSlider(
-                    label = "Cao độ",
+                    label = stringResource(R.string.audio_speech_pitch),
                     valueText = String.format("%.1f", pitch),
                     value = pitch,
                     range = 0.5f..1.5f,
                     steps = 10,
                     onValueChange = { pitch = it }
                 )
+            } else if (selectedBackend == AiTtsBackend.VIENEU_NANO && hasVieNeuVoices) {
+                Text(
+                    text = stringResource(R.string.tts_setup_vieneu_preset_title),
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 14.sp
+                )
+                val showCustomChip = currentSettings.vieNeuPreset == VieNeuQualityPreset.CUSTOM ||
+                    vieNeuPreset == VieNeuQualityPreset.CUSTOM
+                val presetOptions = buildList {
+                    add(VieNeuQualityPreset.FAST to R.string.audio_vieneu_preset_fast)
+                    add(VieNeuQualityPreset.BALANCED to R.string.audio_vieneu_preset_balanced)
+                    add(VieNeuQualityPreset.TURBO to R.string.audio_vieneu_preset_turbo)
+                    if (showCustomChip) {
+                        add(VieNeuQualityPreset.CUSTOM to R.string.audio_vieneu_preset_custom)
+                    }
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    presetOptions.chunked(2).forEach { rowItems ->
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            rowItems.forEach { (preset, labelRes) ->
+                                FilterChip(
+                                    selected = vieNeuPreset == preset,
+                                    onClick = { vieNeuPreset = preset },
+                                    label = { Text(stringResource(labelRes), maxLines = 1) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            if (rowItems.size == 1) {
+                                Spacer(Modifier.weight(1f))
+                            }
+                        }
+                    }
+                }
             }
 
             OutlinedButton(
@@ -242,7 +388,7 @@ fun TtsSetupBottomSheet(
             ) {
                 Icon(Icons.Default.VolumeUp, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("Nghe thử")
+                Text(stringResource(R.string.audio_test_play))
             }
             Button(
                 onClick = { onStartListening(draft) },
