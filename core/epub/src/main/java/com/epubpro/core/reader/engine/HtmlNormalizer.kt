@@ -38,18 +38,17 @@ object HtmlNormalizer {
         }
 
         try {
-            var processedHtml = htmlContent
-            if (!processedHtml.contains("<br", ignoreCase = true)) {
-                processedHtml = processedHtml.replace(Regex("(\\r?\\n)+"), "<br/>")
-            }
-
-            val doc = Jsoup.parse(processedHtml)
+            val doc = Jsoup.parse(htmlContent)
             val body = doc.body() ?: return htmlContent
 
             val pTags = body.select("p")
             // If the document already has 3 or more <p> tags, assume it's properly structured
             if (pTags.size >= 3) {
                 return htmlContent
+            }
+
+            if (body.select("br").isEmpty()) {
+                replaceLineBreaksInBodyTextNodes(body)
             }
 
             fun isBlock(element: Element): Boolean {
@@ -105,6 +104,49 @@ object HtmlNormalizer {
             e.printStackTrace()
         }
         return htmlContent
+    }
+
+    private val LINE_BREAK_PRESERVED_TAGS = setOf("pre", "code", "script", "style")
+
+    /**
+     * Thay thế các ký tự xuống dòng (`\r?\n`) bên trong các [TextNode] của `body` bằng thẻ `<br>`
+     * mà không làm hỏng thuộc tính thẻ nhiều dòng hoặc nội dung bên trong `<pre>`, `<code>`, `<script>`, `<style>`.
+     *
+     * @param root Phần tử gốc (`body`) cần duyệt và tách dòng.
+     */
+    private fun replaceLineBreaksInBodyTextNodes(root: Element) {
+        val textNodes = mutableListOf<TextNode>()
+        fun collectTextNodes(node: Node) {
+            if (node is TextNode) {
+                if (node.wholeText.contains('\n') || node.wholeText.contains('\r')) {
+                    textNodes.add(node)
+                }
+            } else if (node is Element) {
+                if (node.tagName().lowercase() !in LINE_BREAK_PRESERVED_TAGS) {
+                    for (child in node.childNodes()) {
+                        collectTextNodes(child)
+                    }
+                }
+            }
+        }
+        collectTextNodes(root)
+
+        val lineBreakRegex = Regex("(\\r?\\n)+")
+        for (textNode in textNodes) {
+            val whole = textNode.wholeText
+            val parts = whole.split(lineBreakRegex)
+            if (parts.size <= 1) continue
+            for (index in parts.indices) {
+                val part = parts[index]
+                if (part.isNotEmpty()) {
+                    textNode.before(TextNode(part))
+                }
+                if (index < parts.lastIndex) {
+                    textNode.before(Element("br"))
+                }
+            }
+            textNode.remove()
+        }
     }
 
     /**

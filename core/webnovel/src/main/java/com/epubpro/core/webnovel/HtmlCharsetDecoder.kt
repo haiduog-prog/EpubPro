@@ -6,7 +6,7 @@ import java.nio.charset.Charset
  * Giải mã byte HTML theo charset khai báo, cần cho site truyện Trung dùng GBK/GB2312.
  */
 object HtmlCharsetDecoder {
-    private val headerCharset = Regex("charset=([\\w.:-]+)", RegexOption.IGNORE_CASE)
+    private val headerCharset = Regex("charset\\s*=\\s*[\"']?([\\w.:-]+)", RegexOption.IGNORE_CASE)
     private val metaCharset = Regex("<meta[^>]+charset\\s*=\\s*[\"']?([\\w.:-]+)", RegexOption.IGNORE_CASE)
     private const val SNIFF_BYTES = 4096
 

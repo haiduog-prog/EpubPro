@@ -132,10 +132,19 @@ open class OnlineComicImageLoader @Inject constructor() {
             .header("User-Agent", DEFAULT_USER_AGENT)
             .header("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
 
-        val effectiveReferer = refererUrl ?: runCatching {
+        val rawReferer = refererUrl?.takeIf { it.isNotBlank() } ?: runCatching {
             val uri = URI(imageUrl)
-            "${uri.scheme}://${uri.host}/"
+            if (!uri.scheme.isNullOrBlank() && !uri.host.isNullOrBlank()) {
+                "${uri.scheme}://${uri.host}/"
+            } else {
+                null
+            }
         }.getOrNull()
+
+        val effectiveReferer = rawReferer
+            ?.let { ref -> runCatching { URI(ref).toASCIIString() }.getOrDefault(ref) }
+            ?.filter { it in '\u0020'..'\u007e' }
+            ?.trim()
 
         if (!effectiveReferer.isNullOrBlank()) {
             requestBuilder.header("Referer", effectiveReferer)

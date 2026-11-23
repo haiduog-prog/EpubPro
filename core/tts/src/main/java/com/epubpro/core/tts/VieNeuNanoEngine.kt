@@ -583,6 +583,14 @@ class VieNeuNanoEngine(modelDir: File, threads: Int = DEFAULT_THREADS) : Closeab
          */
         internal fun parseNpyFloat32(bytes: ByteArray): NpyFloatArray {
             require(bytes.size >= 10) { "File NPY quá ngắn" }
+            require(
+                bytes[0] == 0x93.toByte() &&
+                    bytes[1] == 'N'.code.toByte() &&
+                    bytes[2] == 'U'.code.toByte() &&
+                    bytes[3] == 'M'.code.toByte() &&
+                    bytes[4] == 'P'.code.toByte() &&
+                    bytes[5] == 'Y'.code.toByte()
+            ) { "File NPY không đúng magic prefix \\u0093NUMPY" }
             val major = bytes[6].toInt() and 0xFF
             val headerLen: Int
             val dataOffset: Int
@@ -590,9 +598,15 @@ class VieNeuNanoEngine(modelDir: File, threads: Int = DEFAULT_THREADS) : Closeab
                 headerLen = ByteBuffer.wrap(bytes, 8, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
                 dataOffset = 10 + headerLen
             } else {
+                require(bytes.size >= 12) { "File NPY v$major quá ngắn" }
                 headerLen = ByteBuffer.wrap(bytes, 8, 4).order(ByteOrder.LITTLE_ENDIAN).int
                 dataOffset = 12 + headerLen
             }
+            require(
+                headerLen >= 0 &&
+                    dataOffset <= bytes.size &&
+                    (bytes.size - dataOffset) % Float.SIZE_BYTES == 0
+            ) { "Header hoặc payload NPY không hợp lệ (headerLen=$headerLen, size=${bytes.size})" }
             val header = String(bytes, dataOffset - headerLen, headerLen, Charsets.ISO_8859_1)
             require(header.contains("'<f4'")) { "Định dạng NPY không phải float32 little-endian: $header" }
             val shapeMatch = Regex("""'shape':\s*\(([^)]*)\)""").find(header)

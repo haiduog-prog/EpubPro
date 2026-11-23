@@ -30,7 +30,7 @@ class DynamicBaseUrlInterceptor @Inject constructor(
         val path = originalUrl.encodedPath
 
         // 1. Nếu request tới Supabase Auth trực tiếp
-        if (originalUrl.host.contains("supabase.co")) {
+        if (isSupabaseHost(originalUrl.host)) {
             val cleanRequest = originalRequest.newBuilder()
                 .removeHeader(SKIP_DYNAMIC_BASE_URL_HEADER)
                 .build()
@@ -62,6 +62,7 @@ class DynamicBaseUrlInterceptor @Inject constructor(
         val request = if (overrideBaseUrl != null) {
             originalRequest.newBuilder()
                 .removeHeader(BASE_URL_OVERRIDE_HEADER)
+                .header(BASE_URL_OVERRIDDEN_MARKER_HEADER, "true")
                 .build()
         } else {
             originalRequest
@@ -107,7 +108,21 @@ class DynamicBaseUrlInterceptor @Inject constructor(
         /** Header nội bộ dùng để ghi đè Base URL cho riêng một request và được xóa trước khi gửi lên server. */
         const val BASE_URL_OVERRIDE_HEADER = "X-EpubPro-Base-Url-Override"
 
+        /** Header nội bộ đánh dấu request đã được ghi đè Base URL (ví dụ testServerConnection) để không tự đính kèm Bearer token. */
+        const val BASE_URL_OVERRIDDEN_MARKER_HEADER = "X-EpubPro-Base-Url-Overridden"
+
         /** Header nội bộ chỉ thị bỏ qua việc thay đổi URL động (dùng cho external APIs như Supabase). */
         const val SKIP_DYNAMIC_BASE_URL_HEADER = "X-Skip-Dynamic-Base-Url"
+
+        /**
+         * Kiểm tra tên miền thuộc Supabase (`supabase.co` hoặc `*.supabase.co`).
+         *
+         * @param host Tên miền cần kiểm tra.
+         * @return `true` nếu là domain chính thức của Supabase.
+         */
+        fun isSupabaseHost(host: String): Boolean {
+            return host.equals("supabase.co", ignoreCase = true) ||
+                host.endsWith(".supabase.co", ignoreCase = true)
+        }
     }
 }

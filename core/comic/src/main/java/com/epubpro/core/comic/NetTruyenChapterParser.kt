@@ -2,6 +2,7 @@ package com.epubpro.core.comic
 
 import java.net.InetAddress
 import java.net.URI
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -57,18 +58,18 @@ object NetTruyenChapterParser {
      */
     fun parse(html: String, pageUrl: String): ComicChapterInfo {
         val document = Jsoup.parse(html, pageUrl)
-        val pageUri = runCatching { URI(pageUrl) }.getOrNull()
-        val pageHost = pageUri?.host?.lowercase().orEmpty()
+        val pageHost = extractHost(pageUrl)
+        val hostCache = HashMap<String, Boolean>()
 
         val servers = extractServers(document)
-        val (pages, pagesByServer) = extractPages(document, pageUrl, pageHost, servers.map { it.id })
+        val (pages, pagesByServer) = extractPages(document, pageUrl, pageHost, servers.map { it.id }, hostCache)
         if (pages.isEmpty()) throw ComicChapterParseException("Không tìm thấy ảnh trong chương")
 
         val (prevUrl, nextUrl) = extractNavLinks(document, pageUrl, pageHost)
         val title = extractTitle(document, pageUrl)
         val comicTitle = extractComicTitle(document, title)
-        val coverUrl = extractCoverUrl(document, pages)
-        val sourceHost = runCatching { URI(pageUrl).host }.getOrElse { pageHost }
+        val coverUrl = extractCoverUrl(document, pages, hostCache)
+        val sourceHost = pageHost
 
         return ComicChapterInfo(
             sourceHost = sourceHost,
@@ -91,13 +92,21 @@ object NetTruyenChapterParser {
     /**
      * Tìm container chương theo danh sách selector ưu tiên, fallback về `body`.
      *
+     * Nếu một selector khớp nhiều phần tử ngang cấp (ví dụ mỗi trang một `div.page-chapter`),
+     * gom tất cả vào một phần tử bao bọc để không bị mất các trang 2..N.
+     *
      * @param document Tài liệu HTML.
      * @return Element container chứa ảnh trang.
      */
     private fun findChapterContainer(document: Document): Element {
         for (selector in CHAPTER_CONTAINER_SELECTORS) {
-            val el = runCatching { document.selectFirst(selector) }.getOrNull()
-            if (el != null) return el
+            val elements = runCatching { document.select(selector) }.getOrNull() ?: continue
+            if (elements.size == 1) return elements[0]
+            if (elements.size > 1) {
+                val wrapper = document.createElement("div")
+                elements.forEach { wrapper.appendChild(it.clone()) }
+                return wrapper
+            }
         }
         return document.body() ?: document.root()
     }
@@ -109,13 +118,15 @@ object NetTruyenChapterParser {
      * @param pageUrl URL tuyệt đối trang để resolve URL tương đối.
      * @param pageHost Host của trang chính dùng để phân biệt CDN ảnh.
      * @param serverIds Mã các server ảnh được khai báo trên trang.
+     * @param hostCache Bộ nhớ đệm kết quả kiểm tra địa chỉ công khai theo host trong một lần parse.
      * @return Danh sách URL chính và các danh sách thay thế theo server.
      */
     private fun extractPages(
         document: Document,
         pageUrl: String,
         pageHost: String,
-        serverIds: List<String>
+        serverIds: List<String>,
+        hostCache: MutableMap<String, Boolean>
     ): Pair<List<String>, Map<String, List<String>>> {
         val container = findChapterContainer(document)
         val seen = LinkedHashSet<String>()
@@ -140,9 +151,8 @@ object NetTruyenChapterParser {
             // Bước 7: lọc URL không phải ảnh trang
             if (!isPageImageUrl(absoluteUrl, pageHost)) return@forEach
 
-            // Bước 9: kiểm tra PublicAddressPolicy (giữ nếu không resolve được)
-            val urlHost = runCatching { URI(absoluteUrl).host }.getOrElse { "" }
-            if (urlHost.isNotEmpty() && !isPublicHost(urlHost)) return@forEach
+            // Bước 9: kiểm tra PublicAddressPolicy (fail-closed khi host rỗng/không hợp lệ)
+            if (!isPublicUrl(absoluteUrl, hostCache)) return@forEach
 
             // Bước 8: dedup theo URL tuyệt đối
             if (seen.add(absoluteUrl)) {
@@ -153,10 +163,7 @@ object NetTruyenChapterParser {
                     val serverUrl = serverRawUrl.takeIf { it.isNotEmpty() }
                         ?.let { resolveUrl(it, img, pageUrl, listOf(serverAttribute)) }
                         ?.takeIf { isValidHttpUrl(it) && isPageImageUrl(it, pageHost) }
-                        ?.takeIf { url ->
-                            val host = runCatching { URI(url).host }.getOrNull()
-                            host == null || isPublicHost(host)
-                        }
+                        ?.takeIf { url -> isPublicUrl(url, hostCache) }
                     urls += serverUrl ?: absoluteUrl
                 }
             }
@@ -223,6 +230,18 @@ object NetTruyenChapterParser {
     }
 
     /**
+     * Trích xuất host chữ thường từ URL, ưu tiên [okhttp3.HttpUrl] để hỗ trợ các tên miền CDN có chứa dấu gạch dưới `_`.
+     *
+     * @param url Chuỗi URL cần trích xuất host.
+     * @return Host chữ thường hoặc chuỗi rỗng nếu URL không hợp lệ.
+     */
+    private fun extractHost(url: String): String {
+        return url.toHttpUrlOrNull()?.host?.lowercase()
+            ?: runCatching { URI(url).host?.lowercase() }.getOrNull()
+            .orEmpty()
+    }
+
+    /**
      * Kiểm tra URL có phải http/https và không phải data URI.
      *
      * @param url URL cần kiểm tra.
@@ -230,7 +249,9 @@ object NetTruyenChapterParser {
      */
     private fun isValidHttpUrl(url: String): Boolean {
         if (url.startsWith("data:")) return false
-        val scheme = runCatching { URI(url).scheme?.lowercase() }.getOrNull() ?: return false
+        val scheme = url.toHttpUrlOrNull()?.scheme?.lowercase()
+            ?: runCatching { URI(url).scheme?.lowercase() }.getOrNull()
+            ?: return false
         return scheme == "http" || scheme == "https"
     }
 
@@ -244,8 +265,10 @@ object NetTruyenChapterParser {
      * @return true nếu URL có thể là ảnh trang truyện.
      */
     private fun isPageImageUrl(url: String, pageHost: String): Boolean {
-        val path = runCatching { URI(url).path?.lowercase() }.getOrElse { "" }.orEmpty()
-        val urlHost = runCatching { URI(url).host?.lowercase() }.getOrElse { "" }.orEmpty()
+        val httpUrl = url.toHttpUrlOrNull()
+        val path = httpUrl?.encodedPath?.lowercase()
+            ?: runCatching { URI(url).path?.lowercase() }.getOrElse { "" }.orEmpty()
+        val urlHost = extractHost(url)
 
         val extension = path.substringAfterLast('.', "").substringBefore('?').lowercase()
         if (extension in VALID_IMAGE_EXTENSIONS) return true
@@ -257,6 +280,19 @@ object NetTruyenChapterParser {
             return urlHost.isNotEmpty() && urlHost != pageHost
         }
         return false
+    }
+
+    /**
+     * Kiểm tra URL có host hợp lệ và thuộc địa chỉ công khai hay không (fail-closed khi host rỗng).
+     *
+     * @param url URL tuyệt đối cần kiểm tra.
+     * @param hostCache Bộ nhớ đệm kết quả phân giải DNS theo host trong phiên parse.
+     * @return true nếu URL có host công khai hợp lệ.
+     */
+    private fun isPublicUrl(url: String, hostCache: MutableMap<String, Boolean>): Boolean {
+        val host = extractHost(url)
+        if (host.isBlank()) return false
+        return hostCache.getOrPut(host) { isPublicHost(host) }
     }
 
     /**
@@ -473,11 +509,16 @@ object NetTruyenChapterParser {
      *
      * @param document Tài liệu HTML.
      * @param pages Danh sách trang ảnh đã trích xuất.
+     * @param hostCache Bộ nhớ đệm kết quả kiểm tra host công khai.
      * @return URL ảnh bìa hoặc null.
      */
-    private fun extractCoverUrl(document: Document, pages: List<String>): String? {
+    private fun extractCoverUrl(
+        document: Document,
+        pages: List<String>,
+        hostCache: MutableMap<String, Boolean>
+    ): String? {
         val ogImage = document.selectFirst("meta[property=og:image]")?.attr("content")?.trim()
-        if (!ogImage.isNullOrBlank() && isValidHttpUrl(ogImage)) {
+        if (!ogImage.isNullOrBlank() && isValidHttpUrl(ogImage) && isPublicUrl(ogImage, hostCache)) {
             return ogImage
         }
         return pages.firstOrNull()

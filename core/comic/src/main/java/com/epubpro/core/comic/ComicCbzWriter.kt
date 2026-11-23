@@ -48,28 +48,70 @@ object ComicCbzWriter {
         title: String,
         sourceUrl: String?
     ) {
-        ZipOutputStream(target.outputStream().buffered()).use { zip ->
-            zip.setLevel(Deflater.NO_COMPRESSION)
-            existing?.let { ZipFile(it) }?.use { old ->
-                old.entries().asSequence()
-                    .filter { !it.isDirectory && !it.name.substringAfterLast('/').equals(COMIC_INFO_ENTRY, true) }
-                    .forEach { entry ->
-                        zip.putNextEntry(ZipEntry(entry.name))
-                        old.getInputStream(entry).use { it.copyTo(zip) }
-                        zip.closeEntry()
+        val parentDir = target.parentFile?.apply { mkdirs() }
+        val temporary = File.createTempFile("${target.name}.", ".tmp", parentDir)
+        try {
+            val writtenNames = HashSet<String>()
+            ZipOutputStream(temporary.outputStream().buffered()).use { zip ->
+                zip.setLevel(Deflater.NO_COMPRESSION)
+                existing?.let { ZipFile(it) }?.use { old ->
+                    old.entries().asSequence()
+                        .filter {
+                            !it.isDirectory &&
+                                !it.name.replace('\\', '/').substringAfterLast('/').equals(COMIC_INFO_ENTRY, true)
+                        }
+                        .forEach { entry ->
+                            if (writtenNames.add(entry.name)) {
+                                zip.putNextEntry(ZipEntry(entry.name))
+                                old.getInputStream(entry).use { it.copyTo(zip) }
+                                zip.closeEntry()
+                            }
+                        }
+                }
+                chapters.forEachIndexed { index, chapter ->
+                    val folder = chapterFolderName(startChapterNumber + index, chapter.title)
+                    chapter.pages.forEach { page ->
+                        val entryName = "$folder/${page.name}"
+                        if (writtenNames.add(entryName)) {
+                            zip.putNextEntry(ZipEntry(entryName))
+                            page.inputStream().use { it.copyTo(zip) }
+                            zip.closeEntry()
+                        }
                     }
-            }
-            chapters.forEachIndexed { index, chapter ->
-                val folder = chapterFolderName(startChapterNumber + index, chapter.title)
-                chapter.pages.forEach { page ->
-                    zip.putNextEntry(ZipEntry("$folder/${page.name}"))
-                    page.inputStream().use { it.copyTo(zip) }
+                }
+                if (writtenNames.add(COMIC_INFO_ENTRY)) {
+                    zip.putNextEntry(ZipEntry(COMIC_INFO_ENTRY))
+                    zip.write(comicInfoXml(title, sourceUrl).toByteArray(Charsets.UTF_8))
                     zip.closeEntry()
                 }
             }
-            zip.putNextEntry(ZipEntry(COMIC_INFO_ENTRY))
-            zip.write(comicInfoXml(title, sourceUrl).toByteArray(Charsets.UTF_8))
-            zip.closeEntry()
+            moveAtomically(temporary, target)
+        } finally {
+            temporary.delete()
+        }
+    }
+
+    /**
+     * Di chuyển file tạm đè lên file đích một cách nguyên tử, tự động fallback nếu không hỗ trợ `ATOMIC_MOVE`.
+     *
+     * @param temporary File tạm đã hoàn tất ghi.
+     * @param target File đích cần thay thế.
+     * @throws java.io.IOException Nếu di chuyển file thất bại.
+     */
+    private fun moveAtomically(temporary: File, target: File) {
+        try {
+            java.nio.file.Files.move(
+                temporary.toPath(),
+                target.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE
+            )
+        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+            java.nio.file.Files.move(
+                temporary.toPath(),
+                target.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING
+            )
         }
     }
 

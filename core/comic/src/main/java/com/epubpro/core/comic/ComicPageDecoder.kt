@@ -36,6 +36,7 @@ object ComicPageDecoder {
     const val MAX_TILE_HEIGHT = 2048
 
     private const val MAX_DECODED_PIXELS = 16_000_000L
+    private const val MAX_TILE_COUNT = 64L
     private const val RGB_565_THRESHOLD_PIXELS = 4_000_000L
     private const val COVER_TARGET_WIDTH = 480
     private const val COVER_JPEG_QUALITY = 85
@@ -56,7 +57,7 @@ object ComicPageDecoder {
         if (sourceWidth <= 0 || sourceHeight <= 0) throw ComicArchiveException("Không giải mã được ảnh trang")
 
         val sampleSize = computeSampleSize(sourceWidth, sourceHeight, targetWidth.coerceAtLeast(1))
-        val decodedPixels = (sourceWidth.toLong() / sampleSize) * (sourceHeight.toLong() / sampleSize)
+        val decodedPixels = maxOf(1L, sourceWidth.toLong() / sampleSize) * maxOf(1L, sourceHeight.toLong() / sampleSize)
         val config = if (decodedPixels > RGB_565_THRESHOLD_PIXELS) Bitmap.Config.RGB_565 else Bitmap.Config.ARGB_8888
         val decodedHeight = sourceHeight / sampleSize
 
@@ -79,7 +80,8 @@ object ComicPageDecoder {
     fun writeCover(bytes: ByteArray, target: File): String {
         val page = decode(bytes, COVER_TARGET_WIDTH)
         val bitmap = page.tiles.first()
-        val temporary = File(target.parentFile, "${target.name}.tmp")
+        val parentDir = target.parentFile?.apply { mkdirs() }
+        val temporary = File.createTempFile("${target.name}.", ".tmp", parentDir)
         try {
             FileOutputStream(temporary).use { output ->
                 if (!bitmap.compress(Bitmap.CompressFormat.JPEG, COVER_JPEG_QUALITY, output)) {
@@ -87,9 +89,12 @@ object ComicPageDecoder {
                 }
                 output.fd.sync()
             }
-            if (target.exists() && !target.delete()) throw ComicArchiveException("Không thay được ảnh bìa cũ")
-            if (!temporary.renameTo(target)) throw ComicArchiveException("Không lưu được ảnh bìa")
+            moveAtomically(temporary, target)
             return target.absolutePath
+        } catch (error: ComicArchiveException) {
+            throw error
+        } catch (error: Exception) {
+            throw ComicArchiveException("Không lưu được ảnh bìa", error)
         } finally {
             temporary.delete()
             page.tiles.forEach(Bitmap::recycle)
@@ -97,7 +102,31 @@ object ComicPageDecoder {
     }
 
     /**
-     * Tính `inSampleSize` lũy thừa 2 lớn nhất mà vẫn giữ chiều rộng không nhỏ hơn đích và tổng pixel trong giới hạn.
+     * Di chuyển file tạm đè lên file đích một cách nguyên tử, tự động fallback nếu không hỗ trợ `ATOMIC_MOVE`.
+     *
+     * @param temporary File tạm đã ghi xong.
+     * @param target File đích cần thay thế.
+     * @throws java.io.IOException Nếu không thể di chuyển file.
+     */
+    private fun moveAtomically(temporary: File, target: File) {
+        try {
+            java.nio.file.Files.move(
+                temporary.toPath(),
+                target.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE
+            )
+        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+            java.nio.file.Files.move(
+                temporary.toPath(),
+                target.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING
+            )
+        }
+    }
+
+    /**
+     * Tính `inSampleSize` lũy thừa 2 lớn nhất mà vẫn giữ chiều rộng không nhỏ hơn đích, tổng pixel và số dải tile trong giới hạn.
      *
      * @param width Chiều rộng gốc.
      * @param height Chiều cao gốc.
@@ -107,7 +136,14 @@ object ComicPageDecoder {
     internal fun computeSampleSize(width: Int, height: Int, targetWidth: Int): Int {
         var sample = 1
         while (width / (sample * 2) >= targetWidth) sample *= 2
-        while ((width.toLong() / sample) * (height.toLong() / sample) > MAX_DECODED_PIXELS) sample *= 2
+        while (
+            sample < (1 shl 30) && (
+                maxOf(1L, width.toLong() / sample) * maxOf(1L, height.toLong() / sample) > MAX_DECODED_PIXELS ||
+                    (height.toLong() + (MAX_TILE_HEIGHT.toLong() * sample) - 1L) / (MAX_TILE_HEIGHT.toLong() * sample) > MAX_TILE_COUNT
+                )
+        ) {
+            sample *= 2
+        }
         return sample
     }
 
@@ -149,10 +185,10 @@ object ComicPageDecoder {
         val decoder = runCatching { newRegionDecoder(bytes) }.getOrNull() ?: return null
         val tiles = mutableListOf<Bitmap>()
         try {
-            val sourceTileHeight = MAX_TILE_HEIGHT * sampleSize
+            val sourceTileHeight = MAX_TILE_HEIGHT.toLong() * sampleSize.toLong()
             var top = 0
             while (top < sourceHeight) {
-                val bottom = minOf(top + sourceTileHeight, sourceHeight)
+                val bottom = minOf(top.toLong() + sourceTileHeight, sourceHeight.toLong()).toInt()
                 val options = BitmapFactory.Options().apply {
                     inSampleSize = sampleSize
                     inPreferredConfig = config

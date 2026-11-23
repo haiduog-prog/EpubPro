@@ -89,4 +89,36 @@ class HtmlNormalizerTest {
         assertTrue("pre should not be wrapped inside p", preInP.isEmpty())
         assertEquals(1, doc.select("pre").size)
     }
+
+    @Test
+    fun `multiline html tag attributes and pre content are not corrupted by br insertion`() {
+        val input = """
+            <html>
+            <head>
+                <title>Chương 1</title>
+            </head>
+            <body>
+                <img
+                    src="cover.jpg"
+                    alt="Ảnh bìa" />
+                Đoạn 1
+                Đoạn 2
+                <pre>line 1
+            line 2</pre>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val output = HtmlNormalizer.normalize(input)
+        val doc = Jsoup.parse(output)
+
+        val img = doc.selectFirst("img")
+        assertEquals("cover.jpg", img?.attr("src"))
+        assertEquals("Ảnh bìa", img?.attr("alt"))
+        assertTrue("pre should not contain br tags", doc.select("pre br").isEmpty())
+        assertTrue("head should not contain br tags", doc.head().select("br").isEmpty())
+        val pTags = doc.body().select("p")
+        assertTrue(pTags.any { it.text() == "Đoạn 1" })
+        assertTrue(pTags.any { it.text() == "Đoạn 2" })
+    }
 }

@@ -131,6 +131,7 @@ class VieNeuTtsEngineWrapper internal constructor(
         val threadsSnapshot = currentThreads
         initializeJob = ensureScope().launch {
             try {
+                runtimeManager.awaitPendingUnload()
                 runtimeManager.loadVoiceCatalog()
                 runtimeManager.ensureLoaded(threadsSnapshot)
                 isEngineReady = true
@@ -531,9 +532,7 @@ class VieNeuTtsEngineWrapper internal constructor(
         isEngineReady = false
         pcmPlayer.close()
         engineScope.cancel()
-        CoroutineScope(ioDispatcher).launch {
-            runtimeManager.unload()
-        }
+        runtimeManager.scheduleUnload()
     }
 
     /**

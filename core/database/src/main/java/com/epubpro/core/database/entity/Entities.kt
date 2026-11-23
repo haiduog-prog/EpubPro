@@ -158,12 +158,33 @@ data class AiRuleEntity(
     val caseSensitive: Boolean,
     val updatedAt: Long
 ) {
-    fun toDomain() = AiRule(
+    /**
+     * Chuyển đổi bản ghi quy tắc AI sang model domain nếu cả `scope` và `action` đều hợp lệ,
+     * hoặc trả về `null` nếu bản ghi chứa giá trị enum lạ để tránh âm thầm biến quy tắc lỗi thành quy tắc thay thế chữ.
+     *
+     * @return [AiRule] hợp lệ hoặc `null` nếu dữ liệu không hợp lệ.
+     */
+    fun toDomainOrNull(): AiRule? {
+        val parsedScope = runCatching { AiRuleScope.valueOf(scope) }.getOrNull() ?: return null
+        val parsedAction = runCatching { AiRuleAction.valueOf(action) }.getOrNull() ?: return null
+        return AiRule(
+            id = id,
+            scope = parsedScope,
+            bookId = bookId,
+            source = source,
+            action = parsedAction,
+            replacement = replacement,
+            caseSensitive = caseSensitive,
+            updatedAt = updatedAt
+        )
+    }
+
+    fun toDomain() = toDomainOrNull() ?: AiRule(
         id = id,
-        scope = AiRuleScope.valueOf(scope),
+        scope = runCatching { AiRuleScope.valueOf(scope) }.getOrDefault(AiRuleScope.BOOK),
         bookId = bookId,
         source = source,
-        action = AiRuleAction.valueOf(action),
+        action = runCatching { AiRuleAction.valueOf(action) }.getOrDefault(AiRuleAction.KEEP),
         replacement = replacement,
         caseSensitive = caseSensitive,
         updatedAt = updatedAt
@@ -214,7 +235,7 @@ data class AiChapterCacheEntity(
         chapterIndex = chapterIndex,
         sourceHash = sourceHash,
         configHash = configHash,
-        status = AiChapterStatus.valueOf(status),
+        status = runCatching { AiChapterStatus.valueOf(status) }.getOrDefault(AiChapterStatus.PARTIAL),
         filePath = filePath,
         modelId = modelId,
         completedParts = completedParts,

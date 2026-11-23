@@ -7,6 +7,7 @@ import com.epubpro.domain.model.AuthState
 import com.epubpro.domain.model.User
 import com.epubpro.domain.repository.AuthRepository
 import com.google.gson.Gson
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -112,6 +113,8 @@ class AuthRepositoryImpl @Inject constructor(
                     logDebug("API_HTTP", "✅ [AUTH] Đăng nhập Supabase thành công! User=${user.email}, Token length=${tokenResponse.accessToken.length}")
 
                     Result.success(user)
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: HttpException) {
                     val errorMsg = parseSupabaseError(e)
                     logError("API_HTTP", "❌ [AUTH] Supabase từ chối đăng nhập (HTTP ${e.code()}): $errorMsg", e)
@@ -153,6 +156,8 @@ class AuthRepositoryImpl @Inject constructor(
                 logError("API_HTTP", "❌ [AUTH] $errorMsg")
                 Result.failure(IllegalStateException(errorMsg))
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             logError("API_HTTP", "❌ [AUTH] Lỗi đăng nhập: ${e.message}", e)
             Result.failure(e)
@@ -252,6 +257,8 @@ class AuthRepositoryImpl @Inject constructor(
                 val errorMsg = "Không thể lấy cấu hình xác thực từ máy chủ. Vui lòng kiểm tra lại kết nối mạng."
                 Result.failure(IllegalStateException(errorMsg))
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -289,6 +296,8 @@ class AuthRepositoryImpl @Inject constructor(
                     ?: return@withContext Result.failure(IllegalStateException("Chưa đăng nhập."))
                 Result.success(currentUser)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -311,6 +320,8 @@ class AuthRepositoryImpl @Inject constructor(
                         apiKey = authConfig.supabasePublishableKey,
                         authorization = "Bearer $accessToken"
                     )
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (_: Exception) {
                     // Bỏ qua lỗi mạng khi logout để luôn xóa phiên cục bộ
                 }
@@ -318,6 +329,8 @@ class AuthRepositoryImpl @Inject constructor(
 
             authPreferencesManager.clearSession()
             Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             authPreferencesManager.clearSession()
             Result.failure(e)
@@ -420,6 +433,8 @@ class AuthRepositoryImpl @Inject constructor(
                 )
             }
             Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -443,6 +458,8 @@ class AuthRepositoryImpl @Inject constructor(
             logDebug("API_HTTP", "✅ [AUTH] Lấy Auth Config thành công: mode=${config.mode}, supabaseUrl=${config.supabaseUrl}")
             authPreferencesManager.saveAuthConfig(config)
             config
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             logError("API_HTTP", "❌ [AUTH] Lấy Auth Config từ $configUrl thất bại: ${e.message}", e)
             authPreferencesManager.getAuthConfig()

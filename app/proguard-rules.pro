@@ -32,9 +32,8 @@
     @com.google.gson.annotations.SerializedName <fields>;
 }
 
-# Keep data classes in domain and core reader models if reflection/serialization is used
+# Keep data classes in domain if reflection/serialization is used
 -keep class com.epubpro.domain.model.** { *; }
--keep class com.epubpro.core.reader.model.** { *; }
 
 # WebView JavascriptInterface (ReaderJsBridge)
 -keepclassmembers class * {

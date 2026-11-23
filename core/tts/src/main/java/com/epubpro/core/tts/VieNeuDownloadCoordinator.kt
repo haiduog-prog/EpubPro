@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -153,9 +154,9 @@ open class VieNeuDownloadCoordinator constructor(
 
             _state.value = VieNeuDownloadState.Downloading(
                 DownloadProgress(
-                    currentFile = VieNeuModelDownloader.REQUIRED_ARTIFACTS.first().fileName,
+                    currentFile = downloader.firstMissingArtifactFileName(),
                     fileIndex = 1,
-                    totalFiles = currentInventory.totalCount - currentInventory.presentCount,
+                    totalFiles = (currentInventory.totalCount - currentInventory.presentCount).coerceAtLeast(1),
                     downloadedBytes = currentInventory.existingBytes,
                     totalBytes = VieNeuModelDownloader.TOTAL_EXPECTED_BYTES,
                 ),
@@ -237,6 +238,16 @@ open class VieNeuDownloadCoordinator constructor(
         synchronized(lock) {
             if (activeJob == null) {
                 _state.value = VieNeuDownloadState.Idle(downloader.inspectInventory())
+            }
+        }
+        if (jobToCancel != null) {
+            jobToCancel.invokeOnCompletion {
+                synchronized(lock) {
+                    if (activeJob == null) {
+                        downloader.clearModelFiles()
+                        _state.value = VieNeuDownloadState.Idle(downloader.inspectInventory())
+                    }
+                }
             }
         }
     }

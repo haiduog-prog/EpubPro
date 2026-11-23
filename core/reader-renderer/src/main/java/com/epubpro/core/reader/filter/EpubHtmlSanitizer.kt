@@ -29,10 +29,41 @@ object EpubHtmlSanitizer {
         "button",
         "select",
         "textarea",
-        "style"
+        "style",
+        "base",
+        "meta",
+        "noscript",
+        "template",
+        "set",
+        "animate",
+        "animateMotion",
+        "animateTransform",
+        "foreignObject"
     )
 
-    private val URL_ATTRIBUTES = listOf("href", "src", "action", "data", "formaction", "xlink:href")
+    private val URL_ATTRIBUTES = listOf(
+        "href",
+        "src",
+        "action",
+        "data",
+        "formaction",
+        "xlink:href",
+        "srcset",
+        "poster",
+        "background",
+        "ping",
+        "to",
+        "values",
+        "from"
+    )
+
+    private val SAFE_DATA_IMAGE_PREFIXES = listOf(
+        "data:image/png",
+        "data:image/jpeg",
+        "data:image/jpg",
+        "data:image/gif",
+        "data:image/webp"
+    )
 
     /**
      * Làm sạch mã HTML/XHTML của chương sách và trả về kiểu dữ liệu đóng gói an toàn [SanitizedEpubHtml].
@@ -55,10 +86,8 @@ object EpubHtmlSanitizer {
             doc.select(tag).remove()
         }
 
-        // 2. Loại bỏ stylesheet bên ngoài và meta độc hại
-        doc.select("link[rel*=stylesheet], link[rel*=icon]").remove()
-        doc.select("meta[http-equiv=refresh]").remove()
-        doc.select("meta[name=viewport]").remove()
+        // 2. Loại bỏ toàn bộ thẻ link bên ngoài
+        doc.select("link").remove()
 
         // 3. Quét và làm sạch tất cả elements
         val allElements = doc.allElements
@@ -88,9 +117,23 @@ object EpubHtmlSanitizer {
                 continue
             }
 
-            // 3.3. Kiểm tra các thuộc tính URL
+            // 3.3. Ngăn chặn DOM clobbering đối với ReaderJsBridge hoặc namespace epubpro-
+            if ((attrName == "id" || attrName == "name") &&
+                (attrValue.equals("ReaderJsBridge", ignoreCase = true) ||
+                    attrValue.startsWith("epubpro-", ignoreCase = true))
+            ) {
+                attributesToRemove.add(attribute.key)
+                continue
+            }
+
+            // 3.4. Kiểm tra các thuộc tính URL
             if (attrName in URL_ATTRIBUTES) {
-                if (isDangerousUrl(attrValue)) {
+                if (attrName == "srcset") {
+                    val candidates = attrValue.split(',').map { it.trim().substringBefore(' ').trim() }
+                    if (candidates.any { isDangerousUrl(it) }) {
+                        attributesToRemove.add(attribute.key)
+                    }
+                } else if (isDangerousUrl(attrValue)) {
                     attributesToRemove.add(attribute.key)
                 }
             }
@@ -107,14 +150,21 @@ object EpubHtmlSanitizer {
         // Bỏ qua các ký tự khoảng trắng hoặc điều khiển đặc biệt
         val normalized = url.replace("""[\s\u0000-\u001F]""".toRegex(), "").lowercase(Locale.ROOT)
 
-        // Chặn scheme javascript: và vbscript:
-        if (normalized.startsWith("javascript:") || normalized.startsWith("vbscript:")) {
+        // Chặn các scheme nguy hiểm
+        if (normalized.startsWith("javascript:") ||
+            normalized.startsWith("vbscript:") ||
+            normalized.startsWith("file:") ||
+            normalized.startsWith("content:") ||
+            normalized.startsWith("intent:")
+        ) {
             return true
         }
 
-        // Với data: URI, chỉ cho phép ảnh an toàn
+        // Với data: URI, chỉ cho phép các định dạng ảnh raster an toàn (chặn data:image/svg+xml)
         if (normalized.startsWith("data:")) {
-            return !normalized.startsWith("data:image/")
+            return SAFE_DATA_IMAGE_PREFIXES.none { prefix ->
+                normalized.startsWith("$prefix;") || normalized.startsWith("$prefix,")
+            }
         }
 
         return false

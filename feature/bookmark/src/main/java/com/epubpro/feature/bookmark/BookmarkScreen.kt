@@ -24,6 +24,7 @@ import com.epubpro.core.designsystem.R
 fun BookmarkScreen(
     onNavigateBack: () -> Unit,
     onJumpToCfi: (chapterIndex: Int, cfi: String) -> Unit,
+    onJumpToBookChapter: ((bookId: String, chapterIndex: Int, cfi: String) -> Unit)? = null,
     viewModel: BookmarkViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -69,7 +70,13 @@ fun BookmarkScreen(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .padding(vertical = 4.dp)
-                                        .clickable { onJumpToCfi(bm.chapterIndex, bm.cfi) },
+                                        .clickable {
+                                            if (onJumpToBookChapter != null) {
+                                                onJumpToBookChapter(bm.bookId, bm.chapterIndex, bm.cfi)
+                                            } else {
+                                                onJumpToCfi(bm.chapterIndex, bm.cfi)
+                                            }
+                                        },
                                     shape = RoundedCornerShape(12.dp)
                                 ) {
                                     Row(

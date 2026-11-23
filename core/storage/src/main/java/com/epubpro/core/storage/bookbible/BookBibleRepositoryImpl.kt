@@ -16,6 +16,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.reflect.TypeToken
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChangedBy
@@ -66,8 +67,8 @@ class BookBibleRepositoryImpl @Inject constructor(
         bookTitle: String,
         author: String
     ): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
-            if (sourceContent.isBlank()) return@runCatching
+        runCatchingCancellable {
+            if (sourceContent.isBlank()) return@runCatchingCancellable
 
             val localSourceKey = source.uniqueKey
             val sourceHash = payloadStore.computeSha256(sourceContent)
@@ -76,7 +77,7 @@ class BookBibleRepositoryImpl @Inject constructor(
             // Kiểm tra nếu submission đã hoàn thành hoặc đang được xử lý
             val existing = bookBibleDao.getSubmissionById(submissionId)
             if (existing != null && (existing.state == "ACCEPTED" || existing.state == "PROCESSING" || existing.state == "COMPLETED")) {
-                return@runCatching
+                return@runCatchingCancellable
             }
 
             // Ghi nội dung văn bản nguồn vào file tạm
@@ -211,7 +212,7 @@ class BookBibleRepositoryImpl @Inject constructor(
      * @return [Result] chứa danh sách sách đã chuyển sang model domain.
      */
     override suspend fun getReviewBooks(): Result<List<BookBibleReviewBook>> = withContext(Dispatchers.IO) {
-        runCatching {
+        runCatchingCancellable {
             apiService.getReviewBooks().map { dto ->
                 BookBibleReviewBook(
                     bookId = dto.bookId,
@@ -240,7 +241,7 @@ class BookBibleRepositoryImpl @Inject constructor(
         status: String,
         canonicalChapter: Int?
     ): Result<List<BookBibleReviewEvent>> = withContext(Dispatchers.IO) {
-        runCatching {
+        runCatchingCancellable {
             apiService.getReviewEvents(
                 status = status,
                 bookId = bookId,
@@ -260,7 +261,7 @@ class BookBibleRepositoryImpl @Inject constructor(
         eventId: String,
         edit: BookBibleReviewEventEdit
     ): Result<BookBibleReviewEvent> = withContext(Dispatchers.IO) {
-        runCatching {
+        runCatchingCancellable {
             apiService.approveReviewEvent(
                 eventId = eventId,
                 body = ReviewEventApproveRequestDto(
@@ -282,7 +283,7 @@ class BookBibleRepositoryImpl @Inject constructor(
         eventId: String,
         edit: BookBibleReviewEventEdit
     ): Result<BookBibleReviewEvent> = withContext(Dispatchers.IO) {
-        runCatching {
+        runCatchingCancellable {
             apiService.updateReviewEvent(
                 eventId = eventId,
                 body = ReviewEventUpdateRequestDto(
@@ -301,7 +302,7 @@ class BookBibleRepositoryImpl @Inject constructor(
      * @return [Result] chứa sự kiện sau khi từ chối.
      */
     override suspend fun rejectReviewEvent(eventId: String): Result<BookBibleReviewEvent> = withContext(Dispatchers.IO) {
-        runCatching {
+        runCatchingCancellable {
             apiService.rejectReviewEvent(eventId).let(::mapDtoToReviewEvent)
         }
     }
@@ -317,7 +318,7 @@ class BookBibleRepositoryImpl @Inject constructor(
         bookId: String,
         canonicalChapter: Int?
     ): Result<List<BookBibleReviewEvent>> = withContext(Dispatchers.IO) {
-        runCatching {
+        runCatchingCancellable {
             apiService.approveAllReviewEvents(
                 ApproveAllReviewEventsRequestDto(
                     bookId = bookId,
@@ -331,7 +332,7 @@ class BookBibleRepositoryImpl @Inject constructor(
         source: BookBibleSource,
         chapterNumber: Int
     ): Result<BookBibleSnapshot> = withContext(Dispatchers.IO) {
-        runCatching {
+        runCatchingCancellable {
             val edition = ensureEdition(source, chapterNumber)
 
             // Gọi API backend lấy CharacterSnapshotResponse
@@ -391,7 +392,7 @@ class BookBibleRepositoryImpl @Inject constructor(
         characterId: String,
         chapterNumber: Int
     ): Result<CharacterTimeline> = withContext(Dispatchers.IO) {
-        runCatching {
+        runCatchingCancellable {
             val edition = ensureEdition(source, chapterNumber)
 
             // Kiểm tra cache trước
@@ -400,7 +401,7 @@ class BookBibleRepositoryImpl @Inject constructor(
                 bookBibleDao.updateTimelineLastAccessed(cached.id)
                 val type = object : TypeToken<List<CharacterEventDto>>() {}.type
                 val eventDtos: List<CharacterEventDto> = gson.fromJson(cached.payloadJson, type) ?: emptyList()
-                return@runCatching CharacterTimeline(
+                return@runCatchingCancellable CharacterTimeline(
                     characterId = characterId,
                     characterName = "",
                     events = eventDtos.map { mapDtoToTimelineEvent(it) }
@@ -461,7 +462,7 @@ class BookBibleRepositoryImpl @Inject constructor(
     }
 
     override suspend fun checkSubmissionStatus(submissionId: String): Result<SubmissionState> = withContext(Dispatchers.IO) {
-        runCatching {
+        runCatchingCancellable {
             val response = apiService.getSubmissionStatus(submissionId)
             when (response.status?.lowercase(Locale.ROOT)) {
                 "completed" -> SubmissionState.Completed
@@ -477,7 +478,7 @@ class BookBibleRepositoryImpl @Inject constructor(
         source: BookBibleSource,
         chapterNumber: Int
     ): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
+        runCatchingCancellable {
             val localSourceKey = source.uniqueKey
             val entity = bookBibleDao.getSubmission(localSourceKey, chapterNumber)
                 ?: throw IllegalStateException("Không tìm thấy thông tin submission để thử lại.")
@@ -565,7 +566,13 @@ class BookBibleRepositoryImpl @Inject constructor(
                 }
             }
             BookBibleSourceType.ONLINE_NOVEL -> {
-                val novelDetail = runCatching { onlineNovelApiService.getNovelDetail(source.sourceId) }.getOrNull()
+                val novelDetail = try {
+                    onlineNovelApiService.getNovelDetail(source.sourceId)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
                 if (novelDetail != null) {
                     title = novelDetail.title
                     author = novelDetail.author
@@ -637,6 +644,23 @@ class BookBibleRepositoryImpl @Inject constructor(
             return newEdition
         } else {
             throw IllegalStateException("Không tìm thấy thông tin sách để kết nối Book Bible.")
+        }
+    }
+
+    /**
+     * Thực thi một khối suspend và đảm bảo [CancellationException] không bị nuốt thành [Result.failure].
+     *
+     * @param block Khối suspend cần thực thi.
+     * @return [Result] chứa kết quả hoặc ngoại lệ không phải hủy coroutine.
+     * @throws CancellationException Khi coroutine bị hủy.
+     */
+    private suspend fun <T> runCatchingCancellable(block: suspend () -> T): Result<T> {
+        return try {
+            Result.success(block())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 

@@ -222,6 +222,8 @@ class BookBibleWorker @AssistedInject constructor(
                 errorMessage = "Không có kết nối mạng. Sẽ tự động gửi lại khi có mạng."
             )
             Result.retry()
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             bookBibleDao.updateSubmissionState(
                 id = submissionDbId,

@@ -15,6 +15,8 @@ enum {
     CONVERTER_UNSUPPORTED = 102
 };
 
+#define MAX_OUTPUT_BYTES (500ULL * 1024ULL * 1024ULL)
+
 static int make_directory(const char *path) {
     if (mkdir(path, 0700) == 0 || errno == EEXIST) {
         return 0;
@@ -28,6 +30,9 @@ static int join_path(char *destination, size_t capacity, const char *directory, 
 }
 
 static int write_part(const char *directory, const MOBIPart *part, const char *prefix) {
+    if (part->size > 0 && part->data == NULL) {
+        return CONVERTER_IO_ERROR;
+    }
     char path[PATH_MAX];
     const MOBIFileMeta metadata = mobi_get_filemeta_by_type(part->type);
     char name[64];
@@ -40,12 +45,15 @@ static int write_part(const char *directory, const MOBIPart *part, const char *p
     if (file == NULL) {
         return CONVERTER_IO_ERROR;
     }
-    const size_t written = fwrite(part->data, 1, part->size, file);
+    const size_t written = part->size > 0 ? fwrite(part->data, 1, part->size, file) : 0;
     const int close_result = fclose(file);
     return written == part->size && close_result == 0 ? CONVERTER_OK : CONVERTER_IO_ERROR;
 }
 
 static int write_resource(const char *directory, const MOBIPart *part) {
+    if (part->size > 0 && part->data == NULL) {
+        return CONVERTER_IO_ERROR;
+    }
     char path[PATH_MAX];
     char name[64];
     const MOBIFileMeta metadata = mobi_get_filemeta_by_type(part->type);
@@ -64,33 +72,48 @@ static int write_resource(const char *directory, const MOBIPart *part) {
     if (file == NULL) {
         return CONVERTER_IO_ERROR;
     }
-    const size_t written = fwrite(part->data, 1, part->size, file);
+    const size_t written = part->size > 0 ? fwrite(part->data, 1, part->size, file) : 0;
     const int close_result = fclose(file);
     return written == part->size && close_result == 0 ? CONVERTER_OK : CONVERTER_IO_ERROR;
 }
 
 static int write_rawml(const MOBIRawml *rawml, const char *directory) {
+    unsigned long long total_written = 0;
     const MOBIPart *part = rawml->markup;
     while (part != NULL) {
+        if (part->size > MAX_OUTPUT_BYTES - total_written) {
+            return CONVERTER_IO_ERROR;
+        }
         if (write_part(directory, part, "part") != CONVERTER_OK) {
             return CONVERTER_IO_ERROR;
         }
+        total_written += part->size;
         part = part->next;
     }
 
     /* Phần tử đầu tiên của flow là raw HTML tổng hợp, không phải tài nguyên riêng. */
     part = rawml->flow == NULL ? NULL : rawml->flow->next;
     while (part != NULL) {
+        if (part->size > MAX_OUTPUT_BYTES - total_written) {
+            return CONVERTER_IO_ERROR;
+        }
         if (write_part(directory, part, "flow") != CONVERTER_OK) {
             return CONVERTER_IO_ERROR;
         }
+        total_written += part->size;
         part = part->next;
     }
 
     part = rawml->resources;
     while (part != NULL) {
-        if (part->size > 0 && write_resource(directory, part) != CONVERTER_OK) {
-            return CONVERTER_IO_ERROR;
+        if (part->size > 0) {
+            if (part->size > MAX_OUTPUT_BYTES - total_written) {
+                return CONVERTER_IO_ERROR;
+            }
+            if (write_resource(directory, part) != CONVERTER_OK) {
+                return CONVERTER_IO_ERROR;
+            }
+            total_written += part->size;
         }
         part = part->next;
     }
@@ -109,10 +132,14 @@ Java_com_epubpro_core_bookconverter_MobiNativeDecoder_decodeToDirectory(
     }
 
     const char *input = (*env)->GetStringUTFChars(env, input_path, NULL);
+    if (input == NULL) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        return CONVERTER_INVALID_ARGUMENT;
+    }
     const char *output = (*env)->GetStringUTFChars(env, output_directory, NULL);
-    if (input == NULL || output == NULL) {
-        if (input != NULL) (*env)->ReleaseStringUTFChars(env, input_path, input);
-        if (output != NULL) (*env)->ReleaseStringUTFChars(env, output_directory, output);
+    if (output == NULL) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        (*env)->ReleaseStringUTFChars(env, input_path, input);
         return CONVERTER_INVALID_ARGUMENT;
     }
 

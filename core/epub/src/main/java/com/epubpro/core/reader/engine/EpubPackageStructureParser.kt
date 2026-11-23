@@ -158,13 +158,16 @@ object EpubPackageStructureParser {
             val orderedEntries = mutableListOf<ZipEntry>()
             for (id in spineIds) {
                 val item = manifestMap[id] ?: continue
-                val cleanHref = item.href.substringBefore('#')
-                val decodedHref = URLDecoder.decode(cleanHref, "UTF-8")
+                val decodedHref = safeDecodeHref(item.href)
                 val fullPath = resolveRelativePath(dirPrefix, decodedHref)
 
                 val entry = entryMap[fullPath]
                     ?: entryMap[decodedHref]
-                    ?: allEntries.find { it.name.equals(fullPath, ignoreCase = true) || it.name.endsWith(decodedHref, ignoreCase = true) }
+                    ?: allEntries.find {
+                        it.name.equals(fullPath, ignoreCase = true) ||
+                            it.name.equals(decodedHref, ignoreCase = true) ||
+                            it.name.endsWith("/$decodedHref", ignoreCase = true)
+                    }
 
                 if (entry != null && isHtmlEntry(entry.name) && !orderedEntries.contains(entry)) {
                     orderedEntries.add(entry)
@@ -175,12 +178,15 @@ object EpubPackageStructureParser {
             val chapterTitles = mutableMapOf<String, String>()
 
             if (!navHref.isNullOrEmpty()) {
-                val cleanNav = navHref!!.substringBefore('#')
-                val decodedNav = URLDecoder.decode(cleanNav, "UTF-8")
+                val decodedNav = safeDecodeHref(navHref!!)
                 val navFullPath = resolveRelativePath(dirPrefix, decodedNav)
                 val navEntry = entryMap[navFullPath]
                     ?: entryMap[decodedNav]
-                    ?: allEntries.find { it.name.endsWith(decodedNav, ignoreCase = true) }
+                    ?: allEntries.find {
+                        it.name.equals(navFullPath, ignoreCase = true) ||
+                            it.name.equals(decodedNav, ignoreCase = true) ||
+                            it.name.endsWith("/$decodedNav", ignoreCase = true)
+                    }
 
                 if (navEntry != null) {
                     parseEpub3NavDocument(zip, navEntry, navFullPath.substringBeforeLast('/', ""), chapterTitles)
@@ -188,12 +194,15 @@ object EpubPackageStructureParser {
             }
 
             if (chapterTitles.isEmpty() && !ncxHref.isNullOrEmpty()) {
-                val cleanNcx = ncxHref!!.substringBefore('#')
-                val decodedNcx = URLDecoder.decode(cleanNcx, "UTF-8")
+                val decodedNcx = safeDecodeHref(ncxHref!!)
                 val ncxFullPath = resolveRelativePath(dirPrefix, decodedNcx)
                 val ncxEntry = entryMap[ncxFullPath]
                     ?: entryMap[decodedNcx]
-                    ?: allEntries.find { it.name.endsWith(decodedNcx, ignoreCase = true) }
+                    ?: allEntries.find {
+                        it.name.equals(ncxFullPath, ignoreCase = true) ||
+                            it.name.equals(decodedNcx, ignoreCase = true) ||
+                            it.name.endsWith("/$decodedNcx", ignoreCase = true)
+                    }
 
                 if (ncxEntry != null) {
                     parseEpub2NcxDocument(zip, ncxEntry, ncxFullPath.substringBeforeLast('/', ""), chapterTitles)
@@ -232,16 +241,15 @@ object EpubPackageStructureParser {
 
             var coverEntry: ZipEntry? = null
             if (!coverHref.isNullOrEmpty()) {
-                val cleanCover = coverHref.substringBefore('#').substringBefore('?')
-                val decodedCover = try {
-                    URLDecoder.decode(cleanCover.replace("+", "%2B"), "UTF-8")
-                } catch (_: Exception) {
-                    cleanCover
-                }
+                val decodedCover = safeDecodeHref(coverHref)
                 val coverFullPath = resolveRelativePath(dirPrefix, decodedCover)
                 coverEntry = entryMap[coverFullPath]
                     ?: entryMap[decodedCover]
-                    ?: allEntries.find { it.name.equals(coverFullPath, ignoreCase = true) || it.name.endsWith(decodedCover, ignoreCase = true) }
+                    ?: allEntries.find {
+                        it.name.equals(coverFullPath, ignoreCase = true) ||
+                            it.name.equals(decodedCover, ignoreCase = true) ||
+                            it.name.endsWith("/$decodedCover", ignoreCase = true)
+                    }
             }
 
             if (coverEntry == null) {
@@ -299,7 +307,7 @@ object EpubPackageStructureParser {
                 val rootfile = doc.select("rootfile").firstOrNull()
                 val fullPath = rootfile?.attr("full-path")?.trim()
                 if (!fullPath.isNullOrBlank()) {
-                    val decodedPath = URLDecoder.decode(fullPath, "UTF-8")
+                    val decodedPath = safeDecodeHref(fullPath)
                     val opf = entryMap[decodedPath]
                         ?: entryMap[fullPath]
                         ?: allEntries.find { it.name.equals(decodedPath, ignoreCase = true) || it.name.equals(fullPath, ignoreCase = true) }
@@ -331,8 +339,7 @@ object EpubPackageStructureParser {
             for (link in links) {
                 val rawHref = link.attr("href").trim()
                 if (rawHref.isBlank()) continue
-                val cleanHref = rawHref.substringBefore('#')
-                val decodedHref = URLDecoder.decode(cleanHref, "UTF-8")
+                val decodedHref = safeDecodeHref(rawHref)
                 val targetPath = resolveRelativePath(baseDir, decodedHref)
                 val title = link.text().trim()
 
@@ -362,8 +369,7 @@ object EpubPackageStructureParser {
                 val src = point.selectFirst("content")?.attr("src")?.trim().orEmpty()
                 if (src.isBlank()) continue
 
-                val cleanSrc = src.substringBefore('#')
-                val decodedSrc = URLDecoder.decode(cleanSrc, "UTF-8")
+                val decodedSrc = safeDecodeHref(src)
                 val targetPath = resolveRelativePath(baseDir, decodedSrc)
 
                 if (text.isNotBlank() && !outMap.containsKey(targetPath)) {
@@ -376,6 +382,21 @@ object EpubPackageStructureParser {
     }
 
     /**
+     * Giải mã an toàn chuỗi đường dẫn `href` hoặc `src` trong EPUB:
+     * loại bỏ fragment (`#`) và query (`?`), bảo toàn ký tự `+` không bị đổi thành khoảng trắng,
+     * và fallback về chuỗi gốc nếu chứa chuỗi `%` không hợp lệ.
+     *
+     * @param raw Chuỗi đường dẫn thô từ thuộc tính XML/HTML.
+     * @return Chuỗi đường dẫn đã được giải mã URL an toàn.
+     */
+    private fun safeDecodeHref(raw: String): String {
+        val clean = raw.substringBefore('#').substringBefore('?')
+        return runCatching {
+            URLDecoder.decode(clean.replace("+", "%2B"), "UTF-8")
+        }.getOrDefault(clean)
+    }
+
+    /**
      * Chuẩn hóa đường dẫn tương đối kết hợp với thư mục cơ sở (base directory).
      *
      * @param baseDir Đường dẫn thư mục cha (ví dụ `OEBPS` hoặc `OEBPS/Text`).
@@ -384,7 +405,7 @@ object EpubPackageStructureParser {
      */
     fun resolveRelativePath(baseDir: String, relativePath: String): String {
         val cleanRelative = relativePath.trim().replace('\\', '/')
-        if (cleanRelative.startsWith("/")) return cleanRelative.removePrefix("/")
+        if (cleanRelative.startsWith("/")) return normalizePathSegments(cleanRelative.removePrefix("/"))
         if (baseDir.isBlank()) return normalizePathSegments(cleanRelative)
 
         val combined = "${baseDir.trimEnd('/')}/$cleanRelative"
@@ -418,10 +439,15 @@ object EpubPackageStructureParser {
             for (i in 0 until minOf(m1.size, m2.size)) {
                 val token1 = m1[i]
                 val token2 = m2[i]
-                val num1 = token1.toIntOrNull()
-                val num2 = token2.toIntOrNull()
-                if (num1 != null && num2 != null) {
-                    if (num1 != num2) return@Comparator num1.compareTo(num2)
+                val isNum1 = token1.isNotEmpty() && token1.all { it.isDigit() }
+                val isNum2 = token2.isNotEmpty() && token2.all { it.isDigit() }
+                if (isNum1 && isNum2) {
+                    val norm1 = token1.trimStart('0').ifEmpty { "0" }
+                    val norm2 = token2.trimStart('0').ifEmpty { "0" }
+                    val lenCmp = norm1.length.compareTo(norm2.length)
+                    if (lenCmp != 0) return@Comparator lenCmp
+                    val valCmp = norm1.compareTo(norm2)
+                    if (valCmp != 0) return@Comparator valCmp
                 } else {
                     val res = token1.compareTo(token2, ignoreCase = true)
                     if (res != 0) return@Comparator res

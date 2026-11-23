@@ -57,9 +57,14 @@ private val DarkColorScheme = darkColorScheme(
 val SepiaColorScheme = lightColorScheme(
     primary = SepiaPrimary,
     onPrimary = Color.White,
+    primaryContainer = SepiaSurface,
+    onPrimaryContainer = SepiaOnSurface,
     background = SepiaBackground,
+    onBackground = SepiaOnSurface,
     surface = SepiaSurface,
-    onSurface = SepiaOnSurface
+    onSurface = SepiaOnSurface,
+    surfaceVariant = SepiaSurface,
+    onSurfaceVariant = SepiaOnSurface
 )
 
 @Composable

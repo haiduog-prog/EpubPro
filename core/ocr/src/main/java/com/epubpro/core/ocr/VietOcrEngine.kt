@@ -43,11 +43,17 @@ class VietOcrEngine @Inject constructor(
             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
             setIntraOpNumThreads(Runtime.getRuntime().availableProcessors().coerceIn(1, MAX_THREADS))
         }
-        val encoder = environment.createSession(File(modelDir, ENCODER_FILE).absolutePath, options)
+        val encoder = try {
+            environment.createSession(File(modelDir, ENCODER_FILE).absolutePath, options)
+        } catch (error: Throwable) {
+            runCatching { options.close() }
+            throw error
+        }
         val decoder = try {
             environment.createSession(File(modelDir, DECODER_FILE).absolutePath, options)
-        } catch (error: OrtException) {
-            encoder.close()
+        } catch (error: Throwable) {
+            runCatching { encoder.close() }
+            runCatching { options.close() }
             throw error
         }
         VietOcrSession(environment, options, encoder, decoder, vocab)
@@ -206,9 +212,9 @@ class VietOcrSession internal constructor(
     }
 
     override fun close() {
-        encoder.close()
-        decoder.close()
-        options.close()
+        runCatching { encoder.close() }
+        runCatching { decoder.close() }
+        runCatching { options.close() }
     }
 
     private companion object {

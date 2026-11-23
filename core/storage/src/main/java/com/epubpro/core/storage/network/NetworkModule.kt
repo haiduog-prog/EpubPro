@@ -95,16 +95,26 @@ object NetworkModule {
             redactHeader("X-Api-Key")
             redactHeader("Authorization")
             redactHeader("apikey")
-            level = HttpLoggingInterceptor.Level.HEADERS
+            redactHeader("Cookie")
+            redactHeader("Set-Cookie")
+            level = if (com.epubpro.core.storage.BuildConfig.DEBUG) {
+                HttpLoggingInterceptor.Level.HEADERS
+            } else {
+                HttpLoggingInterceptor.Level.NONE
+            }
         }
 
         val authInterceptor = okhttp3.Interceptor { chain ->
             val original = chain.request()
             val url = original.url.toString()
+            val isSupabase = DynamicBaseUrlInterceptor.isSupabaseHost(original.url.host)
+            val isBaseUrlOverridden = original.header(DynamicBaseUrlInterceptor.BASE_URL_OVERRIDE_HEADER) != null ||
+                original.header(DynamicBaseUrlInterceptor.BASE_URL_OVERRIDDEN_MARKER_HEADER) != null
             val builder = original.newBuilder()
+                .removeHeader(DynamicBaseUrlInterceptor.BASE_URL_OVERRIDDEN_MARKER_HEADER)
 
-            // Gắn Authorization Bearer token vào các request gọi tới Backend EpubPro
-            if (!url.contains("supabase.co")) {
+            // Gắn Authorization Bearer token vào các request gọi tới Backend EpubPro (trừ Supabase và request ping server tùy chỉnh)
+            if (!isSupabase && !isBaseUrlOverridden) {
                 val token = tokenRefreshManager.getValidAuthToken()
                 if (!token.isNullOrBlank() && original.header("Authorization") == null) {
                     builder.header("Authorization", "Bearer $token")
@@ -114,7 +124,7 @@ object NetworkModule {
                 }
             }
 
-            if (url.contains("book-bible")) {
+            if (!isSupabase && !isBaseUrlOverridden && url.contains("book-bible")) {
                 val clientKey = serverPreferencesManager.getBookBibleClientKey()
                 if (!clientKey.isNullOrBlank() && original.header("X-Book-Bible-Client-Key") == null) {
                     builder.header("X-Book-Bible-Client-Key", clientKey)
@@ -136,8 +146,7 @@ object NetworkModule {
 
         val tokenAuthenticator = okhttp3.Authenticator { _, response ->
             val originalRequest = response.request
-            val url = originalRequest.url.toString()
-            if (url.contains("supabase.co")) return@Authenticator null
+            if (DynamicBaseUrlInterceptor.isSupabaseHost(originalRequest.url.host)) return@Authenticator null
 
             // Kiểm tra số lần thử lại để tránh lặp vô tận khi refresh token không còn hiệu lực
             var count = 1

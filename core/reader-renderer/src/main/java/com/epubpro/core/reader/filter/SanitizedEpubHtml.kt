@@ -44,6 +44,7 @@ value class SanitizedEpubHtml internal constructor(val rawHtml: String) {
             actualSourceHtml: String? = null,
             sanitizerVersion: Int
         ): SanitizedEpubHtml? {
+            if (sourceHash.isBlank()) return null
             if (sanitizerVersion != EpubHtmlSanitizer.CURRENT_SANITIZER_VERSION) return null
             if (actualSourceHtml != null) {
                 val computedHash = MessageDigest.getInstance("SHA-256")

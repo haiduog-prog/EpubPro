@@ -100,4 +100,34 @@ class HanVietConverterTest {
         assertFalse(ChineseTextDetector.isLikelyChinese("これは日本語の文章です。漢字もある。"))
         assertFalse(ChineseTextDetector.isLikelyChinese("Đây là tiếng Việt."))
     }
+
+    /** Giữ khoảng trắng sau thẻ inline và bỏ qua cây con lồng sâu bên trong thẻ bị skip như `<pre>`. */
+    @Test
+    fun preservesSpaceAfterInlineTagAndSkipsNestedPreContent() {
+        val converter = HanVietConverter(listOf(vietPhrase, phienAm))
+        val html = "<html><head></head><body><p><b>我</b> 是你</p><pre><span><b>我是你</b></span></pre></body></html>"
+
+        val result = HtmlConverter.convert(html, converter)
+
+        assertTrue(result, result.contains("<p><b>Ta</b> là nhĩ</p>"))
+        assertTrue(result, result.contains("<pre><span><b>我是你</b></span></pre>"))
+    }
+
+    /** File từ điển có bảng offset không đơn điệu hoặc sai biên phải ném [IllegalStateException]. */
+    @Test(expected = IllegalStateException::class)
+    fun loadRejectsCorruptedDictionaryOffsets() {
+        val dictionary = PhraseDictionary.fromEntries(listOf("你好" to "xin chào", "世界" to "thế giới"))
+        val file = Files.createTempFile("dict-corrupt", ".bin").toFile()
+        try {
+            dictionary.writeTo(file)
+            java.io.RandomAccessFile(file, "rw").use { raf ->
+                // Ghi đè keyOffsets[1] bằng giá trị âm để phá tính đơn điệu của bảng offset.
+                raf.seek(6L * 4L + 4L)
+                raf.writeInt(-1)
+            }
+            PhraseDictionary.load(file)
+        } finally {
+            file.delete()
+        }
+    }
 }

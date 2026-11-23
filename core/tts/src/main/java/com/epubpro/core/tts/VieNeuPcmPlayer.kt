@@ -83,7 +83,6 @@ open class VieNeuPcmPlayer(
 
         releaseTrackLocked()
         totalFramesWritten = 0L
-        requestAudioFocusLocked()
 
         val minBytes = AudioTrack.getMinBufferSize(
             sampleRate,
@@ -107,10 +106,10 @@ open class VieNeuPcmPlayer(
 
         if (created.state != AudioTrack.STATE_INITIALIZED) {
             created.release()
-            abandonAudioFocusLocked()
             throw IllegalStateException("Không thể khởi tạo AudioTrack (state=${created.state})")
         }
 
+        requestAudioFocusLocked()
         created.play()
         track = created
         epoch.incrementAndGet()

@@ -2,6 +2,7 @@ package com.epubpro.core.tts
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
@@ -83,6 +84,39 @@ class VieNeuNanoEngineTest {
         assertEquals(7_200, VieNeuNanoEngine.computePausePadSamples(prev, next, ChunkGap.MINOR))
         assertEquals(12_000, VieNeuNanoEngine.computePausePadSamples(prev, next, ChunkGap.SENTENCE))
         assertEquals(16_800, VieNeuNanoEngine.computePausePadSamples(prev, next, ChunkGap.PARA))
+    }
+
+    @Test
+    fun `parseNpyFloat32 rejects truncated data invalid magic or negative headerLen with IllegalArgumentException`() {
+        val valid = buildNpyV1Float32(intArrayOf(4), floatArrayOf(1f, 2f, 3f, 4f))
+
+        // 1. Dữ liệu bị cắt cụt (payload không chia hết cho 4 byte hoặc ngắn hơn dataOffset)
+        val truncatedPayload = valid.copyOf(valid.size - 2)
+        assertThrows(IllegalArgumentException::class.java) {
+            VieNeuNanoEngine.parseNpyFloat32(truncatedPayload)
+        }
+        val truncatedHeader = valid.copyOf(15)
+        assertThrows(IllegalArgumentException::class.java) {
+            VieNeuNanoEngine.parseNpyFloat32(truncatedHeader)
+        }
+
+        // 2. Sai magic prefix \u0093NUMPY
+        val badMagic = valid.copyOf().apply { this[0] = 0x00 }
+        assertThrows(IllegalArgumentException::class.java) {
+            VieNeuNanoEngine.parseNpyFloat32(badMagic)
+        }
+
+        // 3. NPY v2 với headerLen âm
+        val negativeHeaderV2 = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN).apply {
+            put(byteArrayOf(0x93.toByte(), 'N'.code.toByte(), 'U'.code.toByte(), 'M'.code.toByte(), 'P'.code.toByte(), 'Y'.code.toByte()))
+            put(2.toByte())
+            put(0.toByte())
+            putInt(-8)
+            putInt(0)
+        }.array()
+        assertThrows(IllegalArgumentException::class.java) {
+            VieNeuNanoEngine.parseNpyFloat32(negativeHeaderV2)
+        }
     }
 
     private fun buildNpyV1Float32(shape: IntArray, data: FloatArray): ByteArray {

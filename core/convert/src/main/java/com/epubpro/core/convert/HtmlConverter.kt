@@ -42,23 +42,32 @@ object HtmlConverter {
         var sentenceStart = true
         var afterWord = false
         document.body().traverse(object : NodeVisitor {
+            private var skippedDepth = 0
+
             override fun head(node: Node, depth: Int) {
                 when (node) {
-                    is Element -> if (node.normalName() in sentenceBoundaryTags) {
-                        sentenceStart = true
-                        afterWord = false
+                    is Element -> {
+                        if (node.normalName() in skippedParents) {
+                            skippedDepth++
+                        }
+                        if (node.normalName() in sentenceBoundaryTags) {
+                            sentenceStart = true
+                            afterWord = false
+                        }
                     }
                     is TextNode -> {
-                        val parentName = (node.parent() as? Element)?.normalName()
-                        if (parentName in skippedParents) return
+                        if (skippedDepth > 0) return
                         val original = node.wholeText
                         if (original.isBlank()) {
                             if (original.isNotEmpty()) afterWord = false
                             return
                         }
                         if (!needsConversion(original)) {
+                            val lastNonSpace = original.lastOrNull { !it.isWhitespace() }
                             if (original.any { it.isLetterOrDigit() }) sentenceStart = false
-                            afterWord = !original.last().isWhitespace()
+                            if (lastNonSpace in setOf('.', '!', '?', '…', ':')) sentenceStart = true
+                            afterWord = !original.last().isWhitespace() &&
+                                lastNonSpace !in setOf('(', '[', '{', '“', '‘', '«')
                             return
                         }
                         val result = converter.convert(original, sentenceStart, afterWord)
@@ -69,7 +78,17 @@ object HtmlConverter {
                 }
             }
 
-            override fun tail(node: Node, depth: Int) = Unit
+            override fun tail(node: Node, depth: Int) {
+                if (node is Element) {
+                    if (node.normalName() in skippedParents) {
+                        skippedDepth--
+                    }
+                    if (node.normalName() in sentenceBoundaryTags) {
+                        sentenceStart = true
+                        afterWord = false
+                    }
+                }
+            }
         })
     }
 

@@ -144,10 +144,10 @@ class AiRuleRepositoryImpl @Inject constructor(
     private val aiRuleDao: AiRuleDao
 ) : AiRuleRepository {
     override fun observeRulesForBook(bookId: String): Flow<List<AiRule>> =
-        aiRuleDao.observeRulesForBook(bookId).map { rules -> rules.map { it.toDomain() } }
+        aiRuleDao.observeRulesForBook(bookId).map { rules -> rules.mapNotNull { it.toDomainOrNull() } }
 
     override suspend fun getRulesForBook(bookId: String): List<AiRule> =
-        aiRuleDao.getRulesForBook(bookId).map { it.toDomain() }
+        aiRuleDao.getRulesForBook(bookId).mapNotNull { it.toDomainOrNull() }
 
     override suspend fun upsertRule(rule: AiRule) =
         aiRuleDao.upsertRule(AiRuleEntity.fromDomain(rule))

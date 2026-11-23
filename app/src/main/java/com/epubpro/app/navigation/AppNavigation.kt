@@ -41,7 +41,6 @@ import com.epubpro.feature.comic.OnlineComicReaderScreen
 import com.epubpro.feature.comic.OnlineComicReaderViewModel
 import com.epubpro.feature.library.LibraryScreen
 import com.epubpro.feature.profile.ProfileScreen
-import com.epubpro.feature.profile.sync.SyncScreen
 import com.epubpro.feature.profile.ReadingDefaultsScreen
 import com.epubpro.feature.profile.PageTurnControlScreen
 import com.epubpro.feature.profile.auth.LoginScreen
@@ -262,7 +261,6 @@ fun AppNavHost(
                     onNavigateToAudioSettings = { navController.navigate(Screen.AudioSettings.route) },
                     onNavigateToReadingDefaults = { navController.navigate(Screen.ReadingDefaults.route) },
                     onNavigateToContentFilter = { navController.navigate(Screen.ContentFilter.route) },
-                    onNavigateToSync = { navController.navigate(Screen.Sync.route) },
                     onNavigateToConvertDictionaries = { navController.navigate(Screen.ConvertDictionaries.route) }
                 )
             }
@@ -271,10 +269,6 @@ fun AppNavHost(
                 com.epubpro.feature.profile.convert.ConvertDictionaryScreen(
                     onNavigateBack = { navController.popBackStack() }
                 )
-            }
-
-            composable(Screen.Sync.route) {
-                SyncScreen(onNavigateBack = { navController.popBackStack() })
             }
 
             composable(Screen.Login.route) {
@@ -389,11 +383,25 @@ fun AppNavHost(
             composable(
                 route = Screen.Bookmark.route,
                 arguments = listOf(navArgument("bookId") { type = NavType.StringType })
-            ) {
+            ) { backStackEntry ->
+                val routeBookId = backStackEntry.arguments?.getString("bookId").orEmpty()
                 BookmarkScreen(
                     onNavigateBack = { navController.popBackStack() },
-                    onJumpToCfi = { chapterIndex, cfi ->
-                        navController.popBackStack()
+                    onJumpToCfi = { chapterIndex, _ ->
+                        if (routeBookId.isNotBlank() && routeBookId != "global") {
+                            navController.navigate(Screen.Reader.createRoute(routeBookId, chapterIndex))
+                        } else {
+                            navController.popBackStack()
+                        }
+                    },
+                    onJumpToBookChapter = { itemBookId, chapterIndex, _ ->
+                        val resolvedBookId = itemBookId.takeIf { it.isNotBlank() && it != "global" }
+                            ?: routeBookId.takeIf { it.isNotBlank() && it != "global" }
+                        if (resolvedBookId != null) {
+                            navController.navigate(Screen.Reader.createRoute(resolvedBookId, chapterIndex))
+                        } else {
+                            navController.popBackStack()
+                        }
                     }
                 )
             }
@@ -401,11 +409,16 @@ fun AppNavHost(
             composable(
                 route = Screen.Search.route,
                 arguments = listOf(navArgument("bookId") { type = NavType.StringType })
-            ) {
+            ) { backStackEntry ->
+                val routeBookId = backStackEntry.arguments?.getString("bookId").orEmpty()
                 SearchScreen(
                     onNavigateBack = { navController.popBackStack() },
-                    onSearchResultClick = { chapterIndex, snippet ->
-                        navController.popBackStack()
+                    onSearchResultClick = { chapterIndex, _ ->
+                        if (routeBookId.isNotBlank()) {
+                            navController.navigate(Screen.Reader.createRoute(routeBookId, chapterIndex))
+                        } else {
+                            navController.popBackStack()
+                        }
                     }
                 )
             }
@@ -487,19 +500,19 @@ sealed class Screen(val route: String) {
     }
 
     object Bookmark : Screen("bookmark/{bookId}") {
-        fun createRoute(bookId: String) = "bookmark/$bookId"
+        fun createRoute(bookId: String) = "bookmark/${Uri.encode(bookId)}"
     }
 
     object Search : Screen("search/{bookId}") {
-        fun createRoute(bookId: String) = "search/$bookId"
+        fun createRoute(bookId: String) = "search/${Uri.encode(bookId)}"
     }
 
     object Browse : Screen("browse")
     object OnlineNovelDetail : Screen("online_novel_detail/{novelId}") {
-        fun createRoute(novelId: String) = "online_novel_detail/$novelId"
+        fun createRoute(novelId: String) = "online_novel_detail/${Uri.encode(novelId)}"
     }
     object OnlineChapterReader : Screen("online_chapter_reader/{novelId}/{chapterIndex}") {
-        fun createRoute(novelId: String, chapterIndex: Int) = "online_chapter_reader/$novelId/$chapterIndex"
+        fun createRoute(novelId: String, chapterIndex: Int) = "online_chapter_reader/${Uri.encode(novelId)}/$chapterIndex"
     }
 
     object Bookshelf : Screen("bookshelf")
@@ -508,7 +521,6 @@ sealed class Screen(val route: String) {
         fun createRoute(bookId: String): String = "story_review/${Uri.encode(bookId)}"
     }
     object Profile : Screen("profile")
-    object Sync : Screen("sync")
     object ConvertDictionaries : Screen("convert_dictionaries")
     object Login : Screen("login")
     object AudioSettings : Screen("audio_settings")

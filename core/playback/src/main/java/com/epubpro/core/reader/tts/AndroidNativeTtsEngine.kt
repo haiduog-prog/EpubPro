@@ -14,6 +14,7 @@ class AndroidNativeTtsEngine(
 
     private var tts: TextToSpeech? = null
     private var isInitialized = false
+    private var initFailed = false
     private var onReadyCallback: (() -> Unit)? = null
     private var onErrorCallback: ((String) -> Unit)? = null
 
@@ -38,7 +39,12 @@ class AndroidNativeTtsEngine(
         onReadyCallback = onReady
         onErrorCallback = onError
         if (tts == null) {
+            initFailed = false
             tts = TextToSpeech(context.applicationContext, this)
+            if (initFailed) {
+                tts?.shutdown()
+                tts = null
+            }
         } else if (isInitialized) {
             onReady()
         }
@@ -46,6 +52,7 @@ class AndroidNativeTtsEngine(
 
     override fun onInit(status: Int) {
         if (status != TextToSpeech.SUCCESS) {
+            initFailed = true
             isInitialized = false
             pendingSpeech = null
             tts?.shutdown()
@@ -53,8 +60,10 @@ class AndroidNativeTtsEngine(
             onErrorCallback?.invoke("Không thể khởi tạo Android TextToSpeech Engine (mã lỗi: $status).")
             return
         }
+        initFailed = false
+        val activeTts = tts ?: return
 
-        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+        activeTts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {
                 val chunkId = utteranceId?.toIntOrNull() ?: return
                 currentOnChunkStart?.invoke(chunkId)
@@ -184,9 +193,15 @@ class AndroidNativeTtsEngine(
     override fun shutdown() {
         tts?.stop()
         pendingSpeech = null
+        onReadyCallback = null
+        onErrorCallback = null
+        currentOnChunkStart = null
+        currentOnChunkDone = null
+        currentOnChunkError = null
         tts?.shutdown()
         tts = null
         isInitialized = false
+        initFailed = false
     }
 
     private fun localeFor(language: String): Locale =

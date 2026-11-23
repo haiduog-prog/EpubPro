@@ -130,13 +130,13 @@ interface BookBibleDao {
     /**
      * Lấy thông tin submission gần nhất của một chương theo nguồn và số chương.
      */
-    @Query("SELECT * FROM book_bible_submissions WHERE localSourceKey = :localSourceKey AND chapterNumber = :chapterNumber LIMIT 1")
+    @Query("SELECT * FROM book_bible_submissions WHERE localSourceKey = :localSourceKey AND chapterNumber = :chapterNumber ORDER BY updatedAt DESC LIMIT 1")
     suspend fun getSubmission(localSourceKey: String, chapterNumber: Int): BookBibleSubmissionEntity?
 
     /**
      * Quan sát sự thay đổi trạng thái gửi của một chương cụ thể.
      */
-    @Query("SELECT * FROM book_bible_submissions WHERE localSourceKey = :localSourceKey AND chapterNumber = :chapterNumber LIMIT 1")
+    @Query("SELECT * FROM book_bible_submissions WHERE localSourceKey = :localSourceKey AND chapterNumber = :chapterNumber ORDER BY updatedAt DESC LIMIT 1")
     fun observeSubmission(localSourceKey: String, chapterNumber: Int): Flow<BookBibleSubmissionEntity?>
 
     /**
@@ -179,13 +179,13 @@ interface BookBibleDao {
     /**
      * Lấy bản snapshot hồ sơ theo localSourceKey và số chương.
      */
-    @Query("SELECT * FROM book_bible_snapshots WHERE localSourceKey = :localSourceKey AND chapterNumber = :chapterNumber LIMIT 1")
+    @Query("SELECT * FROM book_bible_snapshots WHERE localSourceKey = :localSourceKey AND chapterNumber = :chapterNumber ORDER BY updatedAt DESC LIMIT 1")
     suspend fun getSnapshotByLocalSource(localSourceKey: String, chapterNumber: Int): BookBibleSnapshotEntity?
 
     /**
      * Quan sát luồng phát ra bản snapshot hồ sơ nhân vật từ cache theo localSourceKey và số chương.
      */
-    @Query("SELECT * FROM book_bible_snapshots WHERE localSourceKey = :localSourceKey AND chapterNumber = :chapterNumber LIMIT 1")
+    @Query("SELECT * FROM book_bible_snapshots WHERE localSourceKey = :localSourceKey AND chapterNumber = :chapterNumber ORDER BY updatedAt DESC LIMIT 1")
     fun observeSnapshotByLocalSource(localSourceKey: String, chapterNumber: Int): Flow<BookBibleSnapshotEntity?>
 
     /**

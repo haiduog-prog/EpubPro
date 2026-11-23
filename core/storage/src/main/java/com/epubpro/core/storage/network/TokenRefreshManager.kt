@@ -103,27 +103,29 @@ class TokenRefreshManager @Inject constructor(
                 .post(requestBodyJson.toRequestBody(mediaType))
                 .build()
 
-            val response = rawHttpClient.newCall(request).execute()
-            if (response.isSuccessful && response.body != null) {
-                val responseBodyStr = response.body!!.string()
-                val tokenResponse = gson.fromJson(responseBodyStr, SupabaseTokenResponseDto::class.java)
+            rawHttpClient.newCall(request).execute().use { response ->
+                val body = response.body
+                if (response.isSuccessful && body != null) {
+                    val responseBodyStr = body.string()
+                    val tokenResponse = gson.fromJson(responseBodyStr, SupabaseTokenResponseDto::class.java)
 
-                if (tokenResponse.accessToken.isNotBlank()) {
-                    val expiresAt = tokenResponse.expiresAt
-                        ?: (System.currentTimeMillis() / 1000 + tokenResponse.expiresIn)
+                    if (tokenResponse.accessToken.isNotBlank()) {
+                        val expiresAt = tokenResponse.expiresAt
+                            ?: (System.currentTimeMillis() / 1000 + tokenResponse.expiresIn)
 
-                    authPreferencesManager.saveTokens(
-                        accessToken = tokenResponse.accessToken,
-                        refreshToken = tokenResponse.refreshToken ?: refreshToken,
-                        expiresAt = expiresAt
-                    )
-                    Log.i(TAG, "✅ [AUTH] Tự động làm mới Token thành công! (Thời hạn mới: $expiresAt)")
-                    return tokenResponse.accessToken
+                        authPreferencesManager.saveTokens(
+                            accessToken = tokenResponse.accessToken,
+                            refreshToken = tokenResponse.refreshToken ?: refreshToken,
+                            expiresAt = expiresAt
+                        )
+                        Log.i(TAG, "✅ [AUTH] Tự động làm mới Token thành công! (Thời hạn mới: $expiresAt)")
+                        return tokenResponse.accessToken
+                    }
+                } else {
+                    Log.e(TAG, "❌ [AUTH] Yêu cầu làm mới Token thất bại: HTTP ${response.code}")
                 }
-            } else {
-                Log.e(TAG, "❌ [AUTH] Yêu cầu làm mới Token thất bại: HTTP ${response.code}")
+                null
             }
-            null
         } catch (e: Exception) {
             Log.e(TAG, "❌ [AUTH] Ngoại lệ khi làm mới Token: ${e.message}", e)
             null

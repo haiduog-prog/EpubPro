@@ -186,6 +186,7 @@ class OnlineNovelDownloadWorker @AssistedInject constructor(
             bookRepository.insertBook(book)
             if (forceUpdate) {
                 searchRepository.clearIndexForBook(book.id)
+                checkpointStore.clear(novelId)
             }
             checkpointStore.savePhase(novelId, OnlineNovelDownloadCheckpointStore.PHASE_INDEX)
             val checkpoint = checkpointStore.get(novelId)
@@ -257,8 +258,13 @@ class OnlineNovelDownloadWorker @AssistedInject constructor(
         progress: Int,
         notificationId: Int
     ) {
-        runCatching {
-            setForeground(createForegroundInfo(title, step, progress, notificationId))
+        val foregroundInfo = createForegroundInfo(title, step, progress, notificationId)
+        try {
+            setForeground(foregroundInfo)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            notificationManager.notify(notificationId, foregroundInfo.notification)
         }
     }
 

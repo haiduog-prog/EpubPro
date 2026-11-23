@@ -16,6 +16,101 @@ class EpubPackageStructureParserTest {
         assertEquals("OEBPS/Text/chap1.xhtml", EpubPackageStructureParser.resolveRelativePath("OEBPS/toc", "../Text/chap1.xhtml"))
         assertEquals("Text/chap1.xhtml", EpubPackageStructureParser.resolveRelativePath("", "Text/chap1.xhtml"))
         assertEquals("chap1.xhtml", EpubPackageStructureParser.resolveRelativePath("OEBPS", "/chap1.xhtml"))
+        assertEquals("OEBPS/chap1.xhtml", EpubPackageStructureParser.resolveRelativePath("OEBPS", "/../OEBPS/./chap1.xhtml"))
+    }
+
+    @Test
+    fun `parseStructure safely decodes plus sign and invalid percent in hrefs and matches directory boundary`() {
+        val tempFile = File.createTempFile("sample_special_href", ".epub")
+        try {
+            ZipOutputStream(FileOutputStream(tempFile)).use { zos ->
+                zos.putNextEntry(ZipEntry("META-INF/container.xml"))
+                zos.write("""
+                    <?xml version="1.0"?>
+                    <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+                        <rootfiles>
+                            <rootfile full-path="OEBPS/package.opf" media-type="application/oebps-package+xml"/>
+                        </rootfiles>
+                    </container>
+                """.trimIndent().toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+
+                zos.putNextEntry(ZipEntry("OEBPS/package.opf"))
+                zos.write("""
+                    <?xml version="1.0" encoding="utf-8"?>
+                    <package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+                        <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+                            <dc:title>Special Href Book</dc:title>
+                        </metadata>
+                        <manifest>
+                            <item id="c_other" href="text/11.xhtml" media-type="application/xhtml+xml"/>
+                            <item id="c1" href="1.xhtml?ver=1#top" media-type="application/xhtml+xml"/>
+                            <item id="c2" href="c++_100%25.xhtml" media-type="application/xhtml+xml"/>
+                        </manifest>
+                        <spine>
+                            <itemref idref="c1"/>
+                            <itemref idref="c2"/>
+                        </spine>
+                    </package>
+                """.trimIndent().toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+
+                zos.putNextEntry(ZipEntry("OEBPS/text/11.xhtml"))
+                zos.write("<html><body><p>Wrong match if endsWith without slash</p></body></html>".toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+
+                zos.putNextEntry(ZipEntry("OEBPS/sub/1.xhtml"))
+                zos.write("<html><body><p>Correct boundary match</p></body></html>".toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+
+                zos.putNextEntry(ZipEntry("OEBPS/c++_100%.xhtml"))
+                zos.write("<html><body><p>Plus sign preserved</p></body></html>".toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+            }
+
+            ZipFile(tempFile).use { zip ->
+                val structure = EpubPackageStructureParser.parseStructure(zip)
+                assertEquals(2, structure.orderedEntries.size)
+                assertEquals("OEBPS/sub/1.xhtml", structure.orderedEntries[0].name)
+                assertEquals("OEBPS/c++_100%.xhtml", structure.orderedEntries[1].name)
+            }
+        } finally {
+            tempFile.delete()
+        }
+    }
+
+    @Test
+    fun `naturalOrderComparator fallback handles numbers larger than Int_MAX_VALUE`() {
+        val tempFile = File.createTempFile("sample_big_numbers", ".epub")
+        try {
+            ZipOutputStream(FileOutputStream(tempFile)).use { zos ->
+                zos.putNextEntry(ZipEntry("chap_99999999999999999999.xhtml"))
+                zos.write("<html><body><p>Big 2</p></body></html>".toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+
+                zos.putNextEntry(ZipEntry("chap_10000000000000000000.xhtml"))
+                zos.write("<html><body><p>Big 1</p></body></html>".toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+
+                zos.putNextEntry(ZipEntry("chap_2.xhtml"))
+                zos.write("<html><body><p>Small</p></body></html>".toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+            }
+
+            ZipFile(tempFile).use { zip ->
+                val structure = EpubPackageStructureParser.parseStructure(zip)
+                assertEquals(
+                    listOf(
+                        "chap_2.xhtml",
+                        "chap_10000000000000000000.xhtml",
+                        "chap_99999999999999999999.xhtml"
+                    ),
+                    structure.orderedEntries.map { it.name }
+                )
+            }
+        } finally {
+            tempFile.delete()
+        }
     }
 
     @Test

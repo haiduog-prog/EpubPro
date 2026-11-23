@@ -137,12 +137,13 @@ class TtsChapterPlaybackCoordinator @Inject constructor(
      * @return Phiên mới nếu file đã đổi, ngược lại chính phiên hiện tại.
      */
     private suspend fun refreshIfBookFileReplaced(current: Session): Session {
+        val expectedGeneration = preparationGeneration.get()
         if (current.file.isFile) return current
         val book = bookRepository.getBookById(current.book.id) ?: return current
         val file = storageManager.getBookFile(book.filePath)
         if (!file.isFile) return current
         return Session(book, file, epubEngine.extractChapterHeaders(file), current.preferAiContent)
-            .also { session = it }
+            .also { if (preparationGeneration.get() == expectedGeneration) session = it }
     }
 
     /**

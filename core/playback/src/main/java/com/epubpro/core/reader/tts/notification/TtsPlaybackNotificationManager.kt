@@ -77,9 +77,6 @@ internal class TtsPlaybackNotificationManager(
                     notificationManager.notify(NOTIFICATION_ID, notification)
                 }
                 TtsNotificationUpdateAction.RESTART_FOREGROUND -> {
-                    ServiceCompat.stopForeground(service, ServiceCompat.STOP_FOREGROUND_DETACH)
-                    isForeground = false
-                    foregroundServiceTypes = 0
                     startForeground(notification, serviceTypes)
                 }
             }

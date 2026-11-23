@@ -148,7 +148,15 @@ class AiVietnameseService @Inject constructor(
             onProgress(AiPolishProgress(completedParts, chunks.size))
         }
 
-        val polishedHtml = processor.render(replacements, rules)
+        val polishedHtml = try {
+            processor.render(replacements, rules)
+        } catch (error: IllegalArgumentException) {
+            storageManager.deleteAiProgress(bookId, chapterIndex)
+            throw AiServiceException(error.message ?: "Không thể dựng chương AI", cause = error)
+        } catch (error: IllegalStateException) {
+            storageManager.deleteAiProgress(bookId, chapterIndex)
+            throw AiServiceException(error.message ?: "Không thể dựng chương AI", cause = error)
+        }
         val filePath = storageManager.saveAiChapter(bookId, chapterIndex, polishedHtml)
         storageManager.deleteAiProgress(bookId, chapterIndex)
         chapterRepository.upsertChapterCache(

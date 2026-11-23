@@ -276,9 +276,11 @@ class EpubImportWorker @AssistedInject constructor(
      */
     private suspend fun showProgressNotification(title: String, step: String, progress: Int) {
         val foregroundInfo = createForegroundInfo(title, step, progress)
-        runCatching {
+        try {
             setForeground(foregroundInfo)
-        }.onFailure {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
             notificationManager.notify(NOTIFICATION_ID, foregroundInfo.notification)
         }
     }

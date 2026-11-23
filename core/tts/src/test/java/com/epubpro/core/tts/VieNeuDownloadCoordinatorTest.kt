@@ -148,4 +148,20 @@ class VieNeuDownloadCoordinatorTest {
         assertTrue(downloader.cleared)
         assertTrue(coordinator.state.value is VieNeuDownloadState.Idle)
     }
+
+    @Test
+    fun `inspectInventory includes partial tmp bytes and firstMissingArtifactFileName skips completed files`() {
+        val tempDir = Files.createTempDirectory("vieneu-inventory-partial").toFile().apply { deleteOnExit() }
+        val downloader = VieNeuModelDownloader { tempDir }
+        val firstSpec = VieNeuModelDownloader.REQUIRED_ARTIFACTS[0]
+        val secondSpec = VieNeuModelDownloader.REQUIRED_ARTIFACTS[1]
+
+        File(tempDir, firstSpec.fileName).writeBytes(ByteArray(firstSpec.expectedBytes.toInt()))
+        File(tempDir, "${secondSpec.fileName}.tmp").writeBytes(ByteArray(10_000))
+
+        val inventory = downloader.inspectInventory()
+        assertEquals(1, inventory.presentCount)
+        assertEquals(firstSpec.expectedBytes + 10_000L, inventory.existingBytes)
+        assertEquals(secondSpec.fileName, downloader.firstMissingArtifactFileName())
+    }
 }

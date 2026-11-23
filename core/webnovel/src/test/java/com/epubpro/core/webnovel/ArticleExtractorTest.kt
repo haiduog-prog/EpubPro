@@ -108,4 +108,19 @@ class ArticleExtractorTest {
         assertEquals(-1, ChapterLinkDetector.compareSequentialUrls("https://a.com/c/12.html", "https://a.com/c/11.html"))
         assertEquals(0, ChapterLinkDetector.compareSequentialUrls("https://a.com/c/12.html", "https://a.com/d/13.html"))
     }
+
+    /** Thẻ `<body style="display:none">` không được xóa chính `<body>` hay gây lỗi `NullPointerException`. */
+    @Test
+    fun doesNotThrowOrRemoveBodyWhenBodyHasDisplayNone() {
+        val html = """
+            <html><head><title>Chương 1 - Truyện</title></head>
+            <body style="display:none">
+              <div class="content">${longLine.repeat(4)}</div>
+              <div style="display:none">Đoạn ẩn không lấy</div>
+            </body></html>
+        """.trimIndent()
+        val article = ArticleExtractor.extract(html, "https://example.com/1")
+        assertNotNull(article)
+        assertTrue(article!!.paragraphs.none { it.contains("Đoạn ẩn không lấy") })
+    }
 }

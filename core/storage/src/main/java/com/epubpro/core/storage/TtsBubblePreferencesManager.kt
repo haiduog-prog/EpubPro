@@ -88,14 +88,34 @@ open class TtsBubblePreferencesManager @Inject constructor(
         it.copy(pendingEnable = pending)
     }
 
-    fun savePosition(side: TtsBubbleSide, normalizedY: Float): Boolean = updatePreferences {
+    fun savePosition(side: TtsBubbleSide, normalizedY: Float): Boolean = applyPreferences {
         it.copy(side = side, normalizedY = normalizedY)
     }
 
     open fun setPowerMode(mode: TtsBubblePowerMode): Boolean = updatePreferences { it.copy(powerMode = mode) }
 
-    fun setHiddenForCurrentSession(hidden: Boolean): Boolean = updatePreferences {
+    fun setHiddenForCurrentSession(hidden: Boolean): Boolean = applyPreferences {
         it.copy(hiddenForCurrentSession = hidden)
+    }
+
+    /**
+     * Cập nhật bộ nhớ đệm trạng thái bubble tức thì và ghi bất đồng bộ xuống đĩa bằng `apply()`,
+     * tránh chặn Main thread bằng `fsync` khi người dùng kéo thả hoặc ẩn bong bóng nổi.
+     *
+     * @param transform Hàm biến đổi trạng thái cấu hình bubble hiện tại.
+     * @return Luôn trả về `true` sau khi đã cập nhật state trong bộ nhớ và xếp lịch ghi đĩa.
+     */
+    @Synchronized
+    private fun applyPreferences(
+        transform: (TtsBubblePreferences) -> TtsBubblePreferences
+    ): Boolean {
+        val normalized = transform(_preferencesFlow.value).normalized()
+        if (normalized == _preferencesFlow.value) return true
+        _preferencesFlow.value = normalized
+        prefs.edit()
+            .putString(KEY_PREFERENCES, TtsBubblePreferencesCodec.encode(normalized))
+            .apply()
+        return true
     }
 
     fun beginNewPlaybackSession(): Boolean = setHiddenForCurrentSession(false)

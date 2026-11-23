@@ -9,10 +9,13 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import javax.inject.Inject
 import javax.inject.Singleton
+import org.jsoup.Jsoup
 
 /**
  * Tiêu đề và vị trí định danh của một chương sách EPUB.
@@ -116,8 +119,20 @@ class EpubEngine @Inject constructor(
                 }
             }
             if (temporaryFile.length() <= 0L) return null
-            if (coverFile.exists() && !coverFile.delete()) return null
-            if (!temporaryFile.renameTo(coverFile)) return null
+            try {
+                Files.move(
+                    temporaryFile.toPath(),
+                    coverFile.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE
+                )
+            } catch (_: Exception) {
+                Files.move(
+                    temporaryFile.toPath(),
+                    coverFile.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING
+                )
+            }
             coverFile.absolutePath
         } finally {
             if (temporaryFile.exists()) temporaryFile.delete()
@@ -167,6 +182,8 @@ class EpubEngine @Inject constructor(
 
         val totalChapters = try {
             extractChapterHeaders(file).size
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             0
         }
@@ -236,6 +253,9 @@ class EpubEngine @Inject constructor(
      * @return Danh sách [EpubChapterHeader] theo đúng thứ tự đọc của tác giả.
      */
     suspend fun extractChapterHeaders(file: File): List<EpubChapterHeader> = withContext(Dispatchers.IO) {
+        if (file.length() > EpubReadLimits.MAX_EPUB_FILE_SIZE) {
+            throw IllegalArgumentException("File EPUB vượt quá kích thước tối đa cho phép (${EpubReadLimits.MAX_EPUB_FILE_SIZE / (1024 * 1024)}MB)")
+        }
         val fingerprint = EpubCacheFingerprint.fromFile(file)
         val cachedHeaders = structureCache.readHeaders(fingerprint)
         if (cachedHeaders != null && cachedHeaders.isNotEmpty()) {
@@ -251,7 +271,10 @@ class EpubEngine @Inject constructor(
                 parsed.orderedEntries.forEachIndexed { index, entry ->
                     val rawTitle = tocTitles[entry.name]
                         ?: tocTitles[entry.name.substringAfterLast('/')]
-                        ?: tocTitles.entries.firstOrNull { entry.name.endsWith(it.key, ignoreCase = true) }?.value
+                        ?: tocTitles.entries.firstOrNull {
+                            entry.name.equals(it.key, ignoreCase = true) ||
+                                entry.name.endsWith("/${it.key}", ignoreCase = true)
+                        }?.value
                         ?: try {
                             val buffer = ByteArray(8192)
                             val readBytes = zip.getInputStream(entry).use { it.read(buffer, 0, buffer.size) }
@@ -365,16 +388,33 @@ class EpubEngine @Inject constructor(
         startChapterIndex: Int = 0,
         onChapterIndexed: suspend (lastChapterIndex: Int) -> Unit = {}
     ) = withContext(Dispatchers.IO) {
+        if (file.length() > EpubReadLimits.MAX_EPUB_FILE_SIZE) {
+            throw IllegalArgumentException("File EPUB vượt quá kích thước tối đa cho phép (${EpubReadLimits.MAX_EPUB_FILE_SIZE / (1024 * 1024)}MB)")
+        }
         ZipFile(file).use { zip ->
             val parsed = EpubPackageStructureParser.parseStructure(zip)
             val indexedChapters = mutableListOf<Pair<Int, Pair<String, String>>>()
             var lastProcessedIndex = startChapterIndex - 1
+            var totalExtractedChars = 0L
 
             parsed.orderedEntries.forEachIndexed { index, entry ->
                 if (index < startChapterIndex) return@forEachIndexed
                 try {
                     EpubReadLimits.validateZipEntry(entry)
-                    val rawHtml = zip.getInputStream(entry).use { it.readBoundedText() }
+                    val remainingBudget = EpubReadLimits.MAX_TOTAL_EXTRACTED_BYTES - totalExtractedChars
+                    if (remainingBudget <= 0L) {
+                        throw TotalExtractedBudgetExceededException(
+                            "Tổng dung lượng giải nén vượt quá giới hạn an toàn (${EpubReadLimits.MAX_TOTAL_EXTRACTED_BYTES} bytes)"
+                        )
+                    }
+                    val maxEntryBytes = minOf(EpubReadLimits.MAX_UNCOMPRESSED_ENTRY_SIZE, remainingBudget)
+                    val rawHtml = zip.getInputStream(entry).use { it.readBoundedText(maxBytes = maxEntryBytes) }
+                    totalExtractedChars += rawHtml.length.toLong()
+                    if (totalExtractedChars > EpubReadLimits.MAX_TOTAL_EXTRACTED_BYTES) {
+                        throw TotalExtractedBudgetExceededException(
+                            "Tổng dung lượng giải nén vượt quá giới hạn an toàn (${EpubReadLimits.MAX_TOTAL_EXTRACTED_BYTES} bytes)"
+                        )
+                    }
                     val plainText = stripHtmlTags(rawHtml)
                     val title = parsed.chapterTitles[entry.name]
                         ?: extractXmlTag(rawHtml, "title")
@@ -389,6 +429,8 @@ class EpubEngine @Inject constructor(
                         onChapterIndexed(lastProcessedIndex)
                     }
                 } catch (error: CancellationException) {
+                    throw error
+                } catch (error: TotalExtractedBudgetExceededException) {
                     throw error
                 } catch (_: Exception) {
                     lastProcessedIndex = index
@@ -408,7 +450,7 @@ class EpubEngine @Inject constructor(
     }
 
     private fun stripHtmlTags(html: String): String {
-        return html.replace("<[^>]*>".toRegex(), " ")
+        return Jsoup.parse(html).apply { select("script, style").remove() }.text()
             .replace("\\s+".toRegex(), " ")
             .trim()
     }
@@ -434,4 +476,6 @@ class EpubEngine @Inject constructor(
 
         return title.trim().removeSuffix("-").removeSuffix("|").trim()
     }
+
+    private class TotalExtractedBudgetExceededException(message: String) : IllegalStateException(message)
 }

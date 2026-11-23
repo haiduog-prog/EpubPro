@@ -100,7 +100,7 @@ open class VieNeuModelDownloader constructor(
     /**
      * Kiểm tra trạng thái hiện có của 7 file bắt buộc trong [modelDir].
      *
-     * @return Bản kiểm kê số file hợp lệ và dung lượng đã có/còn thiếu.
+     * @return Bản kiểm kê số file hợp lệ và dung lượng đã có (kể cả `.tmp` đang tải dở) / còn thiếu.
      */
     open fun inspectInventory(): ResourceInventory {
         val dir = modelDir
@@ -113,7 +113,14 @@ open class VieNeuModelDownloader constructor(
                 presentCount++
                 existingBytes += file.length()
             } else {
-                missingBytes += spec.expectedBytes
+                val temp = File(dir, "${spec.fileName}.tmp")
+                val partialBytes = if (temp.isFile && temp.length() > 0L) {
+                    temp.length().coerceAtMost(spec.expectedBytes)
+                } else {
+                    0L
+                }
+                existingBytes += partialBytes
+                missingBytes += (spec.expectedBytes - partialBytes).coerceAtLeast(0L)
             }
         }
         return ResourceInventory(
@@ -123,6 +130,18 @@ open class VieNeuModelDownloader constructor(
             existingBytes = existingBytes,
             missingBytes = missingBytes,
         )
+    }
+
+    /**
+     * Trả về tên file đầu tiên chưa hoàn tất trong [modelDir] để hiển thị ngay khi bắt đầu hoặc tiếp tục tải.
+     *
+     * @return Tên file còn thiếu đầu tiên, hoặc tên file đầu tiên của gói nếu đã đủ tất cả.
+     */
+    open fun firstMissingArtifactFileName(): String {
+        val dir = modelDir
+        return REQUIRED_ARTIFACTS.firstOrNull { spec ->
+            !isValidFile(File(dir, spec.fileName), spec.expectedBytes)
+        }?.fileName ?: REQUIRED_ARTIFACTS.first().fileName
     }
 
     /**

@@ -3,7 +3,13 @@ package com.epubpro.app
 import android.app.Application
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import androidx.work.WorkManager
 import dagger.hilt.android.HiltAndroidApp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import java.io.File
 import javax.inject.Inject
 
 /**
@@ -15,6 +21,29 @@ class EpubApplication : Application(), Configuration.Provider {
     @Inject
     lateinit var workerFactory: HiltWorkerFactory
 
+    private val applicationScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    override fun onCreate() {
+        super.onCreate()
+        cleanupLegacyDriveSyncArtifacts()
+    }
+
+    /**
+     * Hủy unique work `epub-sync` còn tồn đọng trong WorkManager database và dọn sạch các file/DataStore
+     * của tính năng đồng bộ Google Drive cũ đã được gỡ bỏ.
+     */
+    private fun cleanupLegacyDriveSyncArtifacts() {
+        runCatching {
+            WorkManager.getInstance(this).cancelUniqueWork(LEGACY_DRIVE_SYNC_WORK_NAME)
+        }
+        applicationScope.launch {
+            runCatching {
+                File(filesDir, "sync-rollback").deleteRecursively()
+                File(filesDir, "datastore/epub_sync_state.preferences_pb").delete()
+            }
+        }
+    }
+
     /**
      * Cung cấp cấu hình tùy chỉnh cho WorkManager với HiltWorkerFactory để hỗ trợ Dependency Injection trong Worker.
      */
@@ -22,4 +51,8 @@ class EpubApplication : Application(), Configuration.Provider {
         get() = Configuration.Builder()
             .setWorkerFactory(workerFactory)
             .build()
+
+    private companion object {
+        const val LEGACY_DRIVE_SYNC_WORK_NAME = "epub-sync"
+    }
 }

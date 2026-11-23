@@ -6,6 +6,7 @@ import com.epubpro.domain.model.ReaderThemeMode
 import com.epubpro.domain.model.TextAlignment
 import com.epubpro.domain.model.ContentFilterPreferences
 import com.epubpro.domain.model.ContentFilterRule
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -156,9 +157,33 @@ class CssInjectorTest {
             )
         )
 
-        assertTrue(script.contains("new RegExp(r.pattern, 'i')"))
+        assertTrue(script.contains("new RegExp(r.pattern, 'gi')"))
+        assertFalse(script.contains("new RegExp(r.pattern, 'i');"))
         assertTrue(script.contains("FILTER_RULE_ERROR"))
         assertTrue(script.contains("hợp lệ"))
+    }
+
+    @Test
+    fun `sanitizeFontFamily strips css injection characters and falls back to serif`() {
+        val maliciousSettings = ReaderSettings(
+            fontFamily = "Roboto; } body { display: none; /*"
+        )
+        val css = CssInjector.generateCss(maliciousSettings)
+        assertFalse(css.contains("body { display: none;"))
+        assertTrue(css.contains("font-family: Roboto  body  display none, serif, sans-serif !important;"))
+        org.junit.Assert.assertEquals("serif", CssInjector.sanitizeFontFamily(";;;{}/*"))
+    }
+
+    @Test
+    fun `replaceAdjacentChapterInDocument sanitizes parsed body, strips tts class and resets scrollExtentBaseWidth`() {
+        val script = CssInjector.generateJsBridgeScript(
+            isHorizontalPagination = true,
+            settings = ReaderSettings()
+        )
+        assertTrue(script.contains("sanitizePageLayer(parsed.body);"))
+        assertTrue(script.contains("classList.remove('tts-active-paragraph')"))
+        assertTrue(script.contains("scrollExtentBaseWidth = 0;"))
+        assertEquals(1, Regex("var startTouchX = 0;").findAll(script).count())
     }
 
     /**

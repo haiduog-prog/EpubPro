@@ -7,6 +7,9 @@ import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * Kết quả khớp cụm từ dài nhất tại một vị trí.
@@ -69,7 +72,8 @@ class PhraseDictionary private constructor(
      * @throws java.io.IOException Nếu không ghi được.
      */
     fun writeTo(target: File) {
-        val temporary = File(target.parentFile, "${target.name}.tmp")
+        target.parentFile?.mkdirs()
+        val temporary = File.createTempFile("${target.name}.", ".tmp", target.parentFile)
         try {
             DataOutputStream(BufferedOutputStream(FileOutputStream(temporary), 1 shl 16)).use { out ->
                 out.writeInt(MAGIC)
@@ -89,8 +93,20 @@ class PhraseDictionary private constructor(
                     out.write(buffer, 0, chunk)
                 }
             }
-            if (target.exists() && !target.delete()) throw java.io.IOException("Không thay được từ điển cũ")
-            if (!temporary.renameTo(target)) throw java.io.IOException("Không lưu được từ điển")
+            try {
+                Files.move(
+                    temporary.toPath(),
+                    target.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE
+                )
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(
+                    temporary.toPath(),
+                    target.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING
+                )
+            }
         } finally {
             temporary.delete()
         }
@@ -178,6 +194,7 @@ class PhraseDictionary private constructor(
          * @throws IllegalStateException Nếu file sai định dạng hoặc phiên bản.
          */
         fun load(file: File): PhraseDictionary = RandomAccessFile(file, "r").use { raf ->
+            check(raf.length() >= HEADER_INTS * 4L) { "Header từ điển hỏng" }
             val mapped = raf.channel.map(FileChannel.MapMode.READ_ONLY, 0, raf.length())
             check(mapped.int == MAGIC) { "Sai định dạng từ điển" }
             check(mapped.int == FORMAT_VERSION) { "Phiên bản từ điển không hỗ trợ" }
@@ -185,8 +202,10 @@ class PhraseDictionary private constructor(
             val maxKeyLength = mapped.int
             val keyCharCount = mapped.int
             val valueByteCount = mapped.int
-            check(count >= 0 && keyCharCount >= 0 && valueByteCount >= 0) { "Header từ điển hỏng" }
-            val expected = HEADER_INTS * 4L + (count + 1) * 8L + keyCharCount * 2L + valueByteCount
+            check(count >= 0 && maxKeyLength >= 0 && keyCharCount >= 0 && valueByteCount >= 0) { "Header từ điển hỏng" }
+            val countPlusOne = count.toLong() + 1L
+            check(countPlusOne <= Int.MAX_VALUE / 4) { "Header từ điển hỏng" }
+            val expected = HEADER_INTS * 4L + countPlusOne * 8L + keyCharCount.toLong() * 2L + valueByteCount.toLong()
             check(raf.length() == expected) { "Kích thước từ điển không khớp" }
 
             val keyOffsets = IntArray(count + 1).also { mapped.asIntBuffer().get(it) }
@@ -195,6 +214,12 @@ class PhraseDictionary private constructor(
             mapped.position(mapped.position() + keyCharCount * 2)
             val valueOffsets = IntArray(count + 1).also { mapped.asIntBuffer().get(it) }
             mapped.position(mapped.position() + (count + 1) * 4)
+            check(keyOffsets[0] == 0 && keyOffsets[count] == keyCharCount) { "Bảng offset khóa từ điển hỏng" }
+            check(valueOffsets[0] == 0 && valueOffsets[count] == valueByteCount) { "Bảng offset nghĩa từ điển hỏng" }
+            for (i in 0 until count) {
+                check(keyOffsets[i] <= keyOffsets[i + 1]) { "Bảng offset khóa từ điển hỏng" }
+                check(valueOffsets[i] <= valueOffsets[i + 1]) { "Bảng offset nghĩa từ điển hỏng" }
+            }
             val values = mapped.slice()
             PhraseDictionary(keyOffsets, keyChars, valueOffsets, values, maxKeyLength)
         }

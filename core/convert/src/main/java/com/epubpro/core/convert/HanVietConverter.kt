@@ -55,7 +55,9 @@ class HanVietConverter(private val layers: List<PhraseDictionary>) {
             val mapped = mapPunctuation(char)
             when {
                 char.isWhitespace() || char == '　' -> {
-                    if (output.isNotEmpty() && output.last() != ' ') output.append(' ')
+                    if ((output.isNotEmpty() && output.last() != ' ') || (output.isEmpty() && previous == TokenKind.WORD)) {
+                        output.append(' ')
+                    }
                     previous = TokenKind.SPACE
                 }
                 mapped in CLOSING -> {

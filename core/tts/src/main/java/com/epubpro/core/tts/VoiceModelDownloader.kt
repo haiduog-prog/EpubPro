@@ -3,7 +3,10 @@ package com.epubpro.core.tts
 import android.content.Context
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
@@ -78,6 +81,8 @@ open class VoiceModelDownloader @Inject constructor(
 
         val finalOnnx = File(ttsDir, "model.onnx")
         val finalTokens = File(ttsDir, "tokens.txt")
+        val tempOnnx = File(ttsDir, "model.onnx.tmp")
+        val tempTokens = File(ttsDir, "tokens.txt.tmp")
 
         Log.d(TAG, "downloadModel() modelName=$modelName, ttsDir=${ttsDir.absolutePath}")
 
@@ -85,7 +90,6 @@ open class VoiceModelDownloader @Inject constructor(
             // 1. Tải tokens.txt
             if (!finalTokens.exists() || finalTokens.length() == 0L) {
                 Log.d(TAG, "Downloading tokens.txt...")
-                val tempTokens = File(ttsDir, "tokens.txt.tmp")
                 downloadDirect(tokensUrl, tempTokens)
                 if (!tempTokens.renameTo(finalTokens)) {
                     tempTokens.copyTo(finalTokens, overwrite = true)
@@ -97,7 +101,6 @@ open class VoiceModelDownloader @Inject constructor(
             // 2. Tải model.onnx (chiếm 95% tiến trình)
             if (!finalOnnx.exists() || finalOnnx.length() < 5_000_000L) {
                 Log.d(TAG, "Downloading model.onnx...")
-                val tempOnnx = File(ttsDir, "model.onnx.tmp")
                 downloadDirect(onnxUrl, tempOnnx, onProgress = { progress ->
                     onProgress(progress * 0.95f)
                 })
@@ -116,9 +119,18 @@ open class VoiceModelDownloader @Inject constructor(
                 }
             }
 
-            onProgress(1.0f)
-            true
+            val ready = isEspeakDataReady()
+            if (ready) {
+                onProgress(1.0f)
+            }
+            ready
+        } catch (cancel: CancellationException) {
+            tempTokens.delete()
+            tempOnnx.delete()
+            throw cancel
         } catch (e: Exception) {
+            tempTokens.delete()
+            tempOnnx.delete()
             Log.e(TAG, "Failed to download model $modelName: ${e.message}", e)
             false
         }
@@ -157,6 +169,9 @@ open class VoiceModelDownloader @Inject constructor(
                         tempFile.delete()
                     }
                     Log.d(TAG, "$subPath done (${destFile.length()} bytes)")
+                } catch (cancel: CancellationException) {
+                    tempFile.delete()
+                    throw cancel
                 } catch (e: Exception) {
                     tempFile.delete()
                     Log.e(TAG, "Failed to download $subPath: ${e.message}")
@@ -211,37 +226,42 @@ open class VoiceModelDownloader @Inject constructor(
                 && voiceVi.exists() && voiceVi.length() > 50L
     }
 
-    private fun downloadDirect(urlStr: String, destFile: File, onProgress: ((Float) -> Unit)? = null) {
+    private suspend fun downloadDirect(urlStr: String, destFile: File, onProgress: ((Float) -> Unit)? = null) {
         val url = URL(urlStr)
         val connection = url.openConnection() as HttpURLConnection
-        connection.connectTimeout = 15000
-        connection.readTimeout = 60000
-        connection.instanceFollowRedirects = true
-        connection.connect()
+        try {
+            connection.connectTimeout = 15000
+            connection.readTimeout = 60000
+            connection.instanceFollowRedirects = true
+            connection.connect()
 
-        if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-            throw IOException("HTTP ${connection.responseCode} for $urlStr")
-        }
+            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
+                throw IOException("HTTP ${connection.responseCode} for $urlStr")
+            }
 
-        val fileLength = connection.contentLengthLong
-        connection.inputStream.use { input ->
-            destFile.outputStream().use { output ->
-                val buf = ByteArray(16384)
-                var total = 0L
-                var count: Int
-                var lastPct = -1
-                while (input.read(buf).also { count = it } != -1) {
-                    total += count
-                    output.write(buf, 0, count)
-                    if (fileLength > 0 && onProgress != null) {
-                        val pct = ((total * 100) / fileLength).toInt()
-                        if (pct != lastPct) {
-                            lastPct = pct
-                            onProgress(total.toFloat() / fileLength.toFloat())
+            val fileLength = connection.contentLengthLong
+            connection.inputStream.use { input ->
+                destFile.outputStream().use { output ->
+                    val buf = ByteArray(16384)
+                    var total = 0L
+                    var count: Int
+                    var lastPct = -1
+                    while (input.read(buf).also { count = it } != -1) {
+                        currentCoroutineContext().ensureActive()
+                        total += count
+                        output.write(buf, 0, count)
+                        if (fileLength > 0 && onProgress != null) {
+                            val pct = ((total * 100) / fileLength).toInt()
+                            if (pct != lastPct) {
+                                lastPct = pct
+                                onProgress(total.toFloat() / fileLength.toFloat())
+                            }
                         }
                     }
                 }
             }
+        } finally {
+            connection.disconnect()
         }
     }
 

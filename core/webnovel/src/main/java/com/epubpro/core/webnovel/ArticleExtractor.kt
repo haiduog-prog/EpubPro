@@ -98,11 +98,12 @@ object ArticleExtractor {
      * @param document Tài liệu cần dọn.
      */
     private fun cleanDocument(document: Document) {
-        document.select(REMOVED_TAGS).remove()
-        document.select("[hidden], [aria-hidden=true], [style~=(?i)display\\s*:\\s*none], [style~=(?i)visibility\\s*:\\s*hidden]")
-            .remove()
-        document.body().select("*").toList().forEach { element ->
-            if (element.parent() == null) return@forEach
+        val body = document.body() ?: return
+        body.select(REMOVED_TAGS).forEach { if (it != body) it.remove() }
+        body.select("[hidden], [aria-hidden=true], [style~=(?i)display\\s*:\\s*none], [style~=(?i)visibility\\s*:\\s*hidden]")
+            .forEach { if (it != body) it.remove() }
+        body.select("*").toList().forEach { element ->
+            if (element == body || element.parent() == null) return@forEach
             val idClass = element.id() + " " + element.className()
             if (idClass.isBlank()) return@forEach
             if (negativePattern.containsMatchIn(idClass) &&

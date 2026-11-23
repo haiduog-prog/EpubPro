@@ -140,6 +140,10 @@ MOBI_RET mobi_load_rec(MOBIData *m, FILE *file) {
         size_t size;
         if (curr->next != NULL) {
             next = curr->next;
+            if (next->offset < curr->offset) {
+                debug_print("%s", "Wrong record offset\n");
+                return MOBI_DATA_CORRUPT;
+            }
             size = next->offset - curr->offset;
         } else {
             fseek(file, 0, SEEK_END);
@@ -205,7 +209,12 @@ MOBI_RET mobi_parse_extheader(MOBIData *m, MOBIBuffer *buf) {
     char exth_magic[5];
     const size_t header_length = 12;
     mobi_buffer_getstring(exth_magic, buf, 4);
-    const size_t exth_length = mobi_buffer_get32(buf) - header_length;
+    uint32_t raw_exth_length = mobi_buffer_get32(buf);
+    if (raw_exth_length < header_length) {
+        debug_print("%s", "Sanity checks for EXTH header failed\n");
+        return MOBI_DATA_CORRUPT;
+    }
+    const size_t exth_length = raw_exth_length - header_length;
     const size_t rec_count = mobi_buffer_get32(buf);
     if (strncmp(exth_magic, EXTH_MAGIC, 4) != 0 ||
         exth_length + buf->offset > buf->maxlen ||
@@ -233,7 +242,13 @@ MOBI_RET mobi_parse_extheader(MOBIData *m, MOBIBuffer *buf) {
         }
         curr->tag = mobi_buffer_get32(buf);
         /* data size = record size minus 8 bytes for uid and size */
-        curr->size = mobi_buffer_get32(buf) - 8;
+        uint32_t raw_rec_size = mobi_buffer_get32(buf);
+        if (raw_rec_size < 8) {
+            debug_print("Record %i size too short\n", curr->tag);
+            mobi_free_eh(m);
+            return MOBI_DATA_CORRUPT;
+        }
+        curr->size = raw_rec_size - 8;
         if (curr->size == 0) {
             debug_print("Skip record %i, data too short\n", curr->tag);
             continue;

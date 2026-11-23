@@ -136,6 +136,9 @@ static MOBI_RET mobi_decompress_huffman_internal(MOBIBuffer *buf_out, MOBIBuffer
         uint32_t t1 = huffcdic->table1[code >> 24];
         /* get maxcode and codelen from t1 */
         code_length = t1 & 0x1f;
+        if (code_length == 0 || code_length > 32) {
+            return MOBI_DATA_CORRUPT;
+        }
         uint32_t maxcode = (((t1 >> 8) + 1) << (32 - code_length)) - 1;
         /* check termination bit */
         if (!(t1 & 0x80)) {
@@ -145,6 +148,9 @@ static MOBI_RET mobi_decompress_huffman_internal(MOBIBuffer *buf_out, MOBIBuffer
                     debug_print("Wrong offset to mincode table: %hhu\n", code_length);
                     return MOBI_DATA_CORRUPT;
                 }
+            }
+            if (code_length == 0 || code_length > 32) {
+                return MOBI_DATA_CORRUPT;
             }
             maxcode = huffcdic->maxcode_table[code_length];
         }

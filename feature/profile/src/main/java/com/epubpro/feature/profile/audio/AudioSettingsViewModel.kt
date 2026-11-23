@@ -185,9 +185,7 @@ class AudioSettingsViewModel internal constructor(
 
     init {
         val initialSettings = preferencesManager.getSettings()
-        val initialBackend = TtsVoiceCatalog.findBackend(initialSettings.voiceId)
-        val validInitialAi = initialBackend != null &&
-            (initialBackend != AiTtsBackend.VIENEU_NANO || supportsVieNeu)
+        val validInitialAi = resolvePlayableAiVoiceId(initialSettings.voiceId) != null
         if (initialSettings.isAiVoice && !validInitialAi) {
             preferencesManager.saveSettings(
                 initialSettings.copy(isAiVoice = false, voiceId = null),
@@ -214,22 +212,30 @@ class AudioSettingsViewModel internal constructor(
 
         viewModelScope.launch {
             preferencesManager.settingsFlow.collect { settings ->
-                val resolvedBackend = resolveBackendForVoice(
-                    voiceId = settings.voiceId,
-                    fallback = _uiState.value.selectedAiBackend,
-                )
-                val selectedVoiceId = if (settings.isAiVoice) {
-                    resolveValidAiVoiceId(settings.voiceId)
+                val current = _uiState.value
+                val keepingUnpersistedAiDraft = current.isAiVoice && !settings.isAiVoice &&
+                    resolvePlayableAiVoiceId(current.selectedVoiceId) == null
+                val resolvedBackend = if (keepingUnpersistedAiDraft) {
+                    current.selectedAiBackend
                 } else {
-                    settings.voiceId
+                    resolveBackendForVoice(
+                        voiceId = settings.voiceId,
+                        fallback = current.selectedAiBackend,
+                    )
                 }
-                _uiState.value = _uiState.value.copy(
-                    isAiVoice = settings.isAiVoice,
+                val selectedVoiceId = when {
+                    keepingUnpersistedAiDraft -> current.selectedVoiceId
+                    settings.isAiVoice -> resolveValidAiVoiceId(settings.voiceId)
+                    else -> settings.voiceId
+                }
+                val effectiveIsAiVoice = keepingUnpersistedAiDraft || settings.isAiVoice
+                _uiState.value = current.copy(
+                    isAiVoice = effectiveIsAiVoice,
                     selectedAiBackend = resolvedBackend,
-                    language = if (settings.isAiVoice) "vi" else settings.language,
+                    language = if (effectiveIsAiVoice) "vi" else settings.language,
                     selectedVoiceId = selectedVoiceId,
                     speechSpeed = settings.speed,
-                    speechPitch = if (settings.isAiVoice) 1.0f else settings.pitch,
+                    speechPitch = if (effectiveIsAiVoice) 1.0f else settings.pitch,
                     vieNeuPreset = settings.vieNeuPreset,
                     vieNeuSteps = settings.vieNeuSteps,
                     vieNeuCfg = settings.vieNeuCfg,
@@ -314,14 +320,21 @@ class AudioSettingsViewModel internal constructor(
             }
         }
         refreshAiVoices()
+        if (dlState is VieNeuDownloadState.Ready &&
+            _uiState.value.isAiVoice &&
+            TtsSettings.isVieNeuVoiceId(_uiState.value.selectedVoiceId)
+        ) {
+            saveSettings()
+        }
     }
 
     /**
      * Lưu toàn bộ cấu hình giọng đọc hiện tại vào [TtsPreferencesManager].
+     * Chỉ persist giọng AI khi model tương ứng đã tải sẵn sàng để đảm bảo cấu hình lưu luôn phát được.
      */
     private fun saveSettings() {
         val state = _uiState.value
-        val validAi = if (state.isAiVoice) resolveValidAiVoiceId(state.selectedVoiceId) != null else true
+        val validAi = if (state.isAiVoice) resolvePlayableAiVoiceId(state.selectedVoiceId) != null else true
         val existing = preferencesManager.getSettings()
         preferencesManager.saveSettings(
             existing.copy(
@@ -650,6 +663,12 @@ class AudioSettingsViewModel internal constructor(
     fun clearVieNeuModel() {
         stopActivePreview()
         vieNeuDownloadCoordinator.clearModel()
+        val stored = preferencesManager.getSettings()
+        if (stored.isAiVoice && TtsSettings.isVieNeuVoiceId(stored.voiceId)) {
+            preferencesManager.saveSettings(
+                stored.copy(isAiVoice = false, voiceId = null),
+            )
+        }
         viewModelScope.launch {
             vieNeuRuntimeManager.unload()
         }
@@ -713,6 +732,7 @@ class AudioSettingsViewModel internal constructor(
                 if (success) {
                     _uiState.value = _uiState.value.copy(isDownloading = false)
                     refreshAiVoices()
+                    saveSettings()
                 } else {
                     _uiState.value = _uiState.value.copy(
                         isDownloading = false,
@@ -934,12 +954,30 @@ class AudioSettingsViewModel internal constructor(
 
     /**
      * Chuẩn hoá [voiceId] thành ID hợp lệ trong một trong hai catalog AI (có kiểm tra hỗ trợ ABI).
+     *
+     * @param voiceId Mã giọng đọc cần kiểm tra.
+     * @return Mã giọng hợp lệ trong catalog hoặc `null`.
      */
     private fun resolveValidAiVoiceId(voiceId: String?): String? {
         TtsVoiceCatalog.findVieNeu(voiceId)?.let { info ->
             return if (supportsVieNeu) info.id else null
         }
         return TtsVoiceCatalog.find(voiceId)?.id
+    }
+
+    /**
+     * Kiểm tra [voiceId] có phải là giọng AI hợp lệ, được thiết bị hỗ trợ và đã tải sẵn model trên máy hay không.
+     *
+     * @param voiceId Mã giọng đọc cần kiểm tra trước khi lưu vào [TtsPreferencesManager].
+     * @return Mã giọng chuẩn hoá nếu có thể phát ngay, hoặc `null` nếu model chưa được tải.
+     */
+    private fun resolvePlayableAiVoiceId(voiceId: String?): String? {
+        TtsVoiceCatalog.findVieNeu(voiceId)?.let { info ->
+            if (!supportsVieNeu) return null
+            val isVieNeuReady = vieNeuDownloadCoordinator.state.value.isReady || vieNeuRuntimeManager.isModelReady()
+            return info.id.takeIf { isVieNeuReady }
+        }
+        return TtsVoiceCatalog.find(voiceId)?.id?.takeIf { voiceModelDownloader.isModelDownloaded(it) }
     }
 
     override fun onCleared() {

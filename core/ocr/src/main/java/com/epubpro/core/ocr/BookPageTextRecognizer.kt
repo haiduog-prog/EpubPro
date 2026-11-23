@@ -13,10 +13,12 @@ import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 
 /**
  * Nhận diện chữ trên ảnh chụp trang sách giấy bằng ML Kit Text Recognition v2 (hệ chữ Latin,
@@ -40,49 +42,74 @@ class BookPageTextRecognizer @Inject constructor() {
      * @throws OcrModelUnavailableException Nếu Play services đang tải model OCR lần đầu.
      * @throws Exception Lỗi khác từ ML Kit.
      */
-    suspend fun recognize(imageFile: File, vietOcr: VietOcrSession? = null): List<OcrTextBlock> {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(imageFile.absolutePath, bounds)
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw IOException("Không đọc được ảnh trang")
-        var sampleSize = 1
-        while (maxOf(bounds.outWidth, bounds.outHeight) / sampleSize > MAX_DECODE_SIDE) sampleSize *= 2
-        val decoded = BitmapFactory.decodeFile(
-            imageFile.absolutePath,
-            BitmapFactory.Options().apply { inSampleSize = sampleSize }
-        ) ?: throw IOException("Không giải mã được ảnh trang")
-        val exifRotation = readRotationDegrees(imageFile)
-        // VietOCR cắt dòng theo tọa độ ML Kit (hệ ảnh đã xoay thẳng) nên cần bitmap đã xoay thật.
-        val bitmap = if (vietOcr != null && exifRotation != 0) rotate(decoded, exifRotation) else decoded
-        val rotation = if (bitmap !== decoded) 0 else exifRotation
-        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-        try {
-            val result = try {
-                recognizer.process(InputImage.fromBitmap(bitmap, rotation)).await()
-            } catch (error: MlKitException) {
-                if (error.errorCode == MlKitException.UNAVAILABLE) throw OcrModelUnavailableException(error)
+    suspend fun recognize(imageFile: File, vietOcr: VietOcrSession? = null): List<OcrTextBlock> =
+        withContext(Dispatchers.Default) {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(imageFile.absolutePath, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw IOException("Không đọc được ảnh trang")
+            var sampleSize = 1
+            while (maxOf(bounds.outWidth, bounds.outHeight) / sampleSize > MAX_DECODE_SIDE) sampleSize *= 2
+            val decoded = BitmapFactory.decodeFile(
+                imageFile.absolutePath,
+                BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            ) ?: throw IOException("Không giải mã được ảnh trang")
+            val exifRotation = readRotationDegrees(imageFile)
+            // VietOCR cắt dòng theo tọa độ ML Kit (hệ ảnh đã xoay thẳng) nên cần bitmap đã xoay thật.
+            var bitmap: Bitmap = decoded
+            val recognizer = try {
+                bitmap = if (vietOcr != null && exifRotation != 0) rotate(decoded, exifRotation) else decoded
+                TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            } catch (error: Throwable) {
+                if (bitmap !== decoded && !bitmap.isRecycled) bitmap.recycle()
+                if (!decoded.isRecycled) decoded.recycle()
                 throw error
             }
-            // Tọa độ ML Kit trả về theo ảnh đã xoay thẳng.
-            val rotated = rotation == 90 || rotation == 270
-            val pageWidth = (if (rotated) bitmap.height else bitmap.width).toFloat()
-            val pageHeight = (if (rotated) bitmap.width else bitmap.height).toFloat()
-            return result.textBlocks.flatMap { it.lines }.mapNotNull { line ->
-                val box = line.boundingBox ?: return@mapNotNull null
-                coroutineContext.ensureActive()
-                val text = if (vietOcr == null) line.text else chooseLineText(line.text, readLine(vietOcr, bitmap, box))
-                OcrTextBlock(
-                    text = text,
-                    left = box.left / pageWidth,
-                    top = box.top / pageHeight,
-                    right = box.right / pageWidth,
-                    bottom = box.bottom / pageHeight
-                )
+            val rotation = if (bitmap !== decoded) 0 else exifRotation
+            val taskStarted = AtomicBoolean(false)
+            val taskCompleted = AtomicBoolean(false)
+            val callerFinished = AtomicBoolean(false)
+            fun releaseIfReady() {
+                if (!callerFinished.get()) return
+                if (taskStarted.get() && !taskCompleted.get()) return
+                runCatching { recognizer.close() }
+                if (bitmap !== decoded && !decoded.isRecycled) decoded.recycle()
+                if (!bitmap.isRecycled) bitmap.recycle()
             }
-        } finally {
-            recognizer.close()
-            bitmap.recycle()
+            try {
+                val result = try {
+                    val inputImage = InputImage.fromBitmap(bitmap, rotation)
+                    val task = recognizer.process(inputImage)
+                    taskStarted.set(true)
+                    task.addOnCompleteListener {
+                        taskCompleted.set(true)
+                        releaseIfReady()
+                    }
+                    task.await()
+                } catch (error: MlKitException) {
+                    if (error.errorCode == MlKitException.UNAVAILABLE) throw OcrModelUnavailableException(error)
+                    throw error
+                }
+                // Tọa độ ML Kit trả về theo ảnh đã xoay thẳng.
+                val rotated = rotation == 90 || rotation == 270
+                val pageWidth = (if (rotated) bitmap.height else bitmap.width).toFloat()
+                val pageHeight = (if (rotated) bitmap.width else bitmap.height).toFloat()
+                result.textBlocks.flatMap { it.lines }.mapNotNull { line ->
+                    val box = line.boundingBox ?: return@mapNotNull null
+                    coroutineContext.ensureActive()
+                    val text = if (vietOcr == null) line.text else chooseLineText(line.text, readLine(vietOcr, bitmap, box))
+                    OcrTextBlock(
+                        text = text,
+                        left = box.left / pageWidth,
+                        top = box.top / pageHeight,
+                        right = box.right / pageWidth,
+                        bottom = box.bottom / pageHeight
+                    )
+                }
+            } finally {
+                callerFinished.set(true)
+                releaseIfReady()
+            }
         }
-    }
 
     /**
      * Đọc lại một dòng bằng VietOCR; lỗi runtime chỉ làm dòng đó quay về chữ ML Kit.

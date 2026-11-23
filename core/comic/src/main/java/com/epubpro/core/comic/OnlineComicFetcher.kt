@@ -1,14 +1,21 @@
 package com.epubpro.core.comic
 
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.CookieJar
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 
 /**
  * Ngoại lệ ném ra khi trang web yêu cầu xác minh danh tính (Cloudflare, Captcha, DDOS protection)
@@ -52,11 +59,9 @@ open class OnlineComicFetcher @Inject constructor() {
             .header("Accept-Language", "vi,en-US;q=0.9,en;q=0.8")
             .build()
 
-        val response = httpClient.newCall(request).execute()
-        val statusCode = response.code
-        val bodyString = response.body?.string().orEmpty()
+        val (statusCode, isSuccessful, bodyString) = executeFetchHtml(request)
 
-        if (!response.isSuccessful) {
+        if (!isSuccessful) {
             if (statusCode == 403 || statusCode == 503) {
                 if (detectProtectionBlock(bodyString)) {
                     throw ComicProtectionException("Trang web yêu cầu xác minh bảo vệ trình duyệt (mã $statusCode)")
@@ -70,6 +75,66 @@ open class OnlineComicFetcher @Inject constructor() {
         }
 
         NetTruyenChapterParser.parse(bodyString, chapterUrl)
+    }
+
+    /**
+     * Thực thi HTTP request có hỗ trợ hủy theo coroutine, luôn đóng [Response] và giới hạn dung lượng thân HTML.
+     *
+     * @param request Yêu cầu HTTP cần tải.
+     * @return Bộ ba `(statusCode, isSuccessful, bodyString)`.
+     * @throws IOException Nếu xảy ra lỗi kết nối mạng hoặc nội dung HTML vượt quá [MAX_HTML_BYTES].
+     */
+    private suspend fun executeFetchHtml(request: Request): Triple<Int, Boolean, String> {
+        val call = httpClient.newCall(request)
+        return suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    continuation.resumeWithException(e)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    runCatching {
+                        response.use { resp ->
+                            Triple(resp.code, resp.isSuccessful, readBoundedHtml(resp))
+                        }
+                    }
+                        .onSuccess { continuation.resume(it) }
+                        .onFailure { continuation.resumeWithException(it) }
+                }
+            })
+        }
+    }
+
+    /**
+     * Đọc nội dung HTML từ phản hồi HTTP với giới hạn tối đa [MAX_HTML_BYTES].
+     *
+     * @param response Phản hồi HTTP đang mở.
+     * @return Chuỗi HTML đã giải mã.
+     * @throws IOException Nếu kích thước phản hồi vượt quá [MAX_HTML_BYTES].
+     */
+    private fun readBoundedHtml(response: Response): String {
+        val body = response.body ?: return ""
+        if (body.contentLength() > MAX_HTML_BYTES) {
+            throw IOException("Trang chương vượt quá giới hạn dung lượng HTML")
+        }
+        val charset = body.contentType()?.charset(Charsets.UTF_8) ?: Charsets.UTF_8
+        val bytes = body.byteStream().use { input ->
+            val output = ByteArrayOutputStream()
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            var total = 0L
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                total += read
+                if (total > MAX_HTML_BYTES) {
+                    throw IOException("Trang chương vượt quá giới hạn dung lượng HTML")
+                }
+                output.write(buffer, 0, read)
+            }
+            output.toByteArray()
+        }
+        return String(bytes, charset)
     }
 
     /**
@@ -89,6 +154,7 @@ open class OnlineComicFetcher @Inject constructor() {
     }
 
     companion object {
+        private const val MAX_HTML_BYTES = 10L * 1024L * 1024L
         private const val DEFAULT_USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     }

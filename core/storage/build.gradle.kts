@@ -5,6 +5,9 @@ plugins {
 
 android {
     namespace = "com.epubpro.core.storage"
+    buildFeatures {
+        buildConfig = true
+    }
 }
 
 dependencies {

@@ -76,8 +76,11 @@ object ComicArchiveEntries {
      */
     fun findComicInfo(zip: ZipFile): ZipEntry? =
         zip.entries().asSequence()
-            .filter { !it.isDirectory && it.name.substringAfterLast('/').lowercase() == COMIC_INFO_NAME }
-            .minByOrNull { it.name.count { char -> char == '/' } }
+            .filter {
+                !it.isDirectory &&
+                    it.name.replace('\\', '/').substringAfterLast('/').lowercase() == COMIC_INFO_NAME
+            }
+            .minByOrNull { it.name.replace('\\', '/').count { char -> char == '/' } }
 
     /**
      * Nhận diện ZIP chỉ chứa ảnh là truyện tranh (dùng khi file không có phần mở rộng `.cbz`).
@@ -195,7 +198,7 @@ class ComicArchive private constructor(
             var total = 0L
             while (true) {
                 val read = input.read(buffer)
-                if (read <= 0) break
+                if (read < 0) break
                 total += read
                 if (total > limit) throw ComicArchiveException("Entry vượt giới hạn dung lượng")
                 output.write(buffer, 0, read)

@@ -62,10 +62,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val hasExplicitOpenBook = dispatchOpenBookRequest(intent)
-        val hasExplicitOpenLibrary = dispatchOpenLibraryRequest(intent)
-        val hasExplicitImportBook = dispatchImportBookRequest(intent)
-        val hasExplicitSharedLink = dispatchSharedLinkRequest(intent)
+        val isFromHistory = (intent?.flags ?: 0) and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
+        val shouldProcessIntent = savedInstanceState == null && !isFromHistory
+        val hasExplicitOpenBook = shouldProcessIntent && dispatchOpenBookRequest(intent)
+        val hasExplicitOpenLibrary = shouldProcessIntent && dispatchOpenLibraryRequest(intent)
+        val hasExplicitImportBook = shouldProcessIntent && dispatchImportBookRequest(intent)
+        val hasExplicitSharedLink = shouldProcessIntent && dispatchSharedLinkRequest(intent)
 
         if (savedInstanceState == null && !hasExplicitSharedLink && !hasExplicitOpenBook && !hasExplicitOpenLibrary && !hasExplicitImportBook) {
             checkAndAutoResumeLastBook()
@@ -172,7 +174,8 @@ class MainActivity : ComponentActivity() {
      * @return true nếu intent chứa liên kết hợp lệ và đã được chuyển tới trình duyệt.
      */
     private fun dispatchSharedLinkRequest(intent: Intent?): Boolean {
-        if (intent?.action != Intent.ACTION_SEND || intent.type != "text/plain") return false
+        val baseMime = intent?.type?.substringBefore(';')?.trim()
+        if (intent?.action != Intent.ACTION_SEND || !baseMime.equals("text/plain", ignoreCase = true)) return false
         val url = SharedLinkParser.extractUrl(intent.getStringExtra(Intent.EXTRA_TEXT)) ?: return false
         intentViewModel.dispatchOpenBrowser(url)
         intent.action = null

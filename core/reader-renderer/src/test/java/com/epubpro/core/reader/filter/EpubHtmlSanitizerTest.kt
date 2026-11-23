@@ -105,6 +105,7 @@ class EpubHtmlSanitizerTest {
         val input = """
             <body>
                 <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" />
+                <img src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' onload='alert(1)'/>" />
                 <a href="data:text/html,<script>alert(1)</script>">Bấm xem</a>
             </body>
         """.trimIndent()
@@ -112,7 +113,41 @@ class EpubHtmlSanitizerTest {
         val output = EpubHtmlSanitizer.sanitize(input).rawHtml
 
         assertTrue("Safe data:image/png should be kept", output.contains("src=\"data:image/png;base64,"))
+        assertFalse("Dangerous data:image/svg+xml should be stripped", output.contains("data:image/svg+xml"))
         assertFalse("Dangerous data:text/html should be stripped", output.contains("data:text/html"))
+    }
+
+    @Test
+    fun `sanitize should block dom clobbering ids, svg animation tags, all links, and dangerous schemes`() {
+        val input = """
+            <html>
+            <head>
+                <base href="http://evil.com/" />
+                <meta http-equiv="Content-Security-Policy" content="default-src 'none'" />
+                <link rel="preload" href="http://evil.com/track.js" />
+            </head>
+            <body>
+                <a id="ReaderJsBridge" name="epubpro-scroll-extent" href="intent://scan/#Intent;end" ping="http://evil.com/ping">Clobber</a>
+                <img src="file:///android_asset/secret.txt" srcset="content://com.example.provider/data 1x" />
+                <svg><animate attributeName="href" to="javascript:alert(1)" /><foreignObject><div> XSS </div></foreignObject></svg>
+                <template><script>alert(1)</script></template>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val output = EpubHtmlSanitizer.sanitize(input).rawHtml
+
+        assertFalse(output.contains("<base", ignoreCase = true))
+        assertFalse(output.contains("<meta", ignoreCase = true))
+        assertFalse(output.contains("<link", ignoreCase = true))
+        assertFalse(output.contains("<animate", ignoreCase = true))
+        assertFalse(output.contains("<foreignObject", ignoreCase = true))
+        assertFalse(output.contains("<template", ignoreCase = true))
+        assertFalse(output.contains("ReaderJsBridge", ignoreCase = true))
+        assertFalse(output.contains("epubpro-scroll-extent", ignoreCase = true))
+        assertFalse(output.contains("intent:", ignoreCase = true))
+        assertFalse(output.contains("file:", ignoreCase = true))
+        assertFalse(output.contains("content:", ignoreCase = true))
     }
 
     @Test
@@ -183,5 +218,14 @@ class EpubHtmlSanitizerTest {
             sanitizerVersion = EpubHtmlSanitizer.CURRENT_SANITIZER_VERSION
         )
         org.junit.Assert.assertNull(invalidHash)
+
+        // Blank sourceHash must be rejected even when actualSourceHtml is null
+        val blankHash = SanitizedEpubHtml.restoreFromSnapshot(
+            html = sanitized.rawHtml,
+            sourceHash = "   ",
+            actualSourceHtml = null,
+            sanitizerVersion = EpubHtmlSanitizer.CURRENT_SANITIZER_VERSION
+        )
+        org.junit.Assert.assertNull(blankHash)
     }
 }

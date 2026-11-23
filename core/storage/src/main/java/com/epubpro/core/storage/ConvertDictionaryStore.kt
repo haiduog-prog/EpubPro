@@ -183,7 +183,9 @@ class ConvertDictionaryStore @Inject constructor(
      * @return Danh sách (chữ Hán, tên tiếng Việt) theo thứ tự đã lưu.
      */
     suspend fun bookNames(bookId: String): List<Pair<String, String>> = withContext(Dispatchers.IO) {
-        readBookNames(bookId)
+        mutex.withLock {
+            readBookNames(bookId)
+        }
     }
 
     /**
@@ -242,7 +244,10 @@ class ConvertDictionaryStore @Inject constructor(
      */
     suspend fun clearBook(bookId: String) = withContext(Dispatchers.IO) {
         prefs.edit().remove(enabledKey(bookId)).apply()
-        bookNamesFile(bookId).delete()
+        mutex.withLock {
+            bookNamesFile(bookId).delete()
+        }
+        Unit
     }
 
     /**
@@ -269,11 +274,29 @@ class ConvertDictionaryStore @Inject constructor(
             file.delete()
             return
         }
-        val temporary = File(file.parentFile, "${file.name}.tmp")
-        temporary.writeText(names.joinToString("\n") { (key, value) -> "$key=$value" }, Charsets.UTF_8)
-        if (!temporary.renameTo(file)) {
-            file.delete()
-            temporary.renameTo(file)
+        val parentDir = file.parentFile ?: bookNamesDir
+        parentDir.mkdirs()
+        val temporary = File.createTempFile("${file.name}.", ".tmp", parentDir)
+        try {
+            temporary.writeText(names.joinToString("\n") { (key, value) -> "$key=$value" }, Charsets.UTF_8)
+            try {
+                java.nio.file.Files.move(
+                    temporary.toPath(),
+                    file.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE
+                )
+            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                java.nio.file.Files.move(
+                    temporary.toPath(),
+                    file.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                )
+            }
+        } finally {
+            if (temporary.exists()) {
+                temporary.delete()
+            }
         }
     }
 

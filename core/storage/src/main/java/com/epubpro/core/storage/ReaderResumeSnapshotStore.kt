@@ -152,6 +152,35 @@ class ReaderResumeSnapshotStore @Inject constructor(
             writeAtomically(File(bookDir, normalizedFileName), snapshot.normalizedHtml)
             writeAtomically(File(bookDir, sanitizedFileName), snapshot.sanitizedHtml)
             writeAtomically(File(bookDir, META_FILE_NAME), metaJson.toString())
+            pruneObsoleteSnapshotFiles(
+                bookDir = bookDir,
+                keepNormalizedName = normalizedFileName,
+                keepSanitizedName = sanitizedFileName
+            )
+        }
+    }
+
+    /**
+     * Dọn các file HTML snapshot của chương cũ trong cùng thư mục sách để tránh phình bộ nhớ lưu trữ.
+     *
+     * @param bookDir Thư mục chứa snapshot của sách.
+     * @param keepNormalizedName Tên file normalized HTML hiện tại cần giữ.
+     * @param keepSanitizedName Tên file sanitized HTML hiện tại cần giữ.
+     */
+    private fun pruneObsoleteSnapshotFiles(
+        bookDir: File,
+        keepNormalizedName: String,
+        keepSanitizedName: String
+    ) {
+        bookDir.listFiles()?.forEach { child ->
+            val name = child.name
+            val isStaleHtml = (name.startsWith("normalized_") || name.startsWith("sanitized_")) &&
+                name != keepNormalizedName &&
+                name != keepSanitizedName
+            val isStaleTmp = name.endsWith(".tmp")
+            if (isStaleHtml || isStaleTmp) {
+                runCatching { child.delete() }
+            }
         }
     }
 
@@ -194,8 +223,8 @@ class ReaderResumeSnapshotStore @Inject constructor(
     }
 
     private fun writeAtomically(target: File, content: String) {
-        target.parentFile?.mkdirs()
-        val tempFile = File(target.parentFile, "${target.name}.tmp")
+        val parentDir = target.parentFile?.apply { mkdirs() }
+        val tempFile = File.createTempFile("${target.name}.", ".tmp", parentDir)
         tempFile.writeText(content, Charsets.UTF_8)
         try {
             Files.move(
@@ -213,6 +242,7 @@ class ReaderResumeSnapshotStore @Inject constructor(
                 )
             } catch (fallbackEx: Exception) {
                 tempFile.delete()
+                throw fallbackEx
             }
         }
     }

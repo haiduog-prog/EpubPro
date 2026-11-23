@@ -343,7 +343,11 @@ class LocalBookImportWorker @AssistedInject constructor(
         } else {
             ForegroundInfo(NOTIFICATION_ID, notification)
         }
-        setForeground(foreground)
+        try {
+            setForeground(foreground)
+        } catch (_: IllegalStateException) {
+            notificationManager.notify(NOTIFICATION_ID, notification)
+        }
     }
 
     /** Hiển thị notification khi EPUB đã được thêm vào thư viện. */

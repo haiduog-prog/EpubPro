@@ -1,9 +1,13 @@
 package com.epubpro.core.reader.engine
 
 import androidx.collection.LruCache
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.yield
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -16,7 +20,8 @@ import javax.inject.Singleton
 @Singleton
 class EpubChapterMemoryCache @Inject constructor() {
 
-    private val singleFlightLocks = ConcurrentHashMap<String, Mutex>()
+    private val singleFlightLocks = ConcurrentHashMap<String, CompletableDeferred<String>>()
+    private val cacheGeneration = AtomicLong(0L)
 
     /**
      * LRU cache lưu trữ HTML đã chuẩn hóa theo key chuỗi định danh.
@@ -77,28 +82,51 @@ class EpubChapterMemoryCache @Inject constructor() {
     ): String {
         val cacheKey = buildCacheKey(fingerprint, entryName, normalizerVersion)
 
-        // Kiểm tra nhanh RAM cache
-        synchronized(lock) {
-            lruCache.get(cacheKey)?.let { return it }
-        }
+        while (true) {
+            currentCoroutineContext().ensureActive()
 
-        // Lấy Mutex cho key cụ thể để tránh nạp trùng đồng thời
-        val keyMutex = singleFlightLocks.computeIfAbsent(cacheKey) { Mutex() }
-        return try {
-            keyMutex.withLock {
-                // Kiểm tra lại sau khi đã chiếm lock
+            // Kiểm tra nhanh RAM cache
+            val startGen: Long
+            synchronized(lock) {
+                lruCache.get(cacheKey)?.let { return it }
+                startGen = cacheGeneration.get()
+            }
+
+            val newDeferred = CompletableDeferred<String>()
+            val existingDeferred = singleFlightLocks.putIfAbsent(cacheKey, newDeferred)
+            if (existingDeferred != null) {
+                try {
+                    return existingDeferred.await()
+                } catch (cancelled: CancellationException) {
+                    // Nếu coroutine đang đợi không bị hủy (mà chỉ là coroutine nạp trước bị hủy), nhường nhịp để finally xóa key rồi thử lại.
+                    currentCoroutineContext().ensureActive()
+                    yield()
+                    continue
+                }
+            }
+
+            return try {
                 synchronized(lock) {
-                    lruCache.get(cacheKey)?.let { return@withLock it }
+                    lruCache.get(cacheKey)?.let { cached ->
+                        newDeferred.complete(cached)
+                        return cached
+                    }
                 }
 
                 val loadedHtml = loader()
                 synchronized(lock) {
-                    lruCache.put(cacheKey, loadedHtml)
+                    if (cacheGeneration.get() == startGen) {
+                        lruCache.put(cacheKey, loadedHtml)
+                    }
                 }
+                newDeferred.complete(loadedHtml)
                 loadedHtml
+            } catch (t: Throwable) {
+                newDeferred.completeExceptionally(t)
+                throw t
+            } finally {
+                singleFlightLocks.remove(cacheKey, newDeferred)
             }
-        } finally {
-            singleFlightLocks.remove(cacheKey, keyMutex)
         }
     }
 
@@ -109,6 +137,7 @@ class EpubChapterMemoryCache @Inject constructor() {
      */
     fun evictBook(canonicalPath: String) {
         synchronized(lock) {
+            cacheGeneration.incrementAndGet()
             val prefix = canonicalPath + CACHE_KEY_SEPARATOR
             val snapshot = lruCache.snapshot()
             for (key in snapshot.keys) {
@@ -124,6 +153,7 @@ class EpubChapterMemoryCache @Inject constructor() {
      */
     fun clear() {
         synchronized(lock) {
+            cacheGeneration.incrementAndGet()
             lruCache.evictAll()
         }
         singleFlightLocks.clear()

@@ -1,18 +1,25 @@
 package com.epubpro.core.ai
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 class AiServiceException(
     override val message: String,
-    val retryable: Boolean = false
-) : Exception(message)
+    val retryable: Boolean = false,
+    cause: Throwable? = null
+) : Exception(message, cause)
 
 @Singleton
 class GeminiClient @Inject constructor() {
@@ -109,12 +116,12 @@ class GeminiClient @Inject constructor() {
         parsePolishResponse(response)
     }
 
-    private fun request(
+    private suspend fun request(
         url: String,
         apiKey: String,
         method: String,
         body: String?
-    ): String {
+    ): String = suspendCancellableCoroutine { continuation ->
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = CONNECT_TIMEOUT_MS
@@ -127,31 +134,51 @@ class GeminiClient @Inject constructor() {
             }
         }
 
-        return try {
-            if (body != null) {
-                connection.outputStream.use { output ->
-                    output.write(body.toByteArray(Charsets.UTF_8))
+        val future = requestExecutor.submit {
+            try {
+                if (body != null) {
+                    connection.outputStream.use { output ->
+                        output.write(body.toByteArray(Charsets.UTF_8))
+                    }
                 }
-            }
 
-            val responseCode = connection.responseCode
-            val responseBody = (
-                if (responseCode in 200..299) connection.inputStream else connection.errorStream
-                )?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+                val responseCode = connection.responseCode
+                val responseBody = (
+                    if (responseCode in 200..299) connection.inputStream else connection.errorStream
+                    )?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
 
-            if (responseCode !in 200..299) {
-                throw mapHttpError(responseCode, responseBody)
+                if (responseCode !in 200..299) {
+                    throw mapHttpError(responseCode, responseBody)
+                }
+                if (continuation.isActive) {
+                    continuation.resume(responseBody)
+                }
+            } catch (error: CancellationException) {
+                if (continuation.isActive) {
+                    continuation.cancel(error)
+                }
+            } catch (error: AiServiceException) {
+                if (continuation.isActive) {
+                    continuation.resumeWithException(error)
+                }
+            } catch (error: Exception) {
+                if (continuation.isActive) {
+                    continuation.resumeWithException(
+                        AiServiceException(
+                            message = "Không thể kết nối Gemini. Hãy kiểm tra mạng và thử lại.",
+                            retryable = true,
+                            cause = error
+                        )
+                    )
+                }
+            } finally {
+                runCatching { connection.disconnect() }
             }
-            responseBody
-        } catch (error: AiServiceException) {
-            throw error
-        } catch (error: Exception) {
-            throw AiServiceException(
-                message = "Không thể kết nối Gemini. Hãy kiểm tra mạng và thử lại.",
-                retryable = true
-            )
-        } finally {
-            connection.disconnect()
+        }
+
+        continuation.invokeOnCancellation {
+            runCatching { connection.disconnect() }
+            future.cancel(true)
         }
     }
 
@@ -185,19 +212,22 @@ class GeminiClient @Inject constructor() {
 
     private fun mapHttpError(code: Int, body: String): AiServiceException {
         val serverMessage = runCatching {
-            JSONObject(body).getJSONObject("error").optString("message")
+            JSONObject(body).optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
         }.getOrNull()
         return when (code) {
             400 -> AiServiceException(serverMessage ?: "Yêu cầu gửi tới Gemini không hợp lệ.")
             401, 403 -> AiServiceException("API key không hợp lệ hoặc không có quyền dùng model.")
             404 -> AiServiceException(
-                serverMessage?.takeIf { it.isNotBlank() } ?: "Model đã chọn không khả dụng."
+                serverMessage ?: "Model đã chọn không khả dụng."
             )
             408, 500, 502, 503, 504 -> AiServiceException(
                 "Gemini đang tạm thời không phản hồi. Hãy thử lại.",
                 retryable = true
             )
-            429 -> AiServiceException("Đã hết hạn mức hoặc Gemini đang giới hạn số yêu cầu.")
+            429 -> AiServiceException(
+                "Đã hết hạn mức hoặc Gemini đang giới hạn số yêu cầu.",
+                retryable = true
+            )
             else -> AiServiceException(serverMessage ?: "Gemini trả về lỗi $code.")
         }
     }
@@ -206,5 +236,11 @@ class GeminiClient @Inject constructor() {
         const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
         const val CONNECT_TIMEOUT_MS = 20_000
         const val READ_TIMEOUT_MS = 120_000
+        private val threadCounter = AtomicInteger(1)
+        private val requestExecutor = Executors.newCachedThreadPool { runnable ->
+            Thread(runnable, "gemini-http-${threadCounter.getAndIncrement()}").apply {
+                isDaemon = true
+            }
+        }
     }
 }

@@ -217,4 +217,33 @@ class NetTruyenChapterParserTest {
         }
         assertEquals("Chương sau phải là chương 2", "https://nettruyen.gg/truyen-tranh/phuong-thuc-bao-thu/chuong-2", info.nextChapterUrl)
     }
+
+    /**
+     * Khi trang có nhiều phần tử `div.page-chapter` ngang cấp (không nằm trong `div.reading-detail`),
+     * parser phải gom đủ tất cả các trang ảnh từ mọi `div.page-chapter` và không ném lỗi khi URL trang có host chứa `_`.
+     */
+    @Test
+    fun parseSiblingPageChaptersAndUnderscorePageUrlHost() {
+        val html = """
+            <html>
+            <head><title>Truyện Thử - Chương 1</title></head>
+            <body>
+              <div class="page-chapter"><img data-src="https://img_cdn_1.nettruyen.gg/manga/001.jpg" /></div>
+              <div class="page-chapter"><img data-src="https://img_cdn_2.nettruyen.gg/002" /></div>
+              <div class="page-chapter"><img data-src="https://cdn1.nettruyen.gg/manga/003.jpg" /></div>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val info = NetTruyenChapterParser.parse(html, "https://my_site.example.com/truyen-tranh/thu/chuong-1")
+        assertEquals(
+            listOf(
+                "https://img_cdn_1.nettruyen.gg/manga/001.jpg",
+                "https://img_cdn_2.nettruyen.gg/002",
+                "https://cdn1.nettruyen.gg/manga/003.jpg"
+            ),
+            info.pages
+        )
+        assertEquals("my_site.example.com", info.sourceHost)
+    }
 }

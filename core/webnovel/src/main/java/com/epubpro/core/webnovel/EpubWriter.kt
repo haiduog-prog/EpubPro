@@ -50,7 +50,8 @@ object EpubWriter {
      */
     fun write(target: File, metadata: EpubMetadata, chapters: List<WebNovelChapter>): File {
         require(chapters.isNotEmpty()) { "EPUB phải có ít nhất một chương" }
-        val temporary = File(target.parentFile, "${target.name}.part")
+        val parentDir = target.parentFile?.apply { mkdirs() }
+        val temporary = File.createTempFile("${target.name}.", ".part", parentDir)
         try {
             ZipOutputStream(FileOutputStream(temporary)).use { zip ->
                 writeMimetype(zip)
@@ -63,8 +64,7 @@ object EpubWriter {
                 zip.putText("OEBPS/toc.ncx", tocNcx(metadata, chapters))
                 zip.putText("OEBPS/content.opf", contentOpf(metadata, chapters))
             }
-            if (target.exists() && !target.delete()) throw java.io.IOException("Không thay được EPUB cũ")
-            if (!temporary.renameTo(target)) throw java.io.IOException("Không lưu được EPUB")
+            moveAtomically(temporary, target)
             return target
         } finally {
             temporary.delete()
@@ -78,7 +78,7 @@ object EpubWriter {
      *
      * @param source File EPUB đã tạo.
      * @return Các chương theo thứ tự.
-     * @throws IllegalStateException Nếu file không có chương đúng cấu trúc.
+     * @throws IllegalStateException Nếu file không có chương đúng cấu trúc hoặc vượt giới hạn kích thước an toàn.
      */
     fun readChapters(source: File): List<WebNovelChapter> = ZipFile(source).use { zip ->
         val entries = zip.entries().asSequence()
@@ -86,14 +86,67 @@ object EpubWriter {
             .sortedWith(compareBy({ it.name.length }, { it.name }))
             .toList()
         check(entries.isNotEmpty()) { "EPUB không có chương truyện web" }
+        var totalBytesRead = 0L
         entries.map { entry ->
-            val document = zip.getInputStream(entry).use { Jsoup.parse(it, "UTF-8", "", Parser.xmlParser()) }
+            check(entry.size <= MAX_CHAPTER_BYTES) { "Chương EPUB vượt giới hạn dung lượng" }
+            val bytes = zip.getInputStream(entry).use { input ->
+                readBounded(input, MAX_CHAPTER_BYTES)
+            }
+            totalBytesRead += bytes.size
+            check(totalBytesRead <= MAX_TOTAL_CHAPTERS_BYTES) { "Tổng dung lượng các chương EPUB vượt giới hạn" }
+            val document = Jsoup.parse(bytes.toString(Charsets.UTF_8), "", Parser.xmlParser())
             WebNovelChapter(
                 title = document.selectFirst("h2")?.text().orEmpty(),
                 paragraphs = document.select("p").map { it.text() },
                 sourceUrl = document.selectFirst("meta[name=epubpro-source-url]")?.attr("content")?.takeIf { it.isNotBlank() }
             )
         }
+    }
+
+    /**
+     * Di chuyển file tạm đè lên file đích một cách nguyên tử, tự động fallback nếu hệ thống file không hỗ trợ `ATOMIC_MOVE`.
+     *
+     * @param temporary File tạm đã ghi xong.
+     * @param target File đích cần thay thế.
+     * @throws java.io.IOException Nếu không thể di chuyển file.
+     */
+    private fun moveAtomically(temporary: File, target: File) {
+        try {
+            java.nio.file.Files.move(
+                temporary.toPath(),
+                target.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE
+            )
+        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+            java.nio.file.Files.move(
+                temporary.toPath(),
+                target.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING
+            )
+        }
+    }
+
+    /**
+     * Đọc luồng dữ liệu với giới hạn số byte tối đa để chống zip bomb / OOM.
+     *
+     * @param input Luồng dữ liệu đầu vào.
+     * @param maxBytes Số byte tối đa cho phép đọc.
+     * @return Mảng byte đã đọc.
+     * @throws IllegalStateException Nếu dữ liệu vượt quá [maxBytes].
+     */
+    private fun readBounded(input: java.io.InputStream, maxBytes: Long): ByteArray {
+        val output = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var total = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            total += read
+            check(total <= maxBytes) { "Chương EPUB vượt giới hạn dung lượng" }
+            output.write(buffer, 0, read)
+        }
+        return output.toByteArray()
     }
 
     /**
@@ -136,6 +189,8 @@ object EpubWriter {
     private fun chapterPath(index: Int): String = "text/chapter_%04d.xhtml".format(Locale.US, index + 1)
 
     private const val CHAPTER_DIRECTORY = "OEBPS/text/chapter_"
+    private const val MAX_CHAPTER_BYTES = 10L * 1024L * 1024L
+    private const val MAX_TOTAL_CHAPTERS_BYTES = 100L * 1024L * 1024L
 
     /** @return Nội dung `META-INF/container.xml`. */
     private fun containerXml(): String = """

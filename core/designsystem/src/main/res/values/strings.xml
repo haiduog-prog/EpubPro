@@ -277,6 +277,8 @@
     <string name="tts_action_stop">Dừng</string>
     <string name="tts_preparing_voice">Đang chuẩn bị giọng…</string>
     <string name="tts_audio_focus_error">Không thể sử dụng đầu ra âm thanh</string>
+    <string name="tts_chunk_timeout_error">Giọng đọc không phản hồi</string>
+    <string name="tts_ai_fallback_to_native">Giọng AI gặp lỗi nhiều lần, tạm dùng giọng đọc của hệ thống</string>
 
     <!-- TTS Floating Bubble & Runtime -->
     <string name="tts_bubble_open_controls">Mở điều khiển audio</string>

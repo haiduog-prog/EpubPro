@@ -15,7 +15,20 @@ object CssInjector {
         """.trimIndent()
     }
 
+    /**
+     * Làm sạch tên font family trước khi nội suy vào CSS để chống CSS injection.
+     * Chỉ giữ lại các ký tự `[a-zA-Z0-9\s\-_,']` và trả về `"serif"` nếu kết quả rỗng.
+     *
+     * @param raw Chuỗi tên font family thô từ cài đặt người dùng.
+     * @return Chuỗi tên font family an toàn để nhúng vào CSS.
+     */
+    fun sanitizeFontFamily(raw: String): String {
+        val cleaned = raw.replace(Regex("[^a-zA-Z0-9\\s\\-_,']"), "").trim()
+        return cleaned.ifEmpty { "serif" }
+    }
+
     fun generateCss(settings: ReaderSettings, statusFooterHeightDp: Int = 0): String {
+        val safeFontFamily = sanitizeFontFamily(settings.fontFamily)
         val (bgColor, textColor) = when (settings.themeMode) {
             ReaderThemeMode.LIGHT -> "#FFFFFF" to "#0F172A"
             ReaderThemeMode.DARK -> "#0F172A" to "#F8FAFC"
@@ -52,7 +65,7 @@ object CssInjector {
             body {
                 background-color: $bgColor !important;
                 color: $textColor !important;
-                font-family: ${settings.fontFamily}, serif, sans-serif !important;
+                font-family: $safeFontFamily, serif, sans-serif !important;
                 font-size: ${fontSizePx}px !important;
                 line-height: ${settings.lineHeightRatio} !important;
                 margin: 0 !important;
@@ -112,7 +125,7 @@ object CssInjector {
             body {
                 background-color: $bgColor !important;
                 color: $textColor !important;
-                font-family: ${settings.fontFamily}, serif, sans-serif !important;
+                font-family: $safeFontFamily, serif, sans-serif !important;
                 font-size: ${fontSizePx}px !important;
                 line-height: ${settings.lineHeightRatio} !important;
                 padding-top: ${settings.marginTopDp}px !important;
@@ -784,9 +797,6 @@ object CssInjector {
                 }
                 setTimeout(initLayout, 500);
 
-                var startTouchX = 0;
-                var startTouchY = 0;
-                var startTouchTime = 0;
                 var startScrollX = 0;
                 var currentDeltaX = 0;
                 var isDraggingPage = false;
@@ -944,6 +954,15 @@ object CssInjector {
                     try {
                         var parsed = new DOMParser().parseFromString(html, 'text/html');
                         if (!parsed.body) return false;
+                        sanitizePageLayer(parsed.body);
+                        var activeTtsInParsed = parsed.body.querySelectorAll('.tts-active-paragraph');
+                        for (var k = 0; k < activeTtsInParsed.length; k++) {
+                            activeTtsInParsed[k].classList.remove('tts-active-paragraph');
+                        }
+                        var activeTtsInBody = document.body.querySelectorAll('.tts-active-paragraph');
+                        for (var m = 0; m < activeTtsInBody.length; m++) {
+                            activeTtsInBody[m].classList.remove('tts-active-paragraph');
+                        }
                         var oldHtml = document.body.innerHTML;
                         var nodes = [];
                         for (var i = 0; i < parsed.body.childNodes.length; i++) {
@@ -965,6 +984,7 @@ object CssInjector {
                         targetInitParagraph = 0;
                         currentPage = targetInitPage;
                         totalPages = 1;
+                        scrollExtentBaseWidth = 0;
                         hasInitializedLayout = false;
                         hasNotifiedLayoutReady = false;
                         isLayoutReady = !window.epubproIsHorizontal;
@@ -1401,7 +1421,6 @@ object CssInjector {
                             if (!r.isEnabled || !r.pattern) continue;
                             if (r.isRegex) {
                                 try {
-                                    new RegExp(r.pattern, 'i');
                                     var regex = new RegExp(r.pattern, 'gi');
                                     activeRules.push({ regex: regex, replacement: r.replacement || '' });
                                     detectPatterns.push('(?:' + r.pattern + ')');

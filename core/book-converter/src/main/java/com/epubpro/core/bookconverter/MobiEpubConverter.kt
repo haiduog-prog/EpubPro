@@ -10,7 +10,11 @@ import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import java.nio.charset.StandardCharsets
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.UUID
 import java.util.zip.CRC32
 import java.util.zip.ZipEntry
@@ -45,7 +49,7 @@ class MobiEpubConverter @Inject constructor(
     ): BookConversionResult = withContext(Dispatchers.IO) {
         val sourceFormat = formatSniffer.sniff(inputFile)
             ?: throw BookConversionException(BookConversionErrorCode.UNSUPPORTED_EXTENSION)
-        if (sourceFormat == BookSourceFormat.EPUB) {
+        if (sourceFormat == BookSourceFormat.EPUB || sourceFormat == BookSourceFormat.CBZ) {
             throw BookConversionException(BookConversionErrorCode.UNSUPPORTED_EXTENSION)
         }
         if (!inputFile.isFile || inputFile.length() <= 0L) {
@@ -59,7 +63,7 @@ class MobiEpubConverter @Inject constructor(
         val parentDirectory = outputFile.parentFile
             ?: throw BookConversionException(BookConversionErrorCode.OUTPUT_FAILED)
         val temporaryDirectory = File(parentDirectory, ".mobi-${UUID.randomUUID()}")
-        val temporaryEpub = File(parentDirectory, ".${outputFile.name}.part")
+        val temporaryEpub = File(parentDirectory, ".${outputFile.name}.${UUID.randomUUID()}.part")
         if (!temporaryDirectory.mkdirs() || !temporaryDirectory.isDirectory) {
             throw BookConversionException(BookConversionErrorCode.OUTPUT_FAILED)
         }
@@ -83,17 +87,27 @@ class MobiEpubConverter @Inject constructor(
             onProgress(BookConversionProgress(BookConversionStage.VALIDATING_EPUB, 90))
             validateEpubContainer(temporaryEpub)
             parentDirectory.mkdirs()
-            if (outputFile.exists() && !outputFile.delete()) {
-                throw BookConversionException(BookConversionErrorCode.OUTPUT_FAILED)
-            }
-            if (!temporaryEpub.renameTo(outputFile)) {
-                throw BookConversionException(BookConversionErrorCode.OUTPUT_FAILED)
+            try {
+                Files.move(
+                    temporaryEpub.toPath(),
+                    outputFile.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE
+                )
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(
+                    temporaryEpub.toPath(),
+                    outputFile.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING
+                )
             }
             onProgress(BookConversionProgress(BookConversionStage.COMPLETED, 100))
             BookConversionResult(outputFile, sourceFormat)
         } catch (error: BookConversionException) {
             throw error
         } catch (error: CancellationException) {
+            throw error
+        } catch (error: IOException) {
             throw error
         } catch (error: Exception) {
             throw BookConversionException(BookConversionErrorCode.INVALID_OR_CORRUPTED_FILE, error)
@@ -112,7 +126,7 @@ class MobiEpubConverter @Inject constructor(
     private fun throwForNativeResult(result: Int) {
         when (result) {
             0 -> Unit
-            5 -> throw BookConversionException(BookConversionErrorCode.ENCRYPTED_OR_DRM)
+            5, 11, 12, 13, 15 -> throw BookConversionException(BookConversionErrorCode.ENCRYPTED_OR_DRM)
             102 -> throw BookConversionException(BookConversionErrorCode.FIXED_LAYOUT_UNSUPPORTED)
             6 -> throw BookConversionException(BookConversionErrorCode.INVALID_OR_CORRUPTED_FILE)
             100, 101, 7, 8, 14 -> throw BookConversionException(BookConversionErrorCode.OUTPUT_FAILED)
@@ -139,6 +153,9 @@ class MobiEpubConverter @Inject constructor(
             throw BookConversionException(BookConversionErrorCode.INVALID_OR_CORRUPTED_FILE)
         }
         val totalBytes = files.sumOf { it.length() }.coerceAtLeast(1L)
+        if (totalBytes > MAX_OUTPUT_BYTES) {
+            throw BookConversionException(BookConversionErrorCode.OUTPUT_FAILED)
+        }
         var copiedBytes = 0L
 
         ZipOutputStream(BufferedOutputStream(FileOutputStream(outputFile))).use { zip ->
@@ -247,11 +264,11 @@ class MobiEpubConverter @Inject constructor(
         const val MAX_INPUT_BYTES: Long = 100L * 1024L * 1024L
         private const val MAX_OUTPUT_BYTES: Long = 500L * 1024L * 1024L
         private const val MAX_ENTRY_BYTES: Long = 50L * 1024L * 1024L
-        private const val CONTAINER_XML = """
+        private val CONTAINER_XML = """
             <?xml version="1.0" encoding="UTF-8"?>
             <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
               <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
             </container>
-        """
+        """.trimIndent()
     }
 }

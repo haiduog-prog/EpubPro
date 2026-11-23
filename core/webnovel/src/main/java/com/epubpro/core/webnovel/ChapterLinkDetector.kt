@@ -153,7 +153,9 @@ object ChapterLinkDetector {
         val uri = runCatching { URI(raw) }.getOrNull() ?: return null
         val scheme = uri.scheme?.lowercase() ?: return null
         if (scheme != "http" && scheme != "https") return null
-        if (!uri.host.equals(pageUri.host, ignoreCase = true)) return null
+        val targetHost = uri.host ?: return null
+        val pageHost = pageUri.host ?: return null
+        if (!targetHost.equals(pageHost, ignoreCase = true)) return null
         // Cắt fragment bằng chuỗi thay vì dựng lại URI để không đổi cách mã hóa của query.
         val withoutFragment = raw.substringBefore('#')
         val pageWithoutFragment = pageUri.toString().substringBefore('#')

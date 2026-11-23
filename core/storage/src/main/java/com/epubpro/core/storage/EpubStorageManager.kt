@@ -241,9 +241,12 @@ class EpubStorageManager @Inject constructor(
     }
 
     fun saveCoverImage(bookId: String, inputStream: InputStream): String {
-        val coverFile = File(coversDir, "$bookId.jpg")
-        FileOutputStream(coverFile).use { output ->
-            inputStream.copyTo(output)
+        val safeName = stableFileKey(bookId)
+        val coverFile = File(coversDir, "$safeName.jpg")
+        inputStream.use { input ->
+            FileOutputStream(coverFile).use { output ->
+                input.copyTo(output)
+            }
         }
         return coverFile.absolutePath
     }
@@ -274,9 +277,13 @@ class EpubStorageManager @Inject constructor(
     }
 
     fun deleteBookFile(filePath: String) {
-        val file = File(filePath)
-        if (file.exists()) {
-            file.delete()
+        if (filePath.isBlank()) return
+        runCatching {
+            val file = File(filePath).canonicalFile
+            val root = context.filesDir.canonicalFile
+            if (file.path.startsWith(root.path + File.separator) && file.isFile) {
+                file.delete()
+            }
         }
     }
 
@@ -354,16 +361,27 @@ class EpubStorageManager @Inject constructor(
     }
 
     private fun writeAtomically(target: File, content: String) {
-        target.parentFile?.mkdirs()
-        val temporary = File(target.parentFile, "${target.name}.tmp")
+        val parentDir = target.parentFile?.apply { mkdirs() }
+        val temporary = File.createTempFile("${target.name}.", ".tmp", parentDir)
         temporary.writeText(content, Charsets.UTF_8)
-        if (target.exists() && !target.delete()) {
-            temporary.delete()
-            error("Không thể cập nhật cache AI")
-        }
-        if (!temporary.renameTo(target)) {
-            temporary.delete()
-            error("Không thể lưu cache AI")
+        try {
+            java.nio.file.Files.move(
+                temporary.toPath(),
+                target.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE
+            )
+        } catch (_: Exception) {
+            try {
+                java.nio.file.Files.move(
+                    temporary.toPath(),
+                    target.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                )
+            } catch (error: Exception) {
+                temporary.delete()
+                throw IllegalStateException("Không thể lưu cache AI", error)
+            }
         }
     }
 

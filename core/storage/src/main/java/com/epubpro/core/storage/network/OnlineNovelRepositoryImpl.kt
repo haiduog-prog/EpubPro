@@ -39,7 +39,7 @@ class OnlineNovelRepositoryImpl @Inject constructor(
      * Lấy danh sách tóm tắt tất cả các bộ truyện online từ server.
      */
     override suspend fun getNovels(): Result<List<OnlineNovelSummary>> = withContext(Dispatchers.IO) {
-        runCatching {
+        runCatchingCancellable {
             apiService.getNovels().map { dto ->
                 OnlineNovelSummary(
                     novelId = dto.novelId,
@@ -61,7 +61,7 @@ class OnlineNovelRepositoryImpl @Inject constructor(
      * Lấy chi tiết bộ truyện và danh sách chương từ server.
      */
     override suspend fun getNovelDetail(novelId: String): Result<OnlineNovelDetail> = withContext(Dispatchers.IO) {
-        runCatching {
+        runCatchingCancellable {
             val dto = apiService.getNovelDetail(novelId)
             OnlineNovelDetail(
                 novelId = dto.novelId,
@@ -92,7 +92,7 @@ class OnlineNovelRepositoryImpl @Inject constructor(
         chapterIndex: Int,
         version: String
     ): Result<OnlineChapterContent> = withContext(Dispatchers.IO) {
-        runCatching {
+        runCatchingCancellable {
             val dto = apiService.getChapterContent(
                 novelId = novelId,
                 chapterIndex = chapterIndex,
@@ -132,6 +132,8 @@ class OnlineNovelRepositoryImpl @Inject constructor(
             )
 
             if (response.code() == 416 && resumeOffset > 0) {
+                response.body()?.close()
+                response.errorBody()?.close()
                 FileOutputStream(targetFile).use { it.channel.truncate(0) }
                 resumeOffset = 0
                 response = apiService.downloadEpub(novelId = novelId, range = null)
@@ -139,6 +141,8 @@ class OnlineNovelRepositoryImpl @Inject constructor(
 
             val body = response.body()
             if (!response.isSuccessful || body == null) {
+                body?.close()
+                response.errorBody()?.close()
                 val responseCode = response.code()
                 val errorMsg = when (responseCode) {
                     502, 504 -> appContext.getString(
@@ -172,25 +176,27 @@ class OnlineNovelRepositoryImpl @Inject constructor(
 
             var lastProgressPercent = -1
             var lastProgressBytes = initialBytes
-            val downloadedBytes = storageManager.appendOnlineDownload(
-                inputStream = body.byteStream(),
-                targetFile = targetFile,
-                append = append,
-                initialBytes = initialBytes,
-                totalBytes = totalBytes
-            ) { downloaded, total ->
-                val percent = if (total != null && total > 0L) {
-                    (downloaded * 100L / total).toInt().coerceIn(0, 99)
-                } else {
-                    // Ước lượng tiến độ theo dung lượng nhận được khi server dùng Transfer-Encoding: chunked
-                    ((downloaded / (256 * 1024L)) * 5).toInt().coerceIn(1, 90)
-                }
-                val shouldEmit = percent != lastProgressPercent ||
-                    downloaded - lastProgressBytes >= PROGRESS_UPDATE_BYTES
-                if (shouldEmit) {
-                    lastProgressPercent = percent
-                    lastProgressBytes = downloaded
-                    emit(DownloadState.Downloading(percent, downloaded, total))
+            val downloadedBytes = body.use { responseBody ->
+                storageManager.appendOnlineDownload(
+                    inputStream = responseBody.byteStream(),
+                    targetFile = targetFile,
+                    append = append,
+                    initialBytes = initialBytes,
+                    totalBytes = totalBytes
+                ) { downloaded, total ->
+                    val percent = if (total != null && total > 0L) {
+                        (downloaded * 100L / total).toInt().coerceIn(0, 99)
+                    } else {
+                        // Ước lượng tiến độ theo dung lượng nhận được khi server dùng Transfer-Encoding: chunked
+                        ((downloaded / (256 * 1024L)) * 5).toInt().coerceIn(1, 90)
+                    }
+                    val shouldEmit = percent != lastProgressPercent ||
+                        downloaded - lastProgressBytes >= PROGRESS_UPDATE_BYTES
+                    if (shouldEmit) {
+                        lastProgressPercent = percent
+                        lastProgressBytes = downloaded
+                        emit(DownloadState.Downloading(percent, downloaded, total))
+                    }
                 }
             }
             emit(DownloadState.Downloading(100, downloadedBytes, totalBytes))
@@ -238,7 +244,7 @@ class OnlineNovelRepositoryImpl @Inject constructor(
         provider: String,
         model: String
     ): Result<TranslateChapterResult> = withContext(Dispatchers.IO) {
-        runCatching {
+        runCatchingCancellable {
             val dto = apiService.translateChapter(
                 novelId = novelId,
                 chapterIndex = chapterIndex,

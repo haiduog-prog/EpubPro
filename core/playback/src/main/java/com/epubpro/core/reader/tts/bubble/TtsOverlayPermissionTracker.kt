@@ -23,11 +23,13 @@ internal class TtsOverlayPermissionTracker(context: Context) : AutoCloseable {
     }
 
     init {
-        appOpsManager.startWatchingMode(
-            AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW,
-            appContext.packageName,
-            listener
-        )
+        runCatching {
+            appOpsManager?.startWatchingMode(
+                AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW,
+                appContext.packageName,
+                listener
+            )
+        }
     }
 
     fun refresh() {
@@ -35,7 +37,7 @@ internal class TtsOverlayPermissionTracker(context: Context) : AutoCloseable {
     }
 
     override fun close() {
-        runCatching { appOpsManager.stopWatchingMode(listener) }
+        runCatching { appOpsManager?.stopWatchingMode(listener) }
     }
 }
 

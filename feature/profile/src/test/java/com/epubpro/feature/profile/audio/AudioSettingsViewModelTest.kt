@@ -379,6 +379,7 @@ class AudioSettingsViewModelTest {
         val harness = buildHarness(
             initialSettings = TtsSettings(isAiVoice = false),
             isVieNeuSupported = true,
+            isVieNeuReady = true,
             initialSherpaDownloaded = setOf(sherpaId),
         )
         advanceUntilIdle()
@@ -401,6 +402,31 @@ class AudioSettingsViewModelTest {
         assertEquals(AiTtsBackend.VIENEU_NANO, harness.viewModel.uiState.value.selectedAiBackend)
         assertEquals(TtsVoiceCatalog.DEFAULT_VIENEU_VOICE_ID, harness.viewModel.uiState.value.selectedVoiceId)
         assertTrue(harness.viewModel.uiState.value.filteredAiVoices.all { it.backend == AiTtsBackend.VIENEU_NANO })
+    }
+
+    @Test
+    fun `unloaded VieNeu selection stays as UI draft until package download completes`() = runTest {
+        val harness = buildHarness(
+            initialSettings = TtsSettings(isAiVoice = false, voiceId = null),
+            isVieNeuSupported = true,
+            isVieNeuReady = false,
+        )
+        advanceUntilIdle()
+
+        harness.viewModel.onAiVoiceToggled(true)
+        advanceUntilIdle()
+
+        assertTrue(harness.viewModel.uiState.value.isAiVoice)
+        assertEquals(TtsVoiceCatalog.DEFAULT_VIENEU_VOICE_ID, harness.viewModel.uiState.value.selectedVoiceId)
+        assertFalse(harness.settingsFlow.value.isAiVoice)
+        assertNull(harness.settingsFlow.value.voiceId)
+
+        harness.runtimeManager.ready = true
+        harness.coordinator.emitState(FakeDownloadCoordinator.readyState(harness.downloader))
+        advanceUntilIdle()
+
+        assertTrue(harness.settingsFlow.value.isAiVoice)
+        assertEquals(TtsVoiceCatalog.DEFAULT_VIENEU_VOICE_ID, harness.settingsFlow.value.voiceId)
     }
 
     @Test

@@ -88,4 +88,50 @@ class EpubChapterMemoryCacheTest {
         assertNull(cache.get(dummyFingerprint, "c1.xhtml"))
         assertNull(cache.get(dummyFingerprint, "c2.xhtml"))
     }
+
+    @Test
+    fun `evictBook or clear during in-flight load prevents stale result from repopulating lruCache`() = runBlocking {
+        val deferredLoad = async {
+            cache.getOrLoad(dummyFingerprint, "c1.xhtml") {
+                delay(80)
+                "<p>Stale Content</p>"
+            }
+        }
+
+        delay(20)
+        cache.evictBook(dummyFingerprint.canonicalPath)
+
+        val loaded = deferredLoad.await()
+        assertEquals("<p>Stale Content</p>", loaded)
+        assertNull("Stale load must not write back after evictBook", cache.get(dummyFingerprint, "c1.xhtml"))
+    }
+
+    @Test
+    fun `waiter retries and loads successfully when primary in-flight loader is cancelled`() = runBlocking {
+        val loadCount = AtomicInteger(0)
+
+        val cancelledPrefetch = async {
+            cache.getOrLoad(dummyFingerprint, "c1.xhtml") {
+                loadCount.incrementAndGet()
+                delay(150)
+                "<p>Prefetch Content</p>"
+            }
+        }
+
+        delay(20)
+        val activeWaiter = async {
+            cache.getOrLoad(dummyFingerprint, "c1.xhtml") {
+                loadCount.incrementAndGet()
+                "<p>Waiter Loaded Content</p>"
+            }
+        }
+
+        delay(20)
+        cancelledPrefetch.cancel()
+
+        val result = activeWaiter.await()
+        assertEquals("<p>Waiter Loaded Content</p>", result)
+        assertEquals("<p>Waiter Loaded Content</p>", cache.get(dummyFingerprint, "c1.xhtml"))
+        assertEquals(2, loadCount.get())
+    }
 }

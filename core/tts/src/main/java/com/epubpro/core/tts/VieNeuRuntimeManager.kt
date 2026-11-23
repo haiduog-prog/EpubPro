@@ -2,7 +2,11 @@ package com.epubpro.core.tts
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -41,7 +45,11 @@ open class VieNeuRuntimeManager constructor(
     )
 
     private val lifecycleMutex = Mutex()
+    private val runtimeScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val catalogLock = Any()
+
+    @Volatile
+    private var pendingUnloadJob: Job? = null
 
     @Volatile
     private var cachedCatalog: VoiceCatalog? = null
@@ -169,6 +177,27 @@ open class VieNeuRuntimeManager constructor(
                 isCancelled = isCancelled,
             )
         }
+    }
+
+    /**
+     * Lập lịch giải phóng `VieNeuNanoEngine` và `SeaG2pEngine` ở nền dưới [lifecycleMutex] dùng chung,
+     * đồng thời lưu lại [Job] để các lần gọi [awaitPendingUnload] từ instance wrapper mới có thể đợi hoàn tất.
+     *
+     * @return [Job] thực hiện giải phóng tài nguyên.
+     */
+    open fun scheduleUnload(): Job {
+        val job = runtimeScope.launch {
+            unload()
+        }
+        pendingUnloadJob = job
+        return job
+    }
+
+    /**
+     * Đợi tác vụ giải phóng bất đồng bộ gần nhất (nếu có) hoàn tất trước khi nạp lại engine.
+     */
+    open suspend fun awaitPendingUnload() {
+        pendingUnloadJob?.join()
     }
 
     /**

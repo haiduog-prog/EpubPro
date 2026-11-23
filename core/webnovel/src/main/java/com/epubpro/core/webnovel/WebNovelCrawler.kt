@@ -141,12 +141,20 @@ class WebNovelCrawler(
         while (true) {
             try {
                 return fetch(url)
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
             } catch (error: WebFetchException) {
                 val status = error.statusCode
                 val transient = status == null || status == 429 || status >= 500
                 if (!transient || attempt >= maxRetries) return null
                 attempt++
-                delay(politeDelayMs * (1L shl attempt) * 2)
+                val shift = attempt.coerceIn(0, 10)
+                delay((politeDelayMs * (1L shl shift) * 2).coerceAtMost(60_000L))
+            } catch (_: java.io.IOException) {
+                if (attempt >= maxRetries) return null
+                attempt++
+                val shift = attempt.coerceIn(0, 10)
+                delay((politeDelayMs * (1L shl shift) * 2).coerceAtMost(60_000L))
             }
         }
     }

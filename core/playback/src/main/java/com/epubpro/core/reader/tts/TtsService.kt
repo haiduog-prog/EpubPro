@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.epubpro.core.designsystem.R
 import com.epubpro.core.designsystem.R as ReaderR
@@ -44,6 +45,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -84,7 +86,7 @@ class TtsService : Service() {
     lateinit var widgetStateStore: TtsWidgetStateStore
 
     private val binder = TtsBinder()
-    private val serviceJob = Job()
+    private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
 
     private lateinit var nativeTtsEngine: AndroidNativeTtsEngine
@@ -134,6 +136,14 @@ class TtsService : Service() {
     private var currentChunkStartPositionMs: Long = 0L
     private var currentTimelinePositionMs: Long = 0L
     private var playbackStartedAtElapsedRealtimeMs: Long? = null
+
+    private val chunkFailurePolicy = TtsChunkFailurePolicy()
+    private var chunkWatchdogJob: Job? = null
+    private var nativeFallbackForSession: Boolean = false
+    private var nativeFallbackChunkKey: ChunkKey? = null
+
+    /** Định danh một đoạn trong phiên phát, dùng cho chính sách chịu lỗi và fallback giọng hệ thống. */
+    private data class ChunkKey(val chapterIndex: Int, val chunkIndex: Int)
 
     override fun onCreate() {
         super.onCreate()
@@ -359,6 +369,7 @@ class TtsService : Service() {
         bubblePreferencesManager.beginNewPlaybackSession()
         invalidatePlayback()
         currentEngine.stop()
+        resetChunkFailureState()
         hasPlaybackStartedInSession = false
 
         bookId = id
@@ -382,6 +393,8 @@ class TtsService : Service() {
         chapterPreparation = serviceScope.async {
             runCatching {
                 chapterPlaybackCoordinator.prepare(bookId, preferAiContent)
+            }.onFailure { error ->
+                if (error is CancellationException) throw error
             }
         }
 
@@ -437,7 +450,9 @@ class TtsService : Service() {
             return
         }
 
-        currentEngine = engineFor(activeSettings)
+        currentEngine = engineForCurrentChunk()
+        applySettingsToEngines(activeSettings)
+        val engineIsAi = currentEngine !== nativeTtsEngine
         ensureEstimatedTimeline(activeSettings.speed)
         currentChunkStartPositionMs =
             estimatedChunkStartPositionsMs.getOrElse(currentIndex) { 0L }
@@ -473,6 +488,12 @@ class TtsService : Service() {
             isPlaying = true
         )
 
+        startChunkWatchdog(
+            playbackId = playbackId,
+            expectedChapterIndex = expectedChapterIndex,
+            expectedIndex = expectedIndex,
+            engineIsAi = engineIsAi
+        )
         currentEngine.speak(
             chunk = chunkToSpeak,
             onChunkStart = { startedChunkId ->
@@ -535,6 +556,9 @@ class TtsService : Service() {
                     ) {
                         return@launch
                     }
+                    chunkWatchdogJob?.cancel()
+                    chunkWatchdogJob = null
+                    chunkFailurePolicy.onChunkSucceeded(engineIsAi)
                     currentTimelinePositionMs =
                         estimatedChunkStartPositionsMs.getOrElse(currentIndex) { 0L } +
                             estimatedChunkDurationsMs.getOrElse(currentIndex) { 0L }
@@ -543,12 +567,135 @@ class TtsService : Service() {
             },
             onError = { message ->
                 serviceScope.launch {
-                    if (playbackId == playbackGeneration) {
-                        showPlaybackError(message)
-                    }
+                    handleChunkFailure(
+                        playbackId = playbackId,
+                        expectedChapterIndex = expectedChapterIndex,
+                        expectedIndex = expectedIndex,
+                        engineIsAi = engineIsAi,
+                        kind = TtsChunkFailureKind.ERROR,
+                        message = message
+                    )
                 }
             }
         )
+    }
+
+    /**
+     * Chọn engine cho đoạn hiện tại: giọng hệ thống khi phiên đang fallback hoặc đoạn này cần đọc
+     * thay, ngược lại dùng engine theo cấu hình người dùng.
+     *
+     * @return Engine sẽ phát đoạn tại [currentIndex].
+     */
+    private fun engineForCurrentChunk(): TtsEngine {
+        val key = ChunkKey(currentChapterIndex, currentIndex)
+        val nativeForThisChunk = nativeFallbackChunkKey == key
+        if (!nativeForThisChunk) nativeFallbackChunkKey = null
+        return if (nativeFallbackForSession || nativeForThisChunk) {
+            nativeTtsEngine
+        } else {
+            engineFor(activeSettings)
+        }
+    }
+
+    /**
+     * Khởi động watchdog cho đoạn vừa gửi cho engine. Nếu đoạn không hoàn tất trong thời hạn thì
+     * xử lý như một lỗi [TtsChunkFailureKind.TIMEOUT]. Watchdog bị huỷ trong [invalidatePlayback]
+     * (Pause, Stop, Next, đổi cấu hình) và khi đoạn hoàn tất.
+     *
+     * @param playbackId Generation của lượt phát để bỏ qua watchdog đã cũ.
+     * @param expectedChapterIndex Chương của đoạn đang phát.
+     * @param expectedIndex Chỉ số đoạn đang phát.
+     * @param engineIsAi `true` nếu đoạn phát bằng engine AI.
+     */
+    private fun startChunkWatchdog(
+        playbackId: Long,
+        expectedChapterIndex: Int,
+        expectedIndex: Int,
+        engineIsAi: Boolean
+    ) {
+        chunkWatchdogJob?.cancel()
+        val timeoutMs = TtsChunkFailurePolicy.timeoutMs(
+            estimatedChunkDurationMs = estimatedChunkDurationsMs.getOrElse(expectedIndex) {
+                MIN_CHUNK_DURATION_MS
+            },
+            engineIsAi = engineIsAi
+        )
+        chunkWatchdogJob = serviceScope.launch {
+            delay(timeoutMs)
+            chunkWatchdogJob = null
+            handleChunkFailure(
+                playbackId = playbackId,
+                expectedChapterIndex = expectedChapterIndex,
+                expectedIndex = expectedIndex,
+                engineIsAi = engineIsAi,
+                kind = TtsChunkFailureKind.TIMEOUT,
+                message = getString(R.string.tts_chunk_timeout_error)
+            )
+        }
+    }
+
+    /**
+     * Xử lý một đoạn phát lỗi hoặc quá hạn theo [TtsChunkFailurePolicy]: thử lại, đọc thay bằng
+     * giọng hệ thống, bỏ qua đoạn hoặc dừng phiên. Callback của lượt phát cũ bị bỏ qua.
+     *
+     * @param playbackId Generation của lượt phát phát sinh lỗi.
+     * @param expectedChapterIndex Chương của đoạn lỗi.
+     * @param expectedIndex Chỉ số đoạn lỗi.
+     * @param engineIsAi `true` nếu đoạn lỗi được phát bằng engine AI.
+     * @param kind Loại lỗi.
+     * @param message Thông điệp lỗi, chỉ hiển thị khi phiên phải dừng.
+     */
+    private fun handleChunkFailure(
+        playbackId: Long,
+        expectedChapterIndex: Int,
+        expectedIndex: Int,
+        engineIsAi: Boolean,
+        kind: TtsChunkFailureKind,
+        message: String
+    ) {
+        if (playbackId != playbackGeneration ||
+            currentChapterIndex != expectedChapterIndex ||
+            currentIndex != expectedIndex
+        ) {
+            return
+        }
+        val key = ChunkKey(expectedChapterIndex, expectedIndex)
+        val decision = chunkFailurePolicy.onChunkFailed(key, kind, engineIsAi)
+        Log.w(
+            TAG,
+            "Chunk failure kind=$kind ai=$engineIsAi decision=$decision " +
+                "chapter=$expectedChapterIndex index=$expectedIndex message=$message"
+        )
+        invalidatePlayback()
+        currentEngine.stop()
+        when (decision) {
+            TtsChunkFailureDecision.RETRY_SAME_ENGINE -> playCurrentChunk()
+            TtsChunkFailureDecision.NATIVE_FOR_THIS_CHUNK -> {
+                nativeFallbackChunkKey = key
+                playCurrentChunk()
+            }
+            TtsChunkFailureDecision.NATIVE_FOR_SESSION -> {
+                nativeFallbackForSession = true
+                nativeFallbackChunkKey = null
+                Toast.makeText(
+                    applicationContext,
+                    R.string.tts_ai_fallback_to_native,
+                    Toast.LENGTH_LONG
+                ).show()
+                playCurrentChunk()
+            }
+            TtsChunkFailureDecision.SKIP_CHUNK -> advancePastCurrentSentence()
+            TtsChunkFailureDecision.STOP_WITH_ERROR -> showPlaybackError(message)
+        }
+    }
+
+    /** Xoá trạng thái chịu lỗi và fallback giọng hệ thống của phiên trước. */
+    private fun resetChunkFailureState() {
+        chunkWatchdogJob?.cancel()
+        chunkWatchdogJob = null
+        chunkFailurePolicy.reset()
+        nativeFallbackForSession = false
+        nativeFallbackChunkKey = null
     }
 
     fun pause() {
@@ -715,6 +862,7 @@ class TtsService : Service() {
         currentEngine.stop()
         audioFocusController.abandonFocus()
         chapterPlaybackCoordinator.clear()
+        resetChunkFailureState()
 
         playbackStartedAtElapsedRealtimeMs = null
         pausedBySystem = false
@@ -1149,6 +1297,9 @@ class TtsService : Service() {
         sampleText: String = "Xin chào, đây là giọng đọc thử nghiệm của ứng dụng EpubPro.",
         settings: TtsSettings
     ) {
+        if (isPlaybackRunning()) {
+            pause()
+        }
         val normalized = settings.normalizedForPlayback()
         val testEngine = engineFor(normalized)
         testEngine.setLanguage(normalized.language)
@@ -1166,8 +1317,8 @@ class TtsService : Service() {
         testEngine.speak(
             chunk = TtsChunk(id = PREVIEW_CHUNK_ID, paragraphIndex = 0, text = sampleText),
             onChunkStart = {},
-            onChunkDone = {},
-            onError = {}
+            onChunkDone = { applySettingsToEngines(activeSettings) },
+            onError = { applySettingsToEngines(activeSettings) }
         )
     }
 
@@ -1183,6 +1334,8 @@ class TtsService : Service() {
 
         invalidatePlayback()
         currentEngine.stop()
+        // Người dùng vừa đổi cấu hình: bỏ fallback cũ để thử lại đúng engine đã chọn.
+        resetChunkFailureState()
         activeSettings = normalized
         applySettingsToEngines(normalized)
         currentEngine = engineFor(normalized)
@@ -1288,8 +1441,10 @@ class TtsService : Service() {
             }
         if (navigationGeneration != playbackGeneration) return
         if (preparationResult.isFailure) {
+            val error = preparationResult.exceptionOrNull()
+            if (error is CancellationException) throw error
             showPlaybackError(
-                preparationResult.exceptionOrNull()?.message
+                error?.message
                     ?: "Không thể chuẩn bị chương kế tiếp"
             )
             return
@@ -1302,6 +1457,7 @@ class TtsService : Service() {
             }
             if (navigationGeneration != playbackGeneration) return
             val nextChapter = nextChapterResult.getOrElse { error ->
+                if (error is CancellationException) throw error
                 showPlaybackError(error.message ?: "Không thể tải chương kế tiếp")
                 return
             }
@@ -1353,8 +1509,10 @@ class TtsService : Service() {
             }
         if (navigationGeneration != playbackGeneration) return
         if (preparationResult.isFailure) {
+            val error = preparationResult.exceptionOrNull()
+            if (error is CancellationException) throw error
             showPlaybackError(
-                preparationResult.exceptionOrNull()?.message
+                error?.message
                     ?: "Không thể chuẩn bị chương trước"
             )
             return
@@ -1367,6 +1525,7 @@ class TtsService : Service() {
             }
             if (navigationGeneration != playbackGeneration) return
             val previousChapter = previousChapterResult.getOrElse { error ->
+                if (error is CancellationException) throw error
                 showPlaybackError(error.message ?: "Không thể tải chương trước")
                 return
             }
@@ -2134,6 +2293,8 @@ class TtsService : Service() {
 
     private fun invalidatePlayback() {
         playbackGeneration++
+        chunkWatchdogJob?.cancel()
+        chunkWatchdogJob = null
         notificationProgressJob?.cancel()
         notificationProgressJob = null
         snapshotRestoreJob?.cancel()

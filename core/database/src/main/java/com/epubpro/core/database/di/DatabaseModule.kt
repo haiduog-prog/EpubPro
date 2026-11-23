@@ -37,7 +37,7 @@ object DatabaseModule {
             MIGRATION_5_6,
             MIGRATION_6_7,
             MIGRATION_7_8
-        ).build()
+        ).fallbackToDestructiveMigrationFrom(1).build()
     }
 
     @Provides

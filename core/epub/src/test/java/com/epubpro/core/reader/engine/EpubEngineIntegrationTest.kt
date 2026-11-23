@@ -9,7 +9,9 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.mockito.Mockito.mock
+import org.mockito.Mockito.`when`
 import java.io.File
+import java.nio.file.Files
 
 class EpubEngineIntegrationTest {
 
@@ -22,6 +24,10 @@ class EpubEngineIntegrationTest {
     @Before
     fun setUp() {
         mockContext = mock(Context::class.java)
+        val tempFilesDir = Files.createTempDirectory("epub_test_files").toFile().apply {
+            deleteOnExit()
+        }
+        `when`(mockContext.filesDir).thenReturn(tempFilesDir)
         epubEngine = EpubEngine(mockContext)
     }
 

@@ -135,6 +135,15 @@ class EpubWriterAndCrawlerTest {
         assertEquals(CrawlStopReason.LIMIT_REACHED, result.stoppedReason)
     }
 
+    /** Giải mã đúng HTML GBK khi header `Content-Type` bọc `charset="gbk"` trong dấu ngoặc kép hoặc có khoảng trắng. */
+    @Test
+    fun htmlCharsetDecoderHandlesQuotedAndSpacedCharsetInHeader() {
+        val text = "第一章 开始"
+        val gbkBytes = text.toByteArray(java.nio.charset.Charset.forName("GBK"))
+        assertEquals(text, HtmlCharsetDecoder.decode(gbkBytes, "text/html; charset=\"gbk\""))
+        assertEquals(text, HtmlCharsetDecoder.decode(gbkBytes, "text/html; charset = 'gb2312'"))
+    }
+
     /**
      * Tạo HTML chương giả có liên kết chương sau.
      *

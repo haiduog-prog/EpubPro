@@ -59,6 +59,31 @@ class ComicCbzWriterTest {
         assertTrue(ComicCbzWriter.imageExtension(ByteArray(0)) == null)
     }
 
+    /** Ghi đè trực tiếp khi `target == existing` vẫn giữ nguyên chương cũ và bỏ qua entry trùng tên. */
+    @Test
+    fun writeInPlaceWhenTargetEqualsExistingAndSkipsDuplicateEntries() {
+        val archiveFile = File(dir, "inplace.cbz")
+        ComicCbzWriter.write(archiveFile, null, listOf(chapter("Chương 1", 2)), 1, "Truyện A", "https://a.com/c1")
+
+        // Ghi đè in-place (target == existing), đồng thời truyền chương trùng tên thư mục/trang và chương mới
+        ComicCbzWriter.write(
+            target = archiveFile,
+            existing = archiveFile,
+            chapters = listOf(chapter("Chương 1", 2), chapter("Chương 2", 1)),
+            startChapterNumber = 1,
+            title = "Truyện A",
+            sourceUrl = "https://a.com/c1"
+        )
+
+        ZipFile(archiveFile).use { zip ->
+            assertEquals(
+                listOf("0001 Chương 1/0001.jpg", "0001 Chương 1/0002.jpg", "0002 Chương 2/0001.jpg"),
+                ComicArchiveEntries.listPages(zip)
+            )
+            assertEquals(1, zip.entries().asSequence().count { it.name == "ComicInfo.xml" })
+        }
+    }
+
     /**
      * Tạo chương giả với các file ảnh JPEG tối thiểu.
      *

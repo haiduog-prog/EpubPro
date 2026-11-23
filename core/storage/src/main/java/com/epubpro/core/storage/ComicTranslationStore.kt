@@ -131,13 +131,31 @@ class ComicTranslationStore @Inject constructor(
             )
         }
         val file = pageFile(bookId, pageIndex, language, engine)
-        file.parentFile?.mkdirs()
-        val temporary = File(file.parentFile, "${file.name}.tmp")
-        temporary.writeText(array.toString(), Charsets.UTF_8)
-        if (!temporary.renameTo(file)) {
-            file.delete()
-            temporary.renameTo(file)
+        val parentDir = file.parentFile ?: cacheRoot
+        parentDir.mkdirs()
+        val temporary = File.createTempFile("${file.name}.", ".tmp", parentDir)
+        try {
+            temporary.writeText(array.toString(), Charsets.UTF_8)
+            try {
+                java.nio.file.Files.move(
+                    temporary.toPath(),
+                    file.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE
+                )
+            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                java.nio.file.Files.move(
+                    temporary.toPath(),
+                    file.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                )
+            }
+        } finally {
+            if (temporary.exists()) {
+                temporary.delete()
+            }
         }
+        Unit
     }
 
     /**

@@ -39,7 +39,29 @@ interface BookDao {
     suspend fun updateBook(book: BookEntity): Int
 
     @Query("DELETE FROM books WHERE id = :id")
-    suspend fun deleteBook(id: String)
+    suspend fun deleteBookRecord(id: String)
+
+    @Query("DELETE FROM reading_progress WHERE bookId = :bookId")
+    suspend fun deleteReadingProgressByBookId(bookId: String)
+
+    @Query("DELETE FROM bookmarks WHERE bookId = :bookId")
+    suspend fun deleteBookmarksByBookId(bookId: String)
+
+    @Query("DELETE FROM highlights WHERE bookId = :bookId")
+    suspend fun deleteHighlightsByBookId(bookId: String)
+
+    /**
+     * Xóa bản ghi sách cùng toàn bộ dữ liệu phụ thuộc (`reading_progress`, `bookmarks`, `highlights`) trong một transaction.
+     *
+     * @param id Mã định danh sách cần xóa.
+     */
+    @Transaction
+    suspend fun deleteBook(id: String) {
+        deleteReadingProgressByBookId(id)
+        deleteBookmarksByBookId(id)
+        deleteHighlightsByBookId(id)
+        deleteBookRecord(id)
+    }
 
     @Query("UPDATE books SET lastReadAt = :timestamp WHERE id = :id")
     suspend fun updateLastRead(id: String, timestamp: Long)
@@ -80,8 +102,9 @@ interface BookDao {
     @Transaction
     suspend fun saveProgressAndLastRead(progress: ReadingProgressEntity) {
         val previous = getReadingProgressDirect(progress.bookId)
+        val baseTimestamp = if (progress.updatedAt > 0L) progress.updatedAt else System.currentTimeMillis()
         val nextTimestamp = maxOf(
-            progress.updatedAt,
+            baseTimestamp,
             if (previous?.updatedAt == Long.MAX_VALUE) Long.MAX_VALUE else (previous?.updatedAt ?: 0L) + 1L
         )
         val updatedProgress = progress.copy(updatedAt = nextTimestamp)

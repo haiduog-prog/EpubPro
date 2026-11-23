@@ -1,8 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
@@ -20,7 +18,7 @@
         android:usesCleartextTraffic="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
-        android:label="EpubPro"
+        android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.EpubPro">
 
@@ -93,6 +91,14 @@
                 <data android:pathPattern=".*\\..*\\..*\\.EPUB" />
                 <data android:pathPattern=".*\\..*\\..*\\..*\\.epub" />
                 <data android:pathPattern=".*\\..*\\..*\\..*\\.EPUB" />
+                <data android:pathPattern=".*\\.cbz" />
+                <data android:pathPattern=".*\\.CBZ" />
+                <data android:pathPattern=".*\\..*\\.cbz" />
+                <data android:pathPattern=".*\\..*\\.CBZ" />
+                <data android:pathPattern=".*\\..*\\..*\\.cbz" />
+                <data android:pathPattern=".*\\..*\\..*\\.CBZ" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\.cbz" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\.CBZ" />
                 <data android:pathSuffix=".epub" />
                 <data android:pathSuffix=".EPUB" />
                 <data android:pathSuffix=".cbz" />
@@ -115,6 +121,14 @@
                 <data android:pathPattern=".*\\..*\\..*\\.EPUB" />
                 <data android:pathPattern=".*\\..*\\..*\\..*\\.epub" />
                 <data android:pathPattern=".*\\..*\\..*\\..*\\.EPUB" />
+                <data android:pathPattern=".*\\.cbz" />
+                <data android:pathPattern=".*\\.CBZ" />
+                <data android:pathPattern=".*\\..*\\.cbz" />
+                <data android:pathPattern=".*\\..*\\.CBZ" />
+                <data android:pathPattern=".*\\..*\\..*\\.cbz" />
+                <data android:pathPattern=".*\\..*\\..*\\.CBZ" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\.cbz" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\.CBZ" />
                 <data android:pathSuffix=".epub" />
                 <data android:pathSuffix=".EPUB" />
                 <data android:pathSuffix=".cbz" />

@@ -43,6 +43,10 @@ class VieNeuTtsEngineWrapperTest {
     ) {
         val preparedCount = AtomicInteger(0)
         val synthCount = AtomicInteger(0)
+        val unloadCount = AtomicInteger(0)
+        val ensureLoadedCount = AtomicInteger(0)
+        val eventOrder = mutableListOf<String>()
+        var unloadGate: CompletableDeferred<Unit>? = null
         @Volatile
         var failFirstSynth: Boolean = false
         @Volatile
@@ -66,7 +70,20 @@ class VieNeuTtsEngineWrapperTest {
 
         override suspend fun resolveVoice(voiceIdOrName: String?): VieNeuNanoVoice = sampleVoice
 
-        override suspend fun ensureLoaded(threads: Int) = Unit
+        override suspend fun ensureLoaded(threads: Int) {
+            ensureLoadedCount.incrementAndGet()
+            synchronized(eventOrder) {
+                eventOrder += "ensureLoaded"
+            }
+        }
+
+        override suspend fun unload() {
+            unloadGate?.await()
+            unloadCount.incrementAndGet()
+            synchronized(eventOrder) {
+                eventOrder += "unload"
+            }
+        }
 
         override suspend fun prepareChunks(text: String, threads: Int, maxChars: Int): List<PreparedChunk> {
             preparedCount.incrementAndGet()
@@ -346,6 +363,39 @@ class VieNeuTtsEngineWrapperTest {
         assertEquals(42, startedId)
         assertEquals(42, doneId)
         assertEquals(2, runtime.synthCount.get())
+    }
+
+    @Test
+    fun `shutdown followed immediately by initialize waits for unload and preserves ready state`() {
+        val gate = CompletableDeferred<Unit>()
+        val runtime = FakeRuntimeManager().apply { unloadGate = gate }
+        val wrapper = VieNeuTtsEngineWrapper(runtime, FakePcmPlayer(), testDispatcher)
+
+        val firstReady = CountDownLatch(1)
+        wrapper.initialize(onReady = { firstReady.countDown() }, onError = {})
+        assertTrue(firstReady.await(5, TimeUnit.SECONDS))
+
+        wrapper.shutdown()
+        val secondWrapper = VieNeuTtsEngineWrapper(runtime, FakePcmPlayer(), testDispatcher)
+        val secondReady = CountDownLatch(1)
+        var reinitError: String? = null
+        secondWrapper.initialize(
+            onReady = { secondReady.countDown() },
+            onError = { reinitError = it },
+        )
+
+        gate.complete(Unit)
+        assertTrue("Re-initialize after shutdown did not complete", secondReady.await(5, TimeUnit.SECONDS))
+        assertNull(reinitError)
+        assertEquals(listOf("ensureLoaded", "unload", "ensureLoaded"), runtime.eventOrder)
+
+        val doneLatch = CountDownLatch(1)
+        secondWrapper.speak(
+            chunk = TtsChunk(id = 99, paragraphIndex = 0, text = "Phát lại sau khi khởi tạo lại."),
+            onChunkStart = {},
+            onChunkDone = { doneLatch.countDown() },
+        )
+        assertTrue(doneLatch.await(5, TimeUnit.SECONDS))
     }
 
     private fun awaitDispatcherIdle() = runBlocking(testDispatcher) {}

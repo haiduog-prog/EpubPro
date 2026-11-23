@@ -143,24 +143,26 @@ class EpubStructureCache @Inject constructor(
     }
 
     private fun writeAtomically(target: File, content: String) {
-        target.parentFile?.mkdirs()
-        val tempFile = File(target.parentFile, "${target.name}.tmp")
-        tempFile.writeText(content, Charsets.UTF_8)
+        val parentDir = target.parentFile?.apply { mkdirs() }
+        val tempFile = File.createTempFile("${target.name}.", ".tmp", parentDir)
         try {
-            java.nio.file.Files.move(
-                tempFile.toPath(),
-                target.toPath(),
-                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                java.nio.file.StandardCopyOption.ATOMIC_MOVE
-            )
-        } catch (e: Exception) {
+            tempFile.writeText(content, Charsets.UTF_8)
             try {
+                java.nio.file.Files.move(
+                    tempFile.toPath(),
+                    target.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE
+                )
+            } catch (e: Exception) {
                 java.nio.file.Files.move(
                     tempFile.toPath(),
                     target.toPath(),
                     java.nio.file.StandardCopyOption.REPLACE_EXISTING
                 )
-            } catch (fallbackEx: Exception) {
+            }
+        } finally {
+            if (tempFile.exists()) {
                 tempFile.delete()
             }
         }
