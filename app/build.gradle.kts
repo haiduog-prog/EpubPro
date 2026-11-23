@@ -93,6 +93,7 @@ dependencies {
     implementation(project(":core:designsystem"))
     implementation(project(":core:database"))
     implementation(project(":core:storage"))
+    implementation(project(":core:book-converter"))
     implementation(project(":core:playback"))
     implementation(project(":core:ai"))
 

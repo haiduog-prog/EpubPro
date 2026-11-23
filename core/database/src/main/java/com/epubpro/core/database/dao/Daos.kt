@@ -20,7 +20,13 @@ interface BookDao {
     @Query("SELECT * FROM books")
     suspend fun getAllBooksDirect(): List<BookEntity>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    /**
+     * Thêm mới hoặc cập nhật metadata sách tại chỗ mà không xóa bản ghi cũ,
+     * tránh kích hoạt `ON DELETE CASCADE` lên các bảng phụ thuộc như `ai_rules` và `ai_chapter_cache`.
+     *
+     * @param book Thông tin sách cần lưu.
+     */
+    @Upsert
     suspend fun insertBook(book: BookEntity)
 
     /**

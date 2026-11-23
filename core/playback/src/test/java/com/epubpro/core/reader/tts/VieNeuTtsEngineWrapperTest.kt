@@ -44,6 +44,8 @@ class VieNeuTtsEngineWrapperTest {
         val preparedCount = AtomicInteger(0)
         val synthCount = AtomicInteger(0)
         @Volatile
+        var failFirstSynth: Boolean = false
+        @Volatile
         var lastConfig: String = ""
         var customChunksProvider: ((String) -> List<PreparedChunk>)? = null
 
@@ -83,7 +85,10 @@ class VieNeuTtsEngineWrapperTest {
             seed: Long?,
             isCancelled: () -> Boolean,
         ): FloatArray {
-            synthCount.incrementAndGet()
+            val attempt = synthCount.incrementAndGet()
+            if (failFirstSynth && attempt == 1) {
+                throw IllegalStateException("Transient prefetch ONNX failure")
+            }
             lastConfig = "$steps/$cfg/$sway/$speed/$threads"
             return FloatArray(480) { 0.25f }
         }
@@ -305,6 +310,42 @@ class VieNeuTtsEngineWrapperTest {
             testDispatcher,
         )
         assertTrue(unsupportedWrapper.getAvailableVoices("vi").isEmpty())
+    }
+
+    @Test
+    fun `speak falls back to synthesis instead of hanging when matching prefetch failed`() {
+        val runtime = FakeRuntimeManager().apply { failFirstSynth = true }
+        val wrapper = VieNeuTtsEngineWrapper(runtime, FakePcmPlayer(), testDispatcher)
+        val readyLatch = CountDownLatch(1)
+        wrapper.initialize(onReady = { readyLatch.countDown() }, onError = {})
+        assertTrue(readyLatch.await(5, TimeUnit.SECONDS))
+
+        val chunk = TtsChunk(id = 42, paragraphIndex = 0, text = "Câu bị lỗi lúc prefetch.")
+        wrapper.prefetch(chunk)
+        awaitDispatcherIdle()
+
+        val doneLatch = CountDownLatch(1)
+        var startedId: Int? = null
+        var doneId: Int? = null
+        var error: String? = null
+        wrapper.speak(
+            chunk = chunk,
+            onChunkStart = { startedId = it },
+            onChunkDone = {
+                doneId = it
+                doneLatch.countDown()
+            },
+            onError = {
+                error = it
+                doneLatch.countDown()
+            },
+        )
+
+        assertTrue("Speak hung after failed prefetch", doneLatch.await(5, TimeUnit.SECONDS))
+        assertNull(error)
+        assertEquals(42, startedId)
+        assertEquals(42, doneId)
+        assertEquals(2, runtime.synthCount.get())
     }
 
     private fun awaitDispatcherIdle() = runBlocking(testDispatcher) {}

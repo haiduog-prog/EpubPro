@@ -18,6 +18,8 @@ import com.google.gson.reflect.TypeToken
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChangedBy
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
@@ -125,16 +127,35 @@ class BookBibleRepositoryImpl @Inject constructor(
     override fun observeSnapshot(
         source: BookBibleSource,
         chapterNumber: Int
-    ): Flow<BookBibleSnapshot?> {
-        return bookBibleDao.observeSnapshotByLocalSource(source.uniqueKey, chapterNumber)
-            .map { entity ->
+    ): Flow<BookBibleSnapshot?> = flow {
+        var lastTouchedSnapshotId: String? = null
+        bookBibleDao.observeSnapshotByLocalSource(source.uniqueKey, chapterNumber)
+            .distinctUntilChangedBy { entity ->
                 entity?.let {
-                    bookBibleDao.updateSnapshotLastAccessed(it.id)
-                    mapEntityToDomainSnapshot(it)
+                    listOf(
+                        it.id,
+                        it.editionId,
+                        it.canonicalChapter,
+                        it.status,
+                        it.coverageJson,
+                        it.payloadJson,
+                        it.revision,
+                        it.updatedAt
+                    )
                 }
             }
-            .flowOn(Dispatchers.IO)
-    }
+            .collect { entity ->
+                emit(
+                    entity?.let {
+                        if (lastTouchedSnapshotId != it.id) {
+                            lastTouchedSnapshotId = it.id
+                            bookBibleDao.updateSnapshotLastAccessed(it.id)
+                        }
+                        mapEntityToDomainSnapshot(it)
+                    }
+                )
+            }
+    }.flowOn(Dispatchers.IO)
 
     /**
      * Quan sát danh sách tiến trình Book Bible đã được lưu trong Room để màn hình cấp ứng dụng có thể duyệt truyện offline.

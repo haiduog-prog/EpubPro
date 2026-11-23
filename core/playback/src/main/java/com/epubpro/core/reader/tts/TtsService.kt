@@ -11,6 +11,7 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.epubpro.core.designsystem.R
 import com.epubpro.core.designsystem.R as ReaderR
@@ -204,9 +205,13 @@ class TtsService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val startedAsForeground = intent?.getBooleanExtra(EXTRA_STARTED_AS_FOREGROUND, false) == true
         when (intent?.action) {
             null,
-            ACTION_SYNC_BUBBLE -> syncBubbleLifecycle()
+            ACTION_SYNC_BUBBLE -> syncBubbleLifecycle(
+                startedAsForeground = startedAsForeground,
+                startId = startId
+            )
             ACTION_START_SESSION -> Unit
             TtsPlaybackNotificationManager.ACTION_PLAY -> resume()
             TtsPlaybackNotificationManager.ACTION_PAUSE -> pause()
@@ -229,7 +234,7 @@ class TtsService : Service() {
         if (playbackSnapshotStore.getSnapshot() == null &&
             _playerState.value is TtsPlayerState.Idle
         ) {
-            stopSelf(startId)
+            stopSelfAfterForegroundStart(startId)
             return
         }
         startedSession = true
@@ -238,7 +243,7 @@ class TtsService : Service() {
 
     private fun handleWidgetPrevious(startId: Int) {
         if (playbackSnapshotStore.getSnapshot() == null && chunks.isEmpty()) {
-            stopSelf(startId)
+            stopSelfAfterForegroundStart(startId)
             return
         }
         startedSession = true
@@ -247,7 +252,7 @@ class TtsService : Service() {
 
     private fun handleWidgetNext(startId: Int) {
         if (playbackSnapshotStore.getSnapshot() == null && chunks.isEmpty()) {
-            stopSelf(startId)
+            stopSelfAfterForegroundStart(startId)
             return
         }
         startedSession = true
@@ -256,13 +261,14 @@ class TtsService : Service() {
 
     private fun handleReadingWidgetMove(startId: Int, relativeMove: Int) {
         if (playbackSnapshotStore.getSnapshot() == null) {
-            stopSelf(startId)
+            stopSelfAfterForegroundStart(startId)
             return
         }
         if (!playbackNotificationManager.isForeground) {
             showForegroundNotification(
                 text = currentNotificationText(),
-                isPlaying = false
+                isPlaying = false,
+                requireFallbackServiceType = true
             )
         }
         latestReadingWidgetStartId = startId
@@ -650,7 +656,6 @@ class TtsService : Service() {
 
     /** Tiếp tục phiên phát đang dừng, quá trình tải chương hoặc snapshot phát gần nhất đã lưu. */
     fun resume() {
-        if (pausedBySystem) return
         pausedBySystem = false
         when (_playerState.value) {
             TtsPlayerState.Loading -> resumeChapterTransition()
@@ -1563,12 +1568,17 @@ class TtsService : Service() {
     private fun ensureStartedSession() {
         if (startedSession) return
         startedSession = true
-        ContextCompat.startForegroundService(
-            applicationContext,
-            Intent(applicationContext, TtsService::class.java).apply {
-                action = ACTION_START_SESSION
-            }
-        )
+        try {
+            ContextCompat.startForegroundService(
+                applicationContext,
+                Intent(applicationContext, TtsService::class.java).apply {
+                    action = ACTION_START_SESSION
+                }
+            )
+        } catch (error: IllegalStateException) {
+            startedSession = false
+            Log.w(TAG, "Không thể gọi startForegroundService khi đang ở nền: ${error.message}")
+        }
     }
 
     private fun handleBubbleInteraction() {
@@ -1695,7 +1705,16 @@ class TtsService : Service() {
         stopSelf()
     }
 
-    private fun syncBubbleLifecycle() {
+    /**
+     * Đồng bộ vòng đời bubble nổi và notification foreground theo trạng thái hiện tại.
+     *
+     * @param startedAsForeground `true` nếu yêu cầu vừa đến từ `startForegroundService()`.
+     * @param startId Mã `startId` của lần gọi `onStartCommand`, dùng khi dừng service an toàn.
+     */
+    private fun syncBubbleLifecycle(
+        startedAsForeground: Boolean = false,
+        startId: Int? = null
+    ) {
         if (!::bubbleRuntime.isInitialized) return
         bubbleRuntime.refreshEnvironment()
         if (bubbleRuntime.isBubbleAvailable()) {
@@ -1720,9 +1739,39 @@ class TtsService : Service() {
                     isPlaying = isPlaybackRunning()
                 )
             }
+        } else if (startedAsForeground) {
+            stopSelfAfterForegroundStart(startId)
         } else {
             stopForegroundAndRemove()
             startedSession = false
+            stopSelf()
+        }
+    }
+
+    /**
+     * Đảm bảo hoàn tất hợp đồng `startForeground()` trước khi `stopSelf()` cho các lệnh đến từ
+     * `startForegroundService()` nhằm tránh crash `ForegroundServiceDidNotStartInTimeException`.
+     *
+     * @param startId Mã `startId` cần dừng, hoặc `null` để dừng toàn bộ service.
+     */
+    private fun stopSelfAfterForegroundStart(startId: Int? = null) {
+        if (!playbackNotificationManager.isForeground) {
+            playbackNotificationManager.showOrUpdate(
+                model = TtsPlaybackNotificationModel(
+                    bookTitle = bookTitle,
+                    currentSnippet = currentNotificationText(),
+                    isPlaying = false,
+                    openIntent = createOpenBookPendingIntent()
+                ),
+                serviceTypes = requiredForegroundServiceTypes(requireFallbackServiceType = true),
+                forceRestart = false
+            )
+        }
+        stopForegroundAndRemove()
+        startedSession = false
+        if (startId != null) {
+            stopSelf(startId)
+        } else {
             stopSelf()
         }
     }
@@ -1739,11 +1788,18 @@ class TtsService : Service() {
     /**
      * Chuyển việc hiển thị notification cho [TtsPlaybackNotificationManager] và dùng luồng dừng an
      * toàn hiện có nếu Android từ chối đưa service lên foreground.
+     *
+     * @param text Đoạn nội dung ngắn hiển thị trên notification.
+     * @param isPlaying `true` nếu phiên đọc đang phát.
+     * @param forceForegroundEpisodeRestart `true` nếu cần khởi động lại phiên foreground notification.
+     * @param requireFallbackServiceType `true` khi service bắt buộc phải promote foreground và cần
+     * fallback sang `FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK` nếu chưa có loại phù hợp.
      */
     private fun showForegroundNotification(
         text: String,
         isPlaying: Boolean,
-        forceForegroundEpisodeRestart: Boolean = false
+        forceForegroundEpisodeRestart: Boolean = false,
+        requireFallbackServiceType: Boolean = false
     ) {
         val updated = playbackNotificationManager.showOrUpdate(
             model = TtsPlaybackNotificationModel(
@@ -1752,7 +1808,9 @@ class TtsService : Service() {
                 isPlaying = isPlaying,
                 openIntent = createOpenBookPendingIntent()
             ),
-            serviceTypes = requiredForegroundServiceTypes(),
+            serviceTypes = requiredForegroundServiceTypes(
+                requireFallbackServiceType = requireFallbackServiceType
+            ),
             forceRestart = forceForegroundEpisodeRestart
         )
         if (updated) {
@@ -1790,7 +1848,14 @@ class TtsService : Service() {
         stopSelf()
     }
 
-    private fun requiredForegroundServiceTypes(): Int {
+    /**
+     * Tính toán bitmask foreground service type phù hợp cho Android 10–14+.
+     *
+     * @param requireFallbackServiceType `true` nếu service đang cần promote foreground ngay cả khi
+     * ở trạng thái `Idle` và không dùng bubble (ví dụ xử lý lệnh Reading Widget).
+     * @return Tập cờ `ServiceInfo.FOREGROUND_SERVICE_TYPE_*`.
+     */
+    private fun requiredForegroundServiceTypes(requireFallbackServiceType: Boolean = false): Int {
         var serviceTypes = 0
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && requiresMediaPlaybackType()) {
             serviceTypes = serviceTypes or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
@@ -1799,6 +1864,12 @@ class TtsService : Service() {
             bubbleRuntime.isBubbleAvailable()
         ) {
             serviceTypes = serviceTypes or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+            serviceTypes == 0 &&
+            requireFallbackServiceType
+        ) {
+            serviceTypes = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
         }
         return serviceTypes
     }
@@ -2230,6 +2301,7 @@ class TtsService : Service() {
     }
 
     companion object {
+        private const val TAG = "TtsService"
         const val ACTION_WIDGET_PLAY_PAUSE = "com.epubpro.tts.ACTION_WIDGET_PLAY_PAUSE"
         const val ACTION_WIDGET_PREVIOUS = "com.epubpro.tts.ACTION_WIDGET_PREVIOUS"
         const val ACTION_WIDGET_NEXT = "com.epubpro.tts.ACTION_WIDGET_NEXT"
@@ -2237,6 +2309,7 @@ class TtsService : Service() {
         const val ACTION_WIDGET_READING_NEXT = "com.epubpro.tts.ACTION_WIDGET_READING_NEXT"
         private const val ACTION_START_SESSION = "com.epubpro.tts.ACTION_START_SESSION"
         private const val ACTION_SYNC_BUBBLE = "com.epubpro.tts.ACTION_SYNC_BUBBLE"
+        private const val EXTRA_STARTED_AS_FOREGROUND = "com.epubpro.tts.EXTRA_STARTED_AS_FOREGROUND"
         private const val PREVIEW_CHUNK_ID = 9999
         private const val OPEN_BOOK_REQUEST_CODE = 2002
         private const val MAX_COVER_SIZE_PX = 128
@@ -2261,9 +2334,16 @@ class TtsService : Service() {
             val appContext = context.applicationContext
             val intent = Intent(appContext, TtsService::class.java).apply {
                 action = ACTION_SYNC_BUBBLE
+                putExtra(EXTRA_STARTED_AS_FOREGROUND, enabled)
             }
             if (enabled) {
-                ContextCompat.startForegroundService(appContext, intent)
+                try {
+                    ContextCompat.startForegroundService(appContext, intent)
+                } catch (error: IllegalStateException) {
+                    Log.w(TAG, "Không thể bật bubble qua startForegroundService khi ở nền: ${error.message}")
+                    intent.putExtra(EXTRA_STARTED_AS_FOREGROUND, false)
+                    runCatching { appContext.startService(intent) }
+                }
             } else {
                 runCatching { appContext.startService(intent) }
             }

@@ -19,16 +19,28 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.io.FileNotFoundException
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.ReentrantLock
 import javax.inject.Inject
+import kotlin.concurrent.withLock
 import kotlin.coroutines.coroutineContext
 
 open class SherpaTtsEngine @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
+    @Volatile
     private var tts: OfflineTts? = null
+
+    @Volatile
     private var audioTrack: AudioTrack? = null
+
+    @Volatile
     private var currentSampleRate: Int = 22050
+
     private val synthesisMutex = Mutex()
+    private val ttsLock = ReentrantLock()
+    private val audioWriteLock = Any()
+    private val playbackEpoch = AtomicLong(0L)
 
     companion object {
         private const val TAG = "EpubProTTS"
@@ -42,7 +54,7 @@ open class SherpaTtsEngine @Inject constructor(
         tokensPath: String = "",
         lexiconPath: String = "",
         dataDirPath: String = ""
-    ) = withContext(Dispatchers.IO) {
+    ): Unit = withContext(Dispatchers.IO) {
         Log.d(TAG, "initialize() onnx=$onnxPath dataDirPath=$dataDirPath")
         release()
 
@@ -70,7 +82,7 @@ open class SherpaTtsEngine @Inject constructor(
             val modelConfig = OfflineTtsModelConfig()
             modelConfig.vits = vitsConfig
             modelConfig.numThreads = 2
-            modelConfig.debug = true
+            modelConfig.debug = false
 
             val ttsConfig = OfflineTtsConfig()
             ttsConfig.model = modelConfig
@@ -79,37 +91,46 @@ open class SherpaTtsEngine @Inject constructor(
             ttsConfig.maxNumSentences = 1
 
             Log.d(TAG, "Creating OfflineTts with dataDir='$dataDirPath'")
-            tts = OfflineTts(assetManager = null, config = ttsConfig)
-
-            currentSampleRate = try {
-                tts?.sampleRate() ?: 22050
-            } catch (t: Throwable) {
-                Log.e(TAG, "Error getting sampleRate", t); 22050
+            val createdSampleRate = ttsLock.withLock {
+                val createdTts = OfflineTts(assetManager = null, config = ttsConfig)
+                tts = createdTts
+                try {
+                    createdTts.sampleRate()
+                } catch (t: Throwable) {
+                    Log.e(TAG, "Error getting sampleRate", t)
+                    22050
+                }
             }
+            currentSampleRate = createdSampleRate
             Log.d(TAG, "OfflineTts created OK. sampleRate=$currentSampleRate Hz")
 
-            if (currentSampleRate <= 0) return@withContext
+            if (currentSampleRate <= 0) {
+                throw IllegalStateException("Sherpa TTS sampleRate không hợp lệ: $currentSampleRate")
+            }
 
             val minBuf = AudioTrack.getMinBufferSize(
                 currentSampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
             ).coerceAtLeast(4096)
 
-            audioTrack = AudioTrack(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build(),
-                AudioFormat.Builder()
-                    .setSampleRate(currentSampleRate)
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .build(),
-                minBuf,
-                AudioTrack.MODE_STREAM,
-                AudioManager.AUDIO_SESSION_ID_GENERATE
-            )
-            audioTrack?.play()
+            synchronized(audioWriteLock) {
+                audioTrack = AudioTrack(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build(),
+                    AudioFormat.Builder()
+                        .setSampleRate(currentSampleRate)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build(),
+                    minBuf,
+                    AudioTrack.MODE_STREAM,
+                    AudioManager.AUDIO_SESSION_ID_GENERATE
+                )
+                audioTrack?.play()
+            }
             Log.d(TAG, "AudioTrack ready, minBuf=$minBuf")
+            Unit
         } catch (t: Throwable) {
             Log.e(TAG, "Fatal error in initialize()", t)
             release()
@@ -121,16 +142,20 @@ open class SherpaTtsEngine @Inject constructor(
         text: String,
         speed: Float = 1.0f
     ): ByteArray = withContext(Dispatchers.IO) {
-        val currentTts = tts
-            ?: throw IllegalStateException("Sherpa TTS chưa được khởi tạo")
         coroutineContext.ensureActive()
 
         val audio = try {
             synthesisMutex.withLock {
-                currentTts.generate(text, sid = 0, speed = speed)
+                coroutineContext.ensureActive()
+                ttsLock.withLock {
+                    val currentTts = tts
+                        ?: throw IllegalStateException("Sherpa TTS chưa được khởi tạo")
+                    currentTts.generate(text, sid = 0, speed = speed)
+                }
             }
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException) throw t
+            if (t is IllegalStateException && tts == null) throw t
             Log.e(TAG, "OfflineTts.generate() threw", t)
             null
         }
@@ -163,25 +188,42 @@ open class SherpaTtsEngine @Inject constructor(
         pcm: ByteArray,
         onAudioStarted: () -> Unit = {}
     ) = withContext(Dispatchers.IO) {
-        val track = audioTrack
-            ?: throw IllegalStateException("AudioTrack chưa được khởi tạo")
-
-        try {
-            if (track.playState != AudioTrack.PLAYSTATE_PLAYING) track.play()
-        } catch (t: Throwable) {
-            Log.e(TAG, "Error playing AudioTrack", t)
-            throw IllegalStateException("Không thể bắt đầu AudioTrack", t)
+        val expectedEpoch = playbackEpoch.get()
+        synchronized(audioWriteLock) {
+            val track = audioTrack
+                ?: throw IllegalStateException("AudioTrack chưa được khởi tạo")
+            try {
+                if (track.playState != AudioTrack.PLAYSTATE_PLAYING) track.play()
+            } catch (t: Throwable) {
+                Log.e(TAG, "Error playing AudioTrack", t)
+                throw IllegalStateException("Không thể bắt đầu AudioTrack", t)
+            }
         }
 
         coroutineContext.ensureActive()
+        if (playbackEpoch.get() != expectedEpoch) return@withContext
         onAudioStarted()
 
         val chunkSize = 4096
         var offset = 0
-        while (offset < pcm.size && coroutineContext.isActive) {
+        while (offset < pcm.size && coroutineContext.isActive && playbackEpoch.get() == expectedEpoch) {
             val length = (pcm.size - offset).coerceAtMost(chunkSize)
-            val written = track.write(pcm, offset, length)
+            val written = synchronized(audioWriteLock) {
+                if (playbackEpoch.get() != expectedEpoch || !coroutineContext.isActive) return@withContext
+                val track = audioTrack ?: return@withContext
+                try {
+                    track.write(pcm, offset, length)
+                } catch (error: IllegalStateException) {
+                    if (playbackEpoch.get() != expectedEpoch || !coroutineContext.isActive) {
+                        return@withContext
+                    }
+                    throw error
+                }
+            }
             if (written <= 0) {
+                if (!coroutineContext.isActive || playbackEpoch.get() != expectedEpoch) {
+                    return@withContext
+                }
                 throw IllegalStateException("AudioTrack không thể ghi PCM: $written")
             }
             offset += written
@@ -193,9 +235,11 @@ open class SherpaTtsEngine @Inject constructor(
      */
     open fun stop() {
         Log.d(TAG, "stop() called")
+        playbackEpoch.incrementAndGet()
+        val track = audioTrack
         try {
-            audioTrack?.pause()
-            audioTrack?.flush()
+            track?.pause()
+            track?.flush()
         } catch (t: Throwable) {
             Log.e(TAG, "stop audioTrack error", t)
         }
@@ -204,9 +248,21 @@ open class SherpaTtsEngine @Inject constructor(
     open fun release() {
         Log.d(TAG, "release()")
         stop()
-        try { audioTrack?.release() } catch (t: Throwable) { Log.e(TAG, "release audioTrack", t) }
-        audioTrack = null
-        try { tts?.release() } catch (t: Throwable) { Log.e(TAG, "release tts", t) }
-        tts = null
+        synchronized(audioWriteLock) {
+            try {
+                audioTrack?.release()
+            } catch (t: Throwable) {
+                Log.e(TAG, "release audioTrack", t)
+            }
+            audioTrack = null
+        }
+        ttsLock.withLock {
+            try {
+                tts?.release()
+            } catch (t: Throwable) {
+                Log.e(TAG, "release tts", t)
+            }
+            tts = null
+        }
     }
 }

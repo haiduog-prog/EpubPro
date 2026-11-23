@@ -23,6 +23,7 @@ import com.epubpro.core.reader.tts.TtsOpenBookContract
 import com.epubpro.core.reader.tts.TtsOpenBookRequest
 import com.epubpro.core.reader.tts.TtsService
 import com.epubpro.core.reader.tts.TtsWidgetContract
+import com.epubpro.core.bookconverter.BookConversionException
 import com.epubpro.core.storage.BookFileTooLargeException
 import com.epubpro.core.storage.ReaderPreferencesManager
 import com.epubpro.core.storage.TtsBubblePreferencesManager
@@ -235,13 +236,21 @@ class MainActivity : ComponentActivity() {
                                 )
                             )
                         }
+                } else if (workInfo?.state == WorkInfo.State.FAILED) {
+                    val failureMsg = workInfo.outputData
+                        .getString(LocalBookImportWorker.KEY_ERROR_MESSAGE)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: getString(R.string.library_import_failed)
+                    Toast.makeText(this@MainActivity, failureMsg, Toast.LENGTH_LONG).show()
                 }
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
             } catch (error: Exception) {
-                val errorMsg = when {
-                    error is BookFileTooLargeException -> {
+                val errorMsg = when (error) {
+                    is BookFileTooLargeException -> {
                         getString(R.string.book_import_error_too_large, error.limitMiB)
                     }
-                    error.javaClass.name.endsWith("BookConversionException") -> {
+                    is BookConversionException -> {
                         getString(R.string.library_import_book_failed)
                     }
                     else -> {

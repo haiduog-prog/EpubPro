@@ -111,25 +111,22 @@ class TtsReadingWidgetProvider : AppWidgetProvider() {
             views.setOnClickPendingIntent(R.id.tts_reading_header, openAppIntent)
             views.setOnClickPendingIntent(R.id.tts_reading_open_app, openAppIntent)
 
-            // Touch Zones: Right Touch Zone -> Next, Left Touch Zone -> Prev
-            views.setOnClickPendingIntent(
-                R.id.tts_reading_touch_right,
+            // Touch Zones & Chapter Buttons: chỉ gọi ForegroundService khi có snapshot để tránh crash Android 14+
+            val nextIntent = if (state.hasSnapshot) {
                 serviceIntent(context, TtsService.ACTION_WIDGET_READING_NEXT, flags)
-            )
-            views.setOnClickPendingIntent(
-                R.id.tts_reading_touch_left,
+            } else {
+                openAppIntent
+            }
+            val prevIntent = if (state.hasSnapshot) {
                 serviceIntent(context, TtsService.ACTION_WIDGET_READING_PREVIOUS, flags)
-            )
+            } else {
+                openAppIntent
+            }
 
-            // Chapter Buttons
-            views.setOnClickPendingIntent(
-                R.id.tts_reading_prev_chapter,
-                serviceIntent(context, TtsService.ACTION_WIDGET_READING_PREVIOUS, flags)
-            )
-            views.setOnClickPendingIntent(
-                R.id.tts_reading_next_chapter,
-                serviceIntent(context, TtsService.ACTION_WIDGET_READING_NEXT, flags)
-            )
+            views.setOnClickPendingIntent(R.id.tts_reading_touch_right, nextIntent)
+            views.setOnClickPendingIntent(R.id.tts_reading_touch_left, prevIntent)
+            views.setOnClickPendingIntent(R.id.tts_reading_prev_chapter, prevIntent)
+            views.setOnClickPendingIntent(R.id.tts_reading_next_chapter, nextIntent)
 
             views.setBoolean(R.id.tts_reading_prev_chapter, "setEnabled", state.hasSnapshot)
             views.setBoolean(R.id.tts_reading_next_chapter, "setEnabled", state.hasSnapshot)

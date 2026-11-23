@@ -95,14 +95,18 @@ class TtsAudioWidgetProvider : AppWidgetProvider() {
                 if (isPlaying) R.drawable.ic_widget_pause else R.drawable.ic_widget_play
             )
             val serviceFlags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            views.setOnClickPendingIntent(R.id.tts_widget_play_pause, playIntent(context, state, serviceFlags))
+            val openLibraryIntent = openLibraryIntent(context, serviceFlags)
+            views.setOnClickPendingIntent(
+                R.id.tts_widget_play_pause,
+                if (state.hasSnapshot) serviceIntent(context, TtsService.ACTION_WIDGET_PLAY_PAUSE, serviceFlags) else openLibraryIntent
+            )
             views.setOnClickPendingIntent(
                 R.id.tts_widget_previous,
-                serviceIntent(context, TtsService.ACTION_WIDGET_PREVIOUS, serviceFlags)
+                if (state.hasSnapshot) serviceIntent(context, TtsService.ACTION_WIDGET_PREVIOUS, serviceFlags) else openLibraryIntent
             )
             views.setOnClickPendingIntent(
                 R.id.tts_widget_next,
-                serviceIntent(context, TtsService.ACTION_WIDGET_NEXT, serviceFlags)
+                if (state.hasSnapshot) serviceIntent(context, TtsService.ACTION_WIDGET_NEXT, serviceFlags) else openLibraryIntent
             )
             views.setBoolean(R.id.tts_widget_previous, "setEnabled", state.hasSnapshot)
             views.setBoolean(R.id.tts_widget_next, "setEnabled", state.hasSnapshot)
@@ -130,16 +134,19 @@ class TtsAudioWidgetProvider : AppWidgetProvider() {
             }.getOrNull()
         }
 
-        private fun playIntent(context: Context, state: TtsWidgetState, flags: Int): PendingIntent {
-            return if (state.hasSnapshot) {
-                serviceIntent(context, TtsService.ACTION_WIDGET_PLAY_PAUSE, flags)
-            } else {
-                val intent = Intent(context, MainActivity::class.java).apply {
-                    action = TtsWidgetContract.ACTION_OPEN_LIBRARY
-                    this.flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                }
-                PendingIntent.getActivity(context, REQUEST_LIBRARY, intent, flags)
+        /**
+         * Tạo PendingIntent mở màn hình thư viện khi widget chưa có snapshot phát TTS.
+         *
+         * @param context Context ứng dụng.
+         * @param flags Cờ cho [PendingIntent].
+         * @return [PendingIntent] mở [MainActivity] với action mở thư viện.
+         */
+        private fun openLibraryIntent(context: Context, flags: Int): PendingIntent {
+            val intent = Intent(context, MainActivity::class.java).apply {
+                action = TtsWidgetContract.ACTION_OPEN_LIBRARY
+                this.flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             }
+            return PendingIntent.getActivity(context, REQUEST_LIBRARY, intent, flags)
         }
 
         private fun serviceIntent(context: Context, action: String, flags: Int): PendingIntent {

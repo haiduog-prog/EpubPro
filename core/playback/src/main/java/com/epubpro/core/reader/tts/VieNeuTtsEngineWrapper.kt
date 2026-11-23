@@ -205,7 +205,18 @@ class VieNeuTtsEngineWrapper internal constructor(
             try {
                 val isCancelled = { cancelFlag.get() || !isActive }
                 val voice = runtimeManager.resolveVoice(voiceIdSnapshot)
-                val cachedData = cachedEntry?.result?.await()
+                val cachedData = if (cachedEntry != null) {
+                    try {
+                        cachedEntry.result.await()
+                    } catch (cancelled: CancellationException) {
+                        if (isCancelled()) throw cancelled
+                        null
+                    } catch (_: Exception) {
+                        null
+                    }
+                } else {
+                    null
+                }
 
                 val preparedChunks = if (cachedData != null) {
                     cachedData.chunks
@@ -381,8 +392,11 @@ class VieNeuTtsEngineWrapper internal constructor(
                     deferred.complete(PrefetchedData(prepared, firstAudio))
                 } catch (cancel: CancellationException) {
                     deferred.cancel(cancel)
-                } catch (_: Throwable) {
+                } catch (_: Exception) {
                     deferred.cancel()
+                } catch (error: Throwable) {
+                    deferred.completeExceptionally(error)
+                    throw error
                 }
             }
             prefetchedUtterance = PrefetchedUtteranceEntry(

@@ -25,6 +25,29 @@ class TtsServiceNativeEngineContractTest {
         )
     }
 
+    @Test
+    fun `manual resume clears pausedBySystem without blocking playback`() {
+        val resumeBody = source
+            .substringAfter("fun resume()")
+            .substringBefore("private fun resumeChapterTransition")
+
+        org.junit.Assert.assertFalse(
+            "resume() must not short-circuit on pausedBySystem",
+            resumeBody.contains("if (pausedBySystem) return")
+        )
+        assertTrue(resumeBody.contains("pausedBySystem = false"))
+    }
+
+    @Test
+    fun `reading widget foreground promotion provides fallback service type`() {
+        val moveBody = source
+            .substringAfter("private fun handleReadingWidgetMove")
+            .substringBefore("private suspend fun processReadingWidgetMoves")
+
+        assertTrue(moveBody.contains("requireFallbackServiceType = true"))
+        assertTrue(moveBody.contains("stopSelfAfterForegroundStart(startId)"))
+    }
+
     private fun assertAppearsInOrder(text: String, vararg markers: String) {
         var previousIndex = -1
         markers.forEach { marker ->

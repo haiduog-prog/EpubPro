@@ -79,7 +79,7 @@ class SearchRepositoryImpl @Inject constructor(
     private val searchDao: SearchDao
 ) : SearchRepository {
     override suspend fun searchInBook(bookId: String, query: String): List<SearchResultItem> {
-        val ftsQuery = "*$query*"
+        val ftsQuery = buildFts4MatchQuery(query) ?: return emptyList()
         return searchDao.searchInBook(bookId, ftsQuery).map { fts ->
             SearchResultItem(
                 bookId = fts.bookId,
@@ -87,6 +87,38 @@ class SearchRepositoryImpl @Inject constructor(
                 chapterTitle = fts.chapterTitle,
                 snippet = fts.snippet
             )
+        }
+    }
+
+    companion object {
+        private val FTS_TOKEN_REGEX = Regex("[\\p{L}\\p{M}\\p{N}]+")
+        private val FTS_RESERVED_OPERATORS = setOf("AND", "OR", "NOT", "NEAR")
+
+        /**
+         * Chuẩn hóa từ khóa người dùng thành biểu thức `MATCH` hợp lệ cho SQLite FTS4.
+         *
+         * Chuẩn hóa Unicode sang dạng `NFC` (tránh tách rời dấu tiếng Việt NFD), loại bỏ ký tự
+         * phân tách/cú pháp FTS4 (gồm cả `_`, `*`, `:`, `"`, `-`, `^`), giữ nguyên chữ hoa tiếng Việt
+         * có dấu để khớp tokenizer `simple`, chỉ hạ thường toán tử FTS4 dự trữ (`AND`, `OR`, `NOT`,
+         * `NEAR`), và gắn hậu tố `*` cho tìm kiếm tiền tố hợp lệ.
+         *
+         * @param rawQuery Chuỗi từ khóa thô người dùng nhập.
+         * @return Biểu thức FTS4 hợp lệ, hoặc `null` nếu không có token nào tìm kiếm được.
+         */
+        internal fun buildFts4MatchQuery(rawQuery: String): String? {
+            val normalizedQuery = java.text.Normalizer.normalize(rawQuery, java.text.Normalizer.Form.NFC)
+            val tokens = FTS_TOKEN_REGEX.findAll(normalizedQuery)
+                .map { match ->
+                    val token = match.value
+                    val safeToken = if (token in FTS_RESERVED_OPERATORS) {
+                        token.lowercase(java.util.Locale.ROOT)
+                    } else {
+                        token
+                    }
+                    "$safeToken*"
+                }
+                .toList()
+            return if (tokens.isEmpty()) null else tokens.joinToString(" ")
         }
     }
 

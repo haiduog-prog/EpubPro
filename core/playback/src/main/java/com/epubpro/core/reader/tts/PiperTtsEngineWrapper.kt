@@ -12,9 +12,14 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 
 /**
@@ -32,16 +37,40 @@ class PiperTtsEngineWrapper @Inject constructor(
 ) : TtsEngine {
 
     private val engineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val lifecycleMutex = Mutex()
+    private val engineGeneration = AtomicLong(0L)
+
+    @Volatile
     private var isEngineReady = false
+
+    @Volatile
+    private var hasNativeEngineLoaded = false
+
+    @Volatile
     private var currentVoiceId: String? = null
+
+    @Volatile
     private var currentLanguage = "vi"
+
+    @Volatile
     private var currentSpeed = 1.0f
 
+    @Volatile
     private var speakJob: Job? = null
+
+    @Volatile
     private var initializeJob: Job? = null
+
+    @Volatile
     private var isInitializing = false
+
+    @Volatile
     private var onReadyCallback: (() -> Unit)? = null
+
+    @Volatile
     private var onErrorCallback: ((String) -> Unit)? = null
+
+    @Volatile
     private var pendingSpeech: PendingSpeech? = null
     private val prefetchLock = Any()
 
@@ -96,6 +125,7 @@ class PiperTtsEngineWrapper @Inject constructor(
         }
 
         isInitializing = true
+        val initGeneration = engineGeneration.incrementAndGet()
         initializeJob = engineScope.launch {
             try {
                 if (!downloader.isModelDownloaded(voiceId)) {
@@ -109,12 +139,23 @@ class PiperTtsEngineWrapper @Inject constructor(
                 if (!downloader.isEspeakDataReady()) {
                     downloader.downloadEspeakNgDataIfNeeded()
                 }
-                sherpaTtsEngine.initialize(
-                    onnxPath = downloader.getModelPath(voiceId),
-                    tokensPath = downloader.getTokensPath(voiceId),
-                    dataDirPath = downloader.getEspeakDataDir()
-                )
-                isEngineReady = true
+                val initialized = lifecycleMutex.withLock {
+                    if (engineGeneration.get() != initGeneration) return@withLock false
+                    sherpaTtsEngine.initialize(
+                        onnxPath = downloader.getModelPath(voiceId),
+                        tokensPath = downloader.getTokensPath(voiceId),
+                        dataDirPath = downloader.getEspeakDataDir()
+                    )
+                    hasNativeEngineLoaded = true
+                    if (engineGeneration.get() != initGeneration) {
+                        sherpaTtsEngine.release()
+                        hasNativeEngineLoaded = false
+                        return@withLock false
+                    }
+                    isEngineReady = true
+                    true
+                }
+                if (!initialized) return@launch
                 onReadyCallback?.invoke()
                 playPendingSpeech()
             } catch (error: Exception) {
@@ -126,8 +167,20 @@ class PiperTtsEngineWrapper @Inject constructor(
                     pending?.onError?.invoke(errorMsg)
                 }
             } finally {
-                isInitializing = false
-                initializeJob = null
+                if (engineGeneration.get() == initGeneration) {
+                    if (!isEngineReady && hasNativeEngineLoaded) {
+                        withContext(NonCancellable) {
+                            lifecycleMutex.withLock {
+                                if (engineGeneration.get() == initGeneration && !isEngineReady && hasNativeEngineLoaded) {
+                                    sherpaTtsEngine.release()
+                                    hasNativeEngineLoaded = false
+                                }
+                            }
+                        }
+                    }
+                    isInitializing = false
+                    initializeJob = null
+                }
             }
         }
     }
@@ -301,15 +354,31 @@ class PiperTtsEngineWrapper @Inject constructor(
         if (currentVoiceId == supportedVoiceId) return
 
         currentVoiceId = supportedVoiceId
+        val releaseGeneration = engineGeneration.incrementAndGet()
+        val shouldRelease = isEngineReady || hasNativeEngineLoaded
+        isEngineReady = false
         clearPrefetch()
         pendingSpeech = null
-        speakJob?.cancel()
+        val previousSpeak = speakJob
         speakJob = null
-        initializeJob?.cancel()
+        previousSpeak?.cancel()
+        val previousInit = initializeJob
         initializeJob = null
+        previousInit?.cancel()
         isInitializing = false
-        if (isEngineReady) sherpaTtsEngine.release()
-        isEngineReady = false
+        sherpaTtsEngine.stop()
+        if (shouldRelease) {
+            engineScope.launch {
+                previousSpeak?.join()
+                previousInit?.join()
+                lifecycleMutex.withLock {
+                    if (engineGeneration.get() == releaseGeneration && !isEngineReady && hasNativeEngineLoaded) {
+                        sherpaTtsEngine.release()
+                        hasNativeEngineLoaded = false
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -332,13 +401,32 @@ class PiperTtsEngineWrapper @Inject constructor(
 
     /** Giải phóng hoàn toàn bộ nhớ, hủy các coroutine job và dừng native C++ engine. */
     override fun shutdown() {
-        clearPrefetch()
+        engineGeneration.incrementAndGet()
+        val previousSpeak = speakJob
+        val previousInit = initializeJob
+        val previousPrefetch = synchronized(prefetchLock) {
+            val current = prefetchedAudio
+            prefetchedAudio = null
+            current?.audio
+        }
+        isEngineReady = false
         pendingSpeech = null
         isInitializing = false
-        speakJob?.cancel()
-        initializeJob?.cancel()
-        sherpaTtsEngine.release()
-        isEngineReady = false
-        engineScope.cancel()
+        speakJob = null
+        initializeJob = null
+        previousPrefetch?.cancel()
+        previousSpeak?.cancel()
+        previousInit?.cancel()
+        sherpaTtsEngine.stop()
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching { previousPrefetch?.join() }
+            runCatching { previousSpeak?.join() }
+            runCatching { previousInit?.join() }
+            lifecycleMutex.withLock {
+                sherpaTtsEngine.release()
+                hasNativeEngineLoaded = false
+            }
+            engineScope.cancel()
+        }
     }
 }
