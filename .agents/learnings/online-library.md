@@ -1,7 +1,7 @@
 # Online Backend & Library Integration
 
 > Tổng hợp kiến thức về hệ thống kết nối Backend API, Kho Truyện Online, Retrofit, Dynamic Base URL, Cloudflare Workers/R2/Render, quản lý Coroutine/Flow, WorkManager ngầm và chuẩn hóa quy định dự án theo AGENTS.md.
-> Cập nhật lần cuối: 2026-08-24
+> Cập nhật lần cuối: 2026-11-25
 
 ---
 
@@ -154,6 +154,13 @@
 
 ---
 
+### Upload EPUB mất file sau khi mạng rớt và có thể tạo truyện trùng
+- **Ngày**: 2026-11-25
+- **Vấn đề**: Mất mạng giữa lúc polling, khi có mạng lại worker báo "File không tồn tại"; nếu giữ file thì lần chạy lại upload thêm một bản.
+- **Root cause**: `finally { file.delete() }` chạy cả khi WorkManager dừng worker do mất `NetworkType.CONNECTED`; `jobId` không được lưu nên lần chạy lại không biết đã upload.
+- **Fix**: Chỉ xóa file ở kết quả cuối; lưu `jobId` vào file đánh dấu; file chờ upload nằm trong `files/epub_upload_staging/` với giới hạn 100 MiB và tự xóa file dở khi lỗi; UI báo `BookFileTooLargeException` bằng thông báo riêng.
+- **Files liên quan**: `core/storage/src/main/java/com/epubpro/core/storage/worker/EpubImportWorker.kt`, `core/storage/src/main/java/com/epubpro/core/storage/EpubStorageManager.kt`
+
 ## How-To
 
 ### Cách tích hợp WorkManager kèm Foreground Notification cho tác vụ upload dài
@@ -212,9 +219,9 @@
 - **Files liên quan**: `feature/library/src/main/java/com/epubpro/feature/library/AddBookBottomSheet.kt`
 
 ### Cleanup và Cancellation cho CoroutineWorker
-- **Ngày**: 2026-08-20
-- **Chi tiết**: Đặt `file.delete()` trong `finally` để dọn file tạm cả khi thành công, thất bại hoặc bị hủy. Bắt và ném lại `CancellationException`, không chuyển cancellation thành lỗi nghiệp vụ.
-- **Files liên quan**: `core/storage/src/main/java/com/epubpro/core/storage/worker/EpubImportWorker.kt`
+- **Ngày**: 2026-11-25
+- **Chi tiết**: Không xóa file tạm trong `finally`: worker có ràng buộc mạng bị WorkManager dừng khi mất mạng rồi chạy lại, lần chạy lại sẽ không còn file. Chỉ dọn ở kết quả cuối (success/failure); khi bị hủy thì ném lại `CancellationException` và giữ file. File của lần upload bị người dùng hủy được `EpubImportScheduler` dọn bằng `clearUploadStaging()` ở lần enqueue kế tiếp (khi không còn work chưa kết thúc). Upload xong ghi `jobId` ra `<file>.job` để lần chạy lại chỉ polling tiếp, không upload trùng.
+- **Files liên quan**: `core/storage/src/main/java/com/epubpro/core/storage/worker/EpubImportWorker.kt`, `core/storage/src/main/java/com/epubpro/core/storage/worker/EpubImportScheduler.kt`, `core/storage/src/main/java/com/epubpro/core/storage/EpubStorageManager.kt`
 
 ### Stateless Candidate Connection Testing with Request-Scoped Base URL Override
 - **Ngày**: 2026-08-21

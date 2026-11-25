@@ -1,7 +1,7 @@
 # Authentication & Supabase Integration
 
 > Tổng hợp kiến thức về hệ thống xác thực tài khoản, tích hợp Supabase Auth, Dynamic URL routing và quản lý phiên trong dự án EpubPro.
-> Cập nhật lần cuối: 2026-09-04
+> Cập nhật lần cuối: 2026-11-25
 
 ---
 
@@ -56,6 +56,19 @@
 - **Fix**: Đã nối UI, ViewModel và scope Drive tối thiểu; cần bổ sung OAuth client ID, SHA-1/SHA-256 đúng application ID và endpoint exchange ID token trước khi bật production.
 - **Files liên quan**: `feature/profile/src/main/java/com/epubpro/feature/profile/auth/LoginScreen.kt`, `core/storage/src/main/java/com/epubpro/core/storage/network/AuthRepositoryImpl.kt`
 
+### Token "sống lại" sau khi đăng xuất hoặc đổi tài khoản
+- **Ngày**: 2026-11-25
+- **Vấn đề**: Đăng xuất đúng lúc `TokenRefreshManager` đang làm mới token thì token cũ được ghi lại vào prefs; interceptor tiếp tục gắn Bearer của người dùng cũ.
+- **Root cause**: `saveTokens()` ghi thẳng `KEY_AUTH_TOKEN`/`KEY_REFRESH_TOKEN` từ luồng OkHttp, không đồng bộ với `clearSession()` và không kiểm tra phiên còn đúng.
+- **Fix**: Mọi thao tác phiên trong `AuthPreferencesManager` dùng chung `sessionLock`; `saveTokens()` bỏ qua khi đã đăng xuất; kết quả refresh ghi qua `replaceTokensIfCurrent(expectedRefreshToken, ...)`, chỉ nhận nếu phiên vẫn dùng đúng refresh token đã gửi.
+- **Files liên quan**: `core/storage/src/main/java/com/epubpro/core/storage/AuthPreferencesManager.kt`, `core/storage/src/main/java/com/epubpro/core/storage/network/TokenRefreshManager.kt`
+
+### Email và tiền tố token lọt vào Logcat bản release
+- **Ngày**: 2026-11-25
+- **Vấn đề**: Log đăng nhập ghi email, interceptor ghi `token.take(8)` và đường dẫn mọi request bằng `Log.d` ở cả release.
+- **Fix**: Bỏ email/token khỏi message; log chẩn đoán xác thực chỉ ghi khi `BuildConfig.DEBUG`.
+- **Files liên quan**: `core/storage/src/main/java/com/epubpro/core/storage/network/AuthRepositoryImpl.kt`, `core/storage/src/main/java/com/epubpro/core/storage/network/NetworkModule.kt`
+
 ## How-To
 
 ### Quy trình tích hợp và kiểm tra luồng xác thực Supabase
@@ -101,3 +114,13 @@
   }
   ```
 - **Files liên quan**: `core/storage/src/main/java/com/epubpro/core/storage/network/AuthRepositoryImpl.kt`
+
+### Bí mật dùng Keystore, phiên đăng nhập không vào bản sao lưu
+- **Ngày**: 2026-11-25
+- **Chi tiết**: API key/client key lưu qua `KeystoreSecretStore` (AES-GCM, khóa trong Android Keystore, file trong `noBackupFilesDir`); lần đọc đầu chuyển giá trị thô cũ trong SharedPreferences sang kho mã hóa rồi xóa bản thô (chỉ xóa khi mã hóa thành công). `epubpro_auth_prefs` và `server_settings_prefs` bị loại khỏi sao lưu qua `data_extraction_rules.xml` (API 31+) và `backup_rules.xml`. Khi thêm file prefs chứa token/key mới phải bổ sung vào cả hai file rule.
+- **Files liên quan**: `core/storage/src/main/java/com/epubpro/core/storage/KeystoreSecretStore.kt`, `core/storage/src/main/java/com/epubpro/core/storage/ServerPreferencesManager.kt`, `app/src/main/res/xml/data_extraction_rules.xml`
+
+### Base URL thiếu scheme mặc định HTTPS
+- **Ngày**: 2026-11-25
+- **Chi tiết**: `normalizeServerBaseUrl()` thêm `https://` khi người dùng không nhập scheme; chỉ host cục bộ/LAN (`localhost`, `*.local`, `127/8`, `10/8` gồm `10.0.2.2`, `172.16/12`, `192.168/16`, `169.254/16`) mới dùng `http://`, tránh gửi Bearer token và API key dạng thô.
+- **Files liên quan**: `core/storage/src/main/java/com/epubpro/core/storage/ServerPreferencesManager.kt`

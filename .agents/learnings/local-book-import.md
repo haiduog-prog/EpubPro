@@ -1,7 +1,7 @@
 # Local Book Import
 
 > Tổng hợp kiến thức về luồng nạp EPUB, PRC, MOBI, AZW3 và quét sách giấy (OCR) vào thư viện dùng chung reader.
-> Cập nhật lần cuối: 2026-11-10
+> Cập nhật lần cuối: 2026-11-25
 
 ---
 
@@ -113,3 +113,8 @@
 - **Ngày**: 2026-08-27
 - **Chi tiết**: Unit test có thể tạo file tạm dài tối thiểu 78 byte, ghi identifier ASCII tại offset 60 và kiểm tra cả `sniff()` lẫn `hasPalmDatabaseHeader()`. Cách này không cần fixture ebook lớn nhưng vẫn bảo vệ fallback nhận diện extensionless.
 - **Files liên quan**: `core/book-converter/src/test/java/com/epubpro/core/bookconverter/BookFormatSnifferTest.kt`
+
+### Chỉ dọn file nguồn khi tác vụ bị hủy thật (stopReason)
+- **Ngày**: 2026-11-25
+- **Chi tiết**: `CancellationException` trong `CoroutineWorker` xảy ra cả khi người dùng hủy lẫn khi hệ thống tạm dừng (hết quota, mất ràng buộc, giới hạn foreground) và WorkManager sẽ chạy lại. Chỉ xóa source/output dở khi `stopReason == WorkInfo.STOP_REASON_CANCELLED_BY_APP` (WorkManager 2.9+, không giới hạn API level); các lý do khác giữ file để lần chạy lại dùng tiếp.
+- **Files liên quan**: `core/storage/src/main/java/com/epubpro/core/storage/worker/LocalBookImportWorker.kt`

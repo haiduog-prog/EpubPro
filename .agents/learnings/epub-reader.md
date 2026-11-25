@@ -326,6 +326,20 @@
 - **Fix**: Thêm `ReaderChapterNavigator` để nút BottomBar đi qua màn che `PixelCopy`; `ReaderDocumentGenerationTracker.extendPendingToNextLoad()` + `coalesceRevision` dời đích chờ và gia hạn timeout khi gộp yêu cầu; gắn `chapterReloadToken` (chỉ tăng khi nạp từ ngoài) vào key WebView để đảo chiều về chương cũ vẫn reload đúng.
 - **Files liên quan**: `feature/reader/src/main/java/com/epubpro/feature/reader/webview/EpubProWebView.kt`, `feature/reader/src/main/java/com/epubpro/feature/reader/webview/ReaderDocumentGenerationTracker.kt`, `feature/reader/src/main/java/com/epubpro/feature/reader/ReaderViewModel.kt`
 
+### Chạm/vuốt nhanh qua ranh giới chương nhảy cóc mất chương và trượt vào lớp trắng
+- **Ngày**: 2026-11-25
+- **Vấn đề**: Chạm cạnh phải liên tục từ trang cuối chương N đi thẳng sang N+2; có ~180ms màn hình trắng.
+- **Root cause**: Sau `replaceAdjacentChapterInDocument()`, `totalPages` tạm là 1 cho tới khi `initLayout()` đo xong, nên lần chạm kế tiếp coi trang 1 là trang cuối và commit thêm chương; chương kế chưa có preview nên overlay trượt vào lớp rỗng.
+- **Fix**: Bỏ qua gesture/lệnh lật trang khi `!isLayoutReady` (chạm thường vẫn chạy `handleConfiguredTap` để hiện/ẩn controls); thêm `setTimeout(initLayout, 500)` sau commit làm lưới an toàn; boundary không có preview thì kéo có lực cản, thả tay snap về rồi `requestFallbackBoundary()` (PixelCopy cover) thay vì trượt lớp trống.
+- **Files liên quan**: `core/reader-renderer/src/main/java/com/epubpro/core/reader/style/CssInjector.kt`
+
+### WebView nạp lại chương cũ một lần thừa khi đổi chương
+- **Ngày**: 2026-11-25
+- **Vấn đề**: Mỗi lần chuyển chương bằng nút, log có hai `Loading HTML` (chương cũ rồi chương mới); JS của document cũ báo vị trí cho chương mới.
+- **Root cause**: `chapterReloadToken` đổi cùng lúc với HTML mới, nhưng `produceState` vẫn giữ bản sanitize của chương cũ trong lúc sanitize nền, nên khóa `sanitizedHash + token` đổi sớm và nạp lại HTML cũ.
+- **Fix**: `produceState` giữ cặp `(htmlNguồn, sanitized)`; khối `update` chỉ tính khóa khi `htmlNguồn` trùng `htmlContent` hiện tại.
+- **Files liên quan**: `feature/reader/src/main/java/com/epubpro/feature/reader/webview/EpubProWebView.kt`
+
 ## How-To
 
 ### Cách triển khai auto-resume sách đang đọc dở an toàn

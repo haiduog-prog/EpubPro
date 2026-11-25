@@ -1,7 +1,7 @@
 # Book Bible (Tiến trình nhân vật & Dòng thời gian)
 
 > Tổng hợp kiến thức về hệ thống Chapter-Aware Character Profile Book Bible (Tiến trình hồ sơ nhân vật theo chương không spoiler) trong dự án.
-> Cập nhật lần cuối: 2026-08-27
+> Cập nhật lần cuối: 2026-11-25
 
 ---
 
@@ -43,6 +43,11 @@
 - **Files liên quan**: `feature/bookbible/src/main/java/com/epubpro/feature/bookbible/StoryProgressViewModel.kt`, `core/storage/src/main/java/com/epubpro/core/storage/network/BookBibleApiService.kt`
 
 ---
+
+### Công tắc gửi nội dung theo từng sách (mặc định tắt cho EPUB cục bộ)
+- **Ngày**: 2026-11-25
+- **Chi tiết**: Sách EPUB cá nhân chỉ gửi nội dung chương lên server khi người dùng bật trong màn Book Bible (`BookBibleConsentStore`, prefs `book_bible_consent`). Truyện online luôn được phép (`BookBibleSource.requiresSubmissionConsent`). Chặn ở ba tầng: repository (`enqueueChapterSubmission` bỏ qua; `refreshSnapshot`/`getCharacterTimeline`/`retrySubmission` ném `BookBibleSubmissionDisabledException` để không gửi cả metadata), `BookBibleWorker` kiểm tra lại trước khi gửi (xóa payload + submission nếu đã tắt), và ViewModel không làm mới khi tắt. Reader gửi chương đang mở ngay khi công tắc chuyển sang bật.
+- **Files liên quan**: `core/storage/src/main/java/com/epubpro/core/storage/bookbible/BookBibleConsentStore.kt`, `core/storage/src/main/java/com/epubpro/core/storage/bookbible/BookBibleRepositoryImpl.kt`, `core/storage/src/main/java/com/epubpro/core/storage/bookbible/BookBibleWorker.kt`, `feature/bookbible/src/main/java/com/epubpro/feature/bookbible/BookBibleScreen.kt`
 
 ## Bugs & Solutions
 
