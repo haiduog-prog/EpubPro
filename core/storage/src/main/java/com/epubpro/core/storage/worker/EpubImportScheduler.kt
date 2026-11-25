@@ -40,6 +40,7 @@ class EpubImportScheduler @Inject constructor(
      * @param novelId ID truyện hiện có nếu upload bổ sung, hoặc null nếu tạo truyện mới.
      * @param contentType MIME type thực tế của file, có thể null nếu provider không cung cấp.
      * @return true nếu đã enqueue, false nếu đang có upload khác chạy.
+     * @throws com.epubpro.core.storage.BookFileTooLargeException Nếu file vượt giới hạn upload.
      * @throws Exception Nếu không đọc được URI hoặc không lập lịch được công việc.
      */
     suspend fun enqueue(
@@ -59,7 +60,10 @@ class EpubImportScheduler @Inject constructor(
 
             if (hasActiveWork) return@withLock false
 
-            val tempFile = storageManager.importEpubFromUri(uri, originalName)
+            // Không còn upload nào chạy hoặc chờ chạy lại: dọn file sót lại của lần upload đã bị hủy
+            // (worker giữ file khi bị hệ thống tạm dừng để lần chạy lại vẫn dùng được).
+            storageManager.clearUploadStaging()
+            val tempFile = storageManager.stageEpubForUpload(uri, originalName)
             try {
                 val request = OneTimeWorkRequestBuilder<EpubImportWorker>()
                     .setInputData(

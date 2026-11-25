@@ -5,6 +5,7 @@ import androidx.annotation.StringRes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.epubpro.core.designsystem.R
+import com.epubpro.core.storage.BookFileTooLargeException
 import com.epubpro.core.storage.worker.EpubImportScheduler
 import com.epubpro.core.storage.worker.OnlineNovelDownloadScheduler
 import com.epubpro.core.storage.worker.OnlineNovelDownloadWorker
@@ -402,6 +403,8 @@ class OnlineLibraryViewModel @Inject constructor(
                 )
             } catch (error: CancellationException) {
                 throw error
+            } catch (error: BookFileTooLargeException) {
+                _events.send(UserMessage(R.string.book_import_error_too_large, listOf(error.limitMiB)))
             } catch (_: Exception) {
                 _events.send(UserMessage(R.string.upload_prepare_failed))
             } finally {

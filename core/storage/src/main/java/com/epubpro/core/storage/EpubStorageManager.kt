@@ -20,22 +20,64 @@ class EpubStorageManager @Inject constructor(
     private val booksDir = File(context.filesDir, "books").apply { if (!exists()) mkdirs() }
     private val coversDir = File(context.filesDir, "covers").apply { if (!exists()) mkdirs() }
     private val aiCacheDir = File(context.filesDir, "ai_chapters").apply { if (!exists()) mkdirs() }
+    private val uploadStagingDir = File(context.filesDir, "epub_upload_staging")
 
     /**
-     * Copy EPUB from Uri (SAF) into local internal app storage for secure offline access
+     * Sao file EPUB người dùng chọn vào thư mục chờ upload riêng, giới hạn [MAX_UPLOAD_EPUB_BYTES].
+     *
+     * Thư mục riêng giúp [clearUploadStaging] dọn được file còn sót khi người dùng hủy upload, vì worker giữ lại
+     * file khi bị hệ thống tạm dừng để lần chạy lại vẫn dùng được.
+     *
+     * @param uri URI nguồn từ Storage Access Framework.
+     * @param originalFileName Tên file gốc, chỉ dùng để giữ phần mở rộng an toàn.
+     * @return File đã sao vào thư mục chờ upload.
+     * @throws BookFileTooLargeException Nếu file vượt giới hạn; file dở đã được xóa.
+     * @throws IllegalStateException Nếu không mở được URI; file dở đã được xóa.
      */
-    fun importEpubFromUri(uri: Uri, originalFileName: String?): File {
-        val fileId = UUID.randomUUID().toString()
+    fun stageEpubForUpload(uri: Uri, originalFileName: String?): File {
+        uploadStagingDir.mkdirs()
         val extension = safeExtension(originalFileName, "epub")
-        val targetFile = File(booksDir, "$fileId.$extension")
+        val targetFile = File(uploadStagingDir, "${UUID.randomUUID()}.$extension")
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(targetFile).use { output ->
+                    copyWithLimit(input, output, MAX_UPLOAD_EPUB_BYTES)
+                    output.fd.sync()
+                }
+            } ?: throw IllegalStateException("Không thể mở file EPUB từ URI")
+            return targetFile
+        } catch (error: Throwable) {
+            targetFile.delete()
+            throw error
+        }
+    }
 
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            FileOutputStream(targetFile).use { output ->
-                input.copyTo(output)
-            }
-        } ?: throw IllegalStateException("Could not open InputStream for URI: $uri")
+    /**
+     * Xóa mọi file trong thư mục chờ upload. Chỉ gọi khi chắc chắn không còn tác vụ upload nào đang chạy hoặc chờ
+     * chạy lại, để dọn file còn sót của lần upload đã bị hủy.
+     */
+    fun clearUploadStaging() {
+        uploadStagingDir.listFiles()?.forEach { runCatching { it.delete() } }
+    }
 
-        return targetFile
+    /**
+     * Sao luồng dữ liệu sang file đích và dừng ngay khi vượt giới hạn, tránh làm đầy bộ nhớ trong.
+     *
+     * @param input Luồng nguồn.
+     * @param output Luồng đích.
+     * @param maxBytes Số byte tối đa cho phép.
+     * @throws BookFileTooLargeException Khi tổng dữ liệu vượt [maxBytes].
+     */
+    internal fun copyWithLimit(input: InputStream, output: FileOutputStream, maxBytes: Long) {
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var total = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read <= 0) break
+            total += read
+            if (total > maxBytes) throw BookFileTooLargeException(maxBytes)
+            output.write(buffer, 0, read)
+        }
     }
 
     /**
@@ -388,6 +430,9 @@ class EpubStorageManager @Inject constructor(
     companion object {
         /** Giới hạn kích thước một file EPUB tải online để tránh làm đầy internal storage. */
         const val MAX_ONLINE_DOWNLOAD_BYTES: Long = 500L * 1024 * 1024
+
+        /** Giới hạn kích thước file EPUB người dùng tải lên máy chủ, bằng giới hạn nhập ebook chữ cục bộ. */
+        const val MAX_UPLOAD_EPUB_BYTES: Long = 100L * 1024 * 1024
     }
 }
 

@@ -61,79 +61,110 @@ class EpubImportWorker @AssistedInject constructor(
         )
 
         val file = File(filePath)
-        if (!file.exists()) {
+        val jobCheckpoint = jobCheckpointFile(file)
+
+        /**
+         * Kết thúc tác vụ ở trạng thái cuối (thành công hoặc thất bại hẳn): dọn file EPUB chờ upload và mốc
+         * jobId. Không gọi khi bị hủy/tạm dừng, vì WorkManager có thể chạy lại tác vụ và cần dùng lại file.
+         *
+         * @param result Kết quả trả về cho WorkManager.
+         * @return Chính [result].
+         */
+        fun finish(result: Result): Result {
+            file.delete()
+            jobCheckpoint.delete()
+            return result
+        }
+
+        // Lần chạy trước đã upload xong nhưng bị dừng giữa lúc theo dõi tiến trình: chỉ theo dõi tiếp,
+        // không upload lại (tránh tạo truyện trùng trên máy chủ).
+        val resumedJobId = jobCheckpoint.takeIf { it.isFile }
+            ?.let { runCatching { it.readText(Charsets.UTF_8).trim() }.getOrNull() }
+            ?.takeIf { it.isNotBlank() }
+
+        if (resumedJobId == null && !file.exists()) {
             showErrorNotification(
                 title = bookTitle,
                 error = appContext.getString(R.string.epub_import_notification_failed, "File không tồn tại")
             )
-            return Result.failure(workDataOf(KEY_ERROR_MESSAGE to "File không tồn tại: $filePath"))
+            return finish(Result.failure(workDataOf(KEY_ERROR_MESSAGE to "File không tồn tại")))
         }
 
         try {
-            // Bước 1: Gửi file EPUB lên Server
-            val uploadResult = onlineNovelRepository.uploadEpub(
-                filePath = filePath,
-                isTranslated = isTranslated,
-                novelId = novelId,
-                autoScanCharacters = autoScanCharacters,
-                contentType = contentType,
-                originalName = originalName
-            )
-
-            val initialJob = uploadResult.getOrElse { error ->
-                val errorMsg = error.message ?: "Lỗi tải file lên server"
-                showErrorNotification(
-                    title = bookTitle,
-                    error = appContext.getString(R.string.epub_import_notification_failed, errorMsg)
+            val jobId = if (resumedJobId != null) {
+                resumedJobId
+            } else {
+                // Bước 1: Gửi file EPUB lên Server
+                val uploadResult = onlineNovelRepository.uploadEpub(
+                    filePath = filePath,
+                    isTranslated = isTranslated,
+                    novelId = novelId,
+                    autoScanCharacters = autoScanCharacters,
+                    contentType = contentType,
+                    originalName = originalName
                 )
-                return Result.failure(workDataOf(KEY_ERROR_MESSAGE to errorMsg))
+
+                val initialJob = uploadResult.getOrElse { error ->
+                    if (error is CancellationException) throw error
+                    val errorMsg = error.message ?: "Lỗi tải file lên server"
+                    showErrorNotification(
+                        title = bookTitle,
+                        error = appContext.getString(R.string.epub_import_notification_failed, errorMsg)
+                    )
+                    return finish(Result.failure(workDataOf(KEY_ERROR_MESSAGE to errorMsg)))
+                }
+
+                // Ghi mốc ngay sau khi upload thành công để lần chạy lại không upload trùng.
+                runCatching { jobCheckpoint.writeText(initialJob.jobId, Charsets.UTF_8) }
+
+                bookTitle = initialJob.title ?: bookTitle
+
+                // Cập nhật trạng thái khởi tạo
+                updateWorkerProgress(initialJob)
+                showProgressNotification(
+                    title = bookTitle,
+                    step = initialJob.currentStep ?: appContext.getString(R.string.epub_import_notification_starting),
+                    progress = initialJob.progressPercentage
+                )
+                initialJob.jobId
             }
 
-            bookTitle = initialJob.title ?: bookTitle
-            val jobId = initialJob.jobId
-
-            // Cập nhật trạng thái khởi tạo
-            updateWorkerProgress(initialJob)
-            showProgressNotification(
-                title = bookTitle,
-                step = initialJob.currentStep ?: appContext.getString(R.string.epub_import_notification_starting),
-                progress = initialJob.progressPercentage
-            )
-
             // Bước 2: Vòng lặp Polling hỏi vòng tiến trình từ Server
-            var isRunning = true
             var consecutiveNetworkErrors = 0
-            while (isRunning) {
+            while (true) {
                 delay(POLL_INTERVAL_MS)
 
                 val statusResult = onlineNovelRepository.getImportJobStatus(jobId)
-                statusResult.onSuccess { status ->
+                val status = statusResult.getOrNull()
+                if (status != null) {
                     consecutiveNetworkErrors = 0
                     bookTitle = status.title ?: bookTitle
                     updateWorkerProgress(status)
 
                     if (status.isCompleted) {
-                        isRunning = false
                         showSuccessNotification(title = bookTitle)
-                        return Result.success(
-                            workDataOf(
-                                KEY_STATUS to status.status,
-                                KEY_TITLE to bookTitle,
-                                KEY_NOVEL_ID to status.novelId,
-                                KEY_PROGRESS to 100
+                        return finish(
+                            Result.success(
+                                workDataOf(
+                                    KEY_STATUS to status.status,
+                                    KEY_TITLE to bookTitle,
+                                    KEY_NOVEL_ID to status.novelId,
+                                    KEY_PROGRESS to 100
+                                )
                             )
                         )
                     } else if (status.isFailed) {
-                        isRunning = false
                         val errorMsg = status.errorMessage ?: "Tiến trình xử lý thất bại"
                         showErrorNotification(
                             title = bookTitle,
                             error = appContext.getString(R.string.epub_import_notification_failed, errorMsg)
                         )
-                        return Result.failure(
-                            workDataOf(
-                                KEY_STATUS to status.status,
-                                KEY_ERROR_MESSAGE to errorMsg
+                        return finish(
+                            Result.failure(
+                                workDataOf(
+                                    KEY_STATUS to status.status,
+                                    KEY_ERROR_MESSAGE to errorMsg
+                                )
                             )
                         )
                     } else {
@@ -145,61 +176,67 @@ class EpubImportWorker @AssistedInject constructor(
                             progress = status.progressPercentage
                         )
                     }
-                }.onFailure { e ->
-                    // Kiểm tra lỗi 4xx từ Server (đặc biệt 404: job không tồn tại / đã bị xóa)
-                    val fatalErrorMsg = when (e) {
-                        is retrofit2.HttpException -> {
-                            val code = e.code()
-                            val rawBody = runCatching { e.response()?.errorBody()?.string() }.getOrNull()
-                            val detail = runCatching {
-                                org.json.JSONObject(rawBody ?: "").optString("detail", "")
-                            }.getOrNull().takeIf { !it.isNullOrBlank() }
+                    continue
+                }
 
-                            if (code == 404) {
-                                detail ?: "Không tìm thấy tiến trình upload trên máy chủ (HTTP 404)."
-                            } else if (code in 400..499) {
-                                detail ?: "Lỗi yêu cầu máy chủ (HTTP $code)."
-                            } else {
-                                null // 5xx -> tiếp tục thử lại
-                            }
+                val e = statusResult.exceptionOrNull()
+                if (e is CancellationException) throw e
+                // Kiểm tra lỗi 4xx từ Server (đặc biệt 404: job không tồn tại / đã bị xóa)
+                val fatalErrorMsg = when (e) {
+                    is retrofit2.HttpException -> {
+                        val code = e.code()
+                        val rawBody = runCatching { e.response()?.errorBody()?.string() }.getOrNull()
+                        val detail = runCatching {
+                            org.json.JSONObject(rawBody ?: "").optString("detail", "")
+                        }.getOrNull().takeIf { !it.isNullOrBlank() }
+
+                        if (code == 404) {
+                            detail ?: "Không tìm thấy tiến trình upload trên máy chủ (HTTP 404)."
+                        } else if (code in 400..499) {
+                            detail ?: "Lỗi yêu cầu máy chủ (HTTP $code)."
+                        } else {
+                            null // 5xx -> tiếp tục thử lại
                         }
-                        else -> null
                     }
+                    else -> null
+                }
 
-                    if (fatalErrorMsg != null) {
-                        isRunning = false
-                        showErrorNotification(
-                            title = bookTitle,
-                            error = appContext.getString(R.string.epub_import_notification_failed, fatalErrorMsg)
-                        )
-                        return Result.failure(
+                if (fatalErrorMsg != null) {
+                    showErrorNotification(
+                        title = bookTitle,
+                        error = appContext.getString(R.string.epub_import_notification_failed, fatalErrorMsg)
+                    )
+                    return finish(
+                        Result.failure(
                             workDataOf(
                                 KEY_STATUS to "failed",
                                 KEY_ERROR_MESSAGE to fatalErrorMsg
                             )
                         )
-                    }
+                    )
+                }
 
-                    consecutiveNetworkErrors++
-                    if (consecutiveNetworkErrors >= MAX_CONSECUTIVE_NETWORK_ERRORS) {
-                        isRunning = false
-                        val networkErrorMsg = "Mất kết nối với máy chủ khi theo dõi tiến trình."
-                        showErrorNotification(
-                            title = bookTitle,
-                            error = appContext.getString(R.string.epub_import_notification_failed, networkErrorMsg)
-                        )
-                        return Result.failure(
+                consecutiveNetworkErrors++
+                if (consecutiveNetworkErrors >= MAX_CONSECUTIVE_NETWORK_ERRORS) {
+                    val networkErrorMsg = "Mất kết nối với máy chủ khi theo dõi tiến trình."
+                    showErrorNotification(
+                        title = bookTitle,
+                        error = appContext.getString(R.string.epub_import_notification_failed, networkErrorMsg)
+                    )
+                    return finish(
+                        Result.failure(
                             workDataOf(
                                 KEY_STATUS to "failed",
                                 KEY_ERROR_MESSAGE to networkErrorMsg
                             )
                         )
-                    }
+                    )
                 }
             }
-
-            return Result.success()
         } catch (e: CancellationException) {
+            // Bị hủy hoặc bị hệ thống tạm dừng (ví dụ mất mạng vì tác vụ yêu cầu NetworkType.CONNECTED):
+            // giữ file và mốc jobId để lần chạy lại tiếp tục. File của lần upload bị người dùng hủy được
+            // EpubImportScheduler dọn ở lần upload kế tiếp.
             throw e
         } catch (e: Exception) {
             val errorMsg = e.message ?: "Lỗi không xác định"
@@ -207,11 +244,17 @@ class EpubImportWorker @AssistedInject constructor(
                 title = bookTitle,
                 error = appContext.getString(R.string.epub_import_notification_failed, errorMsg)
             )
-            return Result.failure(workDataOf(KEY_ERROR_MESSAGE to errorMsg))
-        } finally {
-            file.delete()
+            return finish(Result.failure(workDataOf(KEY_ERROR_MESSAGE to errorMsg)))
         }
     }
+
+    /**
+     * File đánh dấu jobId của lần upload đã thành công, đặt cạnh file EPUB chờ upload.
+     *
+     * @param epubFile File EPUB chờ upload.
+     * @return File chứa jobId (có thể chưa tồn tại).
+     */
+    private fun jobCheckpointFile(epubFile: File): File = File(epubFile.path + JOB_CHECKPOINT_SUFFIX)
 
     /**
      * Phát dữ liệu tiến độ cho các thành phần UI (ViewModel/Compose) lắng nghe qua WorkManager.
@@ -342,6 +385,9 @@ class EpubImportWorker @AssistedInject constructor(
         // Render Free cần chu kỳ thăm dò thưa hơn để tránh tạo quá nhiều request.
         private const val POLL_INTERVAL_MS = 10_000L
         private const val MAX_CONSECUTIVE_NETWORK_ERRORS = 12
+
+        /** Hậu tố file đánh dấu jobId đặt cạnh file EPUB chờ upload. */
+        private const val JOB_CHECKPOINT_SUFFIX = ".job"
 
         const val KEY_FILE_PATH = "file_path"
         const val KEY_ORIGINAL_NAME = "original_name"

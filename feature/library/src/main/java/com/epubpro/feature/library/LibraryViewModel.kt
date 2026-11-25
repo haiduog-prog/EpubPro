@@ -637,6 +637,10 @@ class LibraryViewModel @Inject constructor(
                 }
             } catch (error: CancellationException) {
                 throw error
+            } catch (error: BookFileTooLargeException) {
+                hasActiveUploadSession = false
+                _events.send(UserMessage(R.string.book_import_error_too_large, listOf(error.limitMiB)))
+                _uploadJobState.value = null
             } catch (_: Exception) {
                 hasActiveUploadSession = false
                 _events.send(UserMessage(R.string.upload_prepare_failed))

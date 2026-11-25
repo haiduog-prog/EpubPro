@@ -11,6 +11,7 @@ import androidx.core.app.NotificationCompat
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
+import androidx.work.WorkInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.epubpro.core.bookconverter.BookConversionErrorCode
@@ -37,6 +38,16 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+
+/**
+ * Quyết định có dọn file nguồn và output dở khi worker bị dừng giữa chừng hay không.
+ *
+ * @param stopReason Lý do dừng từ [androidx.work.ListenableWorker.getStopReason].
+ * @return `true` chỉ khi tác vụ bị ứng dụng/người dùng hủy (sẽ không chạy lại); `false` khi hệ thống tạm dừng
+ *         hoặc không rõ lý do, vì WorkManager có thể chạy lại tác vụ và cần dùng lại file nguồn.
+ */
+internal fun shouldDiscardFilesOnStop(stopReason: Int): Boolean =
+    stopReason == WorkInfo.STOP_REASON_CANCELLED_BY_APP
 
 /**
  * Worker chuyển đổi file PRC/MOBI/AZW3 thành EPUB (hoặc giữ nguyên archive CBZ) và nạp vào thư viện.
@@ -140,9 +151,12 @@ class LocalBookImportWorker @AssistedInject constructor(
                 )
             )
         } catch (error: CancellationException) {
-            // Hủy chủ động không cần giữ lại source; process death không đi qua nhánh này.
-            sourceFile.delete()
-            deleteUncommittedOutput(outputFile)
+            // Chỉ dọn khi ứng dụng/người dùng hủy thật. Khi hệ thống tạm dừng tác vụ (hết quota, ràng buộc,
+            // giới hạn foreground...), WorkManager sẽ chạy lại và cần source; lần chạy lại tự ghi đè output dở.
+            if (shouldDiscardFilesOnStop(stopReason)) {
+                withContext(NonCancellable) { sourceFile.delete() }
+                deleteUncommittedOutput(outputFile)
+            }
             throw error
         } catch (error: BookConversionException) {
             showErrorNotification(originalName, errorMessage(error.code))
