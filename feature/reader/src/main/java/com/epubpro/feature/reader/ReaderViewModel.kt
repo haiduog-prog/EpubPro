@@ -446,6 +446,25 @@ class ReaderViewModel @Inject constructor(
             )
         }
         viewModelScope.launch {
+            // Người dùng vừa bật Book Bible cho sách (từ màn Book Bible mở trên Reader): gửi luôn chương đang
+            // đọc thay vì đợi tới lần chuyển chương sau. Bỏ giá trị đầu tiên vì đó là trạng thái sẵn có.
+            bookBibleRepository.observeSubmissionEnabled(BookBibleSource(BookBibleSourceType.LOCAL_EPUB, bookId))
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { enabled ->
+                    val state = _uiState.value
+                    val book = state.book ?: return@collect
+                    if (!enabled || state.currentChapterHtml.isBlank()) return@collect
+                    enqueueBookBibleChapter(
+                        book = book,
+                        chapterIndex = state.currentChapterIndex,
+                        chapterTitle = state.chapters.getOrNull(state.currentChapterIndex)?.title
+                            ?: context.getString(R.string.reader_chapter_number_format, state.currentChapterIndex + 1),
+                        originalHtml = state.currentChapterHtml
+                    )
+                }
+        }
+        viewModelScope.launch {
             // Truyện lưu từ web: đọc tới gần chương cuối thì tự tải thêm chương ở nền.
             _uiState.map { it.currentChapterIndex to it.chapters.size }
                 .distinctUntilChanged()

@@ -55,8 +55,30 @@ class BookBibleRepositoryImpl @Inject constructor(
     private val payloadStore: BookBiblePayloadStore,
     private val fingerprintGenerator: BookBibleFingerprintGenerator,
     private val storageManager: EpubStorageManager,
-    private val gson: Gson
+    private val gson: Gson,
+    private val consentStore: BookBibleConsentStore
 ) : BookBibleRepository {
+
+    override fun observeSubmissionEnabled(source: BookBibleSource): Flow<Boolean> =
+        consentStore.observe(source)
+
+    override suspend fun setSubmissionEnabled(source: BookBibleSource, enabled: Boolean) =
+        withContext(Dispatchers.IO) {
+            // Khi tắt, các yêu cầu còn chờ trong WorkManager sẽ tự bị bỏ ở BookBibleWorker (kiểm tra lại đồng ý
+            // trước khi gửi), nên không cần dò và hủy từng job ở đây.
+            consentStore.setEnabled(source, enabled)
+        }
+
+    /**
+     * Chặn mọi lệnh gọi máy chủ Book Bible cho nguồn chưa được người dùng bật, kể cả lệnh chỉ gửi metadata
+     * (tên sách, tác giả, fingerprint) khi khớp edition.
+     *
+     * @param source Nguồn sách.
+     * @throws BookBibleSubmissionDisabledException Nếu nguồn cần đồng ý mà người dùng chưa bật.
+     */
+    private fun requireSubmissionEnabled(source: BookBibleSource) {
+        if (!consentStore.isEnabled(source)) throw BookBibleSubmissionDisabledException(source.uniqueKey)
+    }
 
     override suspend fun enqueueChapterSubmission(
         source: BookBibleSource,
@@ -69,6 +91,8 @@ class BookBibleRepositoryImpl @Inject constructor(
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatchingCancellable {
             if (sourceContent.isBlank()) return@runCatchingCancellable
+            // Không ghi payload, không lập lịch gửi khi người dùng chưa bật Book Bible cho sách này.
+            if (!consentStore.isEnabled(source)) return@runCatchingCancellable
 
             val localSourceKey = source.uniqueKey
             val sourceHash = payloadStore.computeSha256(sourceContent)
@@ -333,6 +357,7 @@ class BookBibleRepositoryImpl @Inject constructor(
         chapterNumber: Int
     ): Result<BookBibleSnapshot> = withContext(Dispatchers.IO) {
         runCatchingCancellable {
+            requireSubmissionEnabled(source)
             val edition = ensureEdition(source, chapterNumber)
 
             // Gọi API backend lấy CharacterSnapshotResponse
@@ -393,6 +418,7 @@ class BookBibleRepositoryImpl @Inject constructor(
         chapterNumber: Int
     ): Result<CharacterTimeline> = withContext(Dispatchers.IO) {
         runCatchingCancellable {
+            requireSubmissionEnabled(source)
             val edition = ensureEdition(source, chapterNumber)
 
             // Kiểm tra cache trước
@@ -479,6 +505,7 @@ class BookBibleRepositoryImpl @Inject constructor(
         chapterNumber: Int
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatchingCancellable {
+            requireSubmissionEnabled(source)
             val localSourceKey = source.uniqueKey
             val entity = bookBibleDao.getSubmission(localSourceKey, chapterNumber)
                 ?: throw IllegalStateException("Không tìm thấy thông tin submission để thử lại.")

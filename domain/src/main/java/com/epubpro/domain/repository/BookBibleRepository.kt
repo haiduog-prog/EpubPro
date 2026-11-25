@@ -27,7 +27,8 @@ interface BookBibleRepository {
      * @param sourceContent Nội dung văn bản thô (plain text) của chương nguồn.
      * @param bookTitle Tên sách.
      * @param author Tên tác giả.
-     * @return [Result] trả về thành công nếu đã ghi payload và lên lịch WorkManager thành công.
+     * @return [Result] trả về thành công nếu đã ghi payload và lên lịch WorkManager thành công, hoặc thành công mà
+     *         không làm gì nếu người dùng chưa bật Book Bible cho nguồn này (xem [observeSubmissionEnabled]).
      */
     suspend fun enqueueChapterSubmission(
         source: BookBibleSource,
@@ -38,6 +39,26 @@ interface BookBibleRepository {
         bookTitle: String,
         author: String
     ): Result<Unit>
+
+    /**
+     * Quan sát việc người dùng có cho phép gửi nội dung chương của nguồn này lên máy chủ Book Bible hay không.
+     * Nguồn không cần đồng ý ([BookBibleSource.requiresSubmissionConsent] = `false`) luôn phát `true`; sách EPUB
+     * cục bộ mặc định `false` cho tới khi người dùng bật.
+     *
+     * @param source Nguồn sách.
+     * @return [Flow] phát trạng thái cho phép hiện tại và mỗi lần thay đổi.
+     */
+    fun observeSubmissionEnabled(source: BookBibleSource): Flow<Boolean>
+
+    /**
+     * Bật hoặc tắt việc gửi nội dung chương của một nguồn lên máy chủ Book Bible. Khi tắt, mọi yêu cầu gửi đang
+     * chờ của nguồn sẽ bị bỏ (và xóa nội dung tạm) thay vì được gửi đi. Không có tác dụng với nguồn không cần
+     * đồng ý.
+     *
+     * @param source Nguồn sách.
+     * @param enabled `true` để cho phép gửi, `false` để dừng.
+     */
+    suspend fun setSubmissionEnabled(source: BookBibleSource, enabled: Boolean)
 
     /**
      * Quan sát luồng dữ liệu Snapshot của Book Bible tại một mốc chương xác định.

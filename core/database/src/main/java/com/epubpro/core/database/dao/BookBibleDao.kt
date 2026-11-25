@@ -157,6 +157,14 @@ interface BookBibleDao {
     )
 
     /**
+     * Xóa một bản ghi submission theo ID, dùng khi yêu cầu gửi bị bỏ vì người dùng đã tắt Book Bible cho sách.
+     *
+     * @param id ID submission cần xóa.
+     */
+    @Query("DELETE FROM book_bible_submissions WHERE id = :id")
+    suspend fun deleteSubmissionById(id: String)
+
+    /**
      * Tăng số lần thử gửi của một submission.
      */
     @Query("UPDATE book_bible_submissions SET attempts = attempts + 1, updatedAt = :updatedAt WHERE id = :id")

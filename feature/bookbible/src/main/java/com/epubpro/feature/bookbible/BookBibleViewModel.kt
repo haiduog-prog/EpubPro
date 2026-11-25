@@ -26,6 +26,8 @@ import javax.inject.Inject
  * @property selectedTimeline Dữ liệu dòng thời gian của nhân vật đang chọn.
  * @property isLoadingTimeline Cờ đang nạp dòng thời gian.
  * @property errorMessage Thông điệp lỗi nếu có.
+ * @property isSubmissionEnabled Người dùng đã cho phép gửi nội dung chương của sách này lên máy chủ hay chưa;
+ *           `null` khi chưa đọc xong lựa chọn đã lưu.
  */
 data class BookBibleUiState(
     val source: BookBibleSource = BookBibleSource(BookBibleSourceType.LOCAL_EPUB, ""),
@@ -38,8 +40,13 @@ data class BookBibleUiState(
     val selectedTab: Int = 0,
     val selectedTimeline: CharacterTimeline? = null,
     val isLoadingTimeline: Boolean = false,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val isSubmissionEnabled: Boolean? = null
 ) {
+    /** `true` khi sách cần người dùng bật Book Bible (EPUB cục bộ) và đã bật, để hiện lựa chọn tắt lại. */
+    val canDisableSubmission: Boolean
+        get() = source.requiresSubmissionConsent && isSubmissionEnabled == true
+
     /** Nhân vật đang được chọn xem chi tiết */
     val selectedCharacter: CharacterProfile?
         get() = snapshot?.characters?.find { it.id == selectedCharacterId }
@@ -90,7 +97,38 @@ class BookBibleViewModel @Inject constructor(
 
     init {
         observeCachedSnapshot()
-        refreshSnapshot()
+        observeSubmissionConsent()
+    }
+
+    /**
+     * Theo dõi công tắc Book Bible của sách. Chỉ làm mới từ máy chủ khi người dùng đã bật (truyện online luôn
+     * được phép), để sách EPUB cá nhân không gửi bất kỳ dữ liệu nào khi chưa đồng ý.
+     */
+    private fun observeSubmissionConsent() {
+        viewModelScope.launch {
+            bookBibleRepository.observeSubmissionEnabled(source)
+                .distinctUntilChanged()
+                .collect { enabled ->
+                    _uiState.update {
+                        it.copy(
+                            isSubmissionEnabled = enabled,
+                            isLoading = enabled && it.isLoading
+                        )
+                    }
+                    if (enabled) refreshSnapshot() else stopPolling()
+                }
+        }
+    }
+
+    /**
+     * Bật hoặc tắt việc gửi nội dung chương của sách hiện tại lên máy chủ Book Bible.
+     *
+     * @param enabled `true` để cho phép gửi và tải hồ sơ nhân vật, `false` để dừng.
+     */
+    fun setSubmissionEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            bookBibleRepository.setSubmissionEnabled(source, enabled)
+        }
     }
 
     /**
@@ -118,6 +156,7 @@ class BookBibleViewModel @Inject constructor(
      * Làm mới dữ liệu snapshot từ máy chủ backend qua mạng.
      */
     fun refreshSnapshot() {
+        if (_uiState.value.isSubmissionEnabled != true) return
         viewModelScope.launch {
             _uiState.update { it.copy(isRefreshing = true, errorMessage = null) }
             bookBibleRepository.refreshSnapshot(source, chapterNumber)
@@ -204,6 +243,8 @@ class BookBibleViewModel @Inject constructor(
      */
     private fun startPolling() {
         if (pollingJob?.isActive == true) return
+        // Không thăm dò máy chủ khi người dùng chưa bật (hoặc vừa tắt) Book Bible cho sách.
+        if (_uiState.value.isSubmissionEnabled != true) return
         pollingJob = viewModelScope.launch {
             _uiState.update { it.copy(isPolling = true) }
             val startTime = System.currentTimeMillis()

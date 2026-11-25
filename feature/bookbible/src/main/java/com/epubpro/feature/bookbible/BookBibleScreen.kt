@@ -109,11 +109,36 @@ fun BookBibleScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = viewModel::refreshSnapshot) {
-                        Icon(
-                            Icons.Default.Refresh,
-                            contentDescription = stringResource(R.string.book_bible_refresh)
-                        )
+                    if (uiState.isSubmissionEnabled == true) {
+                        IconButton(onClick = viewModel::refreshSnapshot) {
+                            Icon(
+                                Icons.Default.Refresh,
+                                contentDescription = stringResource(R.string.book_bible_refresh)
+                            )
+                        }
+                    }
+                    if (uiState.canDisableSubmission) {
+                        var showMenu by remember { mutableStateOf(false) }
+                        Box {
+                            IconButton(onClick = { showMenu = true }) {
+                                Icon(
+                                    Icons.Default.MoreVert,
+                                    contentDescription = stringResource(R.string.book_bible_more_actions)
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.book_bible_consent_disable)) },
+                                    onClick = {
+                                        showMenu = false
+                                        viewModel.setSubmissionEnabled(false)
+                                    }
+                                )
+                            }
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -128,6 +153,9 @@ fun BookBibleScreen(
                 .padding(paddingValues)
         ) {
             when {
+                uiState.isSubmissionEnabled == false -> {
+                    SubmissionConsentContent(onEnable = { viewModel.setSubmissionEnabled(true) })
+                }
                 uiState.isLoading && uiState.snapshot == null -> {
                     Box(
                         modifier = Modifier.fillMaxSize(),
@@ -176,6 +204,47 @@ fun BookBibleScreen(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * Màn giải thích và xin đồng ý trước khi bật Book Bible cho một sách EPUB cá nhân: nói rõ nội dung chương sẽ
+ * được gửi lên máy chủ, và chỉ gửi sau khi người dùng bấm bật.
+ *
+ * @param onEnable Callback khi người dùng đồng ý bật Book Bible cho sách.
+ */
+@Composable
+private fun SubmissionConsentContent(onEnable: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 24.dp, vertical = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.CloudUpload,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(48.dp)
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = stringResource(R.string.book_bible_consent_title),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(
+            text = stringResource(R.string.book_bible_consent_body),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+        Button(onClick = onEnable) {
+            Text(stringResource(R.string.book_bible_consent_enable))
         }
     }
 }

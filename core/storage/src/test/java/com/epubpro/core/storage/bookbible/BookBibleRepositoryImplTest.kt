@@ -51,7 +51,11 @@ class BookBibleRepositoryImplTest {
             payloadStore = mockPayloadStore,
             fingerprintGenerator = mockFingerprintGenerator,
             storageManager = mockStorageManager,
-            gson = gson
+            gson = gson,
+            // Sách test đã được người dùng bật Book Bible.
+            consentStore = testConsentStore(
+                enabled = arrayOf(BookBibleSource(BookBibleSourceType.LOCAL_EPUB, "book_1"))
+            )
         )
     }
 
@@ -631,5 +635,54 @@ class BookBibleRepositoryImplTest {
         val term2 = duPhong.addressTerms.firstOrNull { it.targetName == "Lục La" }
         org.junit.Assert.assertNotNull(term2)
         assertEquals("Đỗ mỗ", term2!!.selfTerm)
+    }
+
+    /**
+     * Tạo repository với công tắc Book Bible ở trạng thái mặc định (chưa bật cho sách nào).
+     *
+     * @return Repository dùng chung mock với các test khác.
+     */
+    private fun repositoryWithoutConsent() = BookBibleRepositoryImpl(
+        context = mockContext,
+        apiService = mockApiService,
+        onlineNovelApiService = mockOnlineNovelApiService,
+        bookDao = mockBookDao,
+        bookBibleDao = mockBookBibleDao,
+        payloadStore = mockPayloadStore,
+        fingerprintGenerator = mockFingerprintGenerator,
+        storageManager = mockStorageManager,
+        gson = gson,
+        consentStore = testConsentStore()
+    )
+
+    /** Sách EPUB cục bộ chưa bật Book Bible: không ghi nội dung chương, không tạo submission. */
+    @Test
+    fun enqueueChapterSubmissionSkipsLocalBookWithoutConsent() = runBlocking {
+        val repository = repositoryWithoutConsent()
+
+        val result = repository.enqueueChapterSubmission(
+            source = BookBibleSource(BookBibleSourceType.LOCAL_EPUB, "private_book"),
+            chapterNumber = 1,
+            chapterTitle = "Chương 1",
+            totalChapters = 10,
+            sourceContent = "Nội dung riêng tư",
+            bookTitle = "Sách riêng",
+            author = "Tác giả"
+        )
+
+        assertTrue(result.isSuccess)
+        verify(mockPayloadStore, never()).writePayloadAtomically(any(), any())
+        verify(mockBookBibleDao, never()).insertOrReplaceSubmission(any())
+    }
+
+    /** Sách EPUB cục bộ chưa bật Book Bible: không gọi máy chủ để lấy snapshot (kể cả gửi metadata). */
+    @Test
+    fun refreshSnapshotDoesNotCallServerWithoutConsent() = runBlocking {
+        val repository = repositoryWithoutConsent()
+
+        val result = repository.refreshSnapshot(BookBibleSource(BookBibleSourceType.LOCAL_EPUB, "private_book"), 3)
+
+        assertTrue(result.exceptionOrNull() is BookBibleSubmissionDisabledException)
+        verifyNoInteractions(mockApiService)
     }
 }

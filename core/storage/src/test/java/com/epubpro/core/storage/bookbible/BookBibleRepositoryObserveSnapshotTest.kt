@@ -64,7 +64,8 @@ class BookBibleRepositoryObserveSnapshotTest {
             payloadStore = mock<BookBiblePayloadStore>(),
             fingerprintGenerator = mock<BookBibleFingerprintGenerator>(),
             storageManager = mock<EpubStorageManager>(),
-            gson = Gson()
+            gson = Gson(),
+            consentStore = testConsentStore()
         )
 
         val emitted = mutableListOf<Any?>()
@@ -126,7 +127,8 @@ class BookBibleRepositoryObserveSnapshotTest {
             payloadStore = mock<BookBiblePayloadStore>(),
             fingerprintGenerator = mock<BookBibleFingerprintGenerator>(),
             storageManager = mock<EpubStorageManager>(),
-            gson = Gson()
+            gson = Gson(),
+            consentStore = testConsentStore()
         )
 
         val sharedFlow = repository.observeSnapshot(source, 1)

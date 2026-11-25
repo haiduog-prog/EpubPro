@@ -25,7 +25,8 @@ class BookBibleWorker @AssistedInject constructor(
     private val bookBibleDao: BookBibleDao,
     private val payloadStore: BookBiblePayloadStore,
     private val serverPreferencesManager: ServerPreferencesManager,
-    private val gson: Gson
+    private val gson: Gson,
+    private val consentStore: BookBibleConsentStore
 ) : CoroutineWorker(appContext, workerParams) {
 
     /**
@@ -44,6 +45,13 @@ class BookBibleWorker @AssistedInject constructor(
         val chapterTitle = inputData.getString(KEY_CHAPTER_TITLE)
 
         val submission = bookBibleDao.getSubmissionById(submissionDbId) ?: return Result.failure()
+        // Người dùng có thể đã tắt Book Bible sau khi yêu cầu được xếp hàng (hoặc yêu cầu được xếp từ phiên bản
+        // chưa có công tắc): bỏ yêu cầu, xóa nội dung chương tạm và bản ghi để lần bật lại sẽ gửi lại từ đầu.
+        if (!consentStore.isEnabled(localSourceKey)) {
+            payloadStore.deletePayload(submission.payloadPath)
+            bookBibleDao.deleteSubmissionById(submissionDbId)
+            return Result.success()
+        }
         val payloadPath = submission.payloadPath
         if (payloadPath.isNullOrBlank()) {
             bookBibleDao.updateSubmissionState(

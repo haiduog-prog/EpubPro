@@ -25,6 +25,13 @@ data class BookBibleSource(
      * Khóa định danh duy nhất của nguồn để lưu trữ trong database.
      */
     val uniqueKey: String get() = "${type.name}:$sourceId"
+
+    /**
+     * `true` nếu nguồn này cần người dùng bật Book Bible trước khi gửi nội dung chương lên máy chủ.
+     * Chỉ sách EPUB cục bộ (file cá nhân của người dùng) cần đồng ý; truyện online vốn đã được tải từ chính
+     * máy chủ backend nên không phát sinh thêm dữ liệu cá nhân.
+     */
+    val requiresSubmissionConsent: Boolean get() = type == BookBibleSourceType.LOCAL_EPUB
 }
 
 /**

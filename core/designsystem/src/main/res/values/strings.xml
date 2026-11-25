@@ -470,6 +470,11 @@
     <string name="book_bible_offline_cached">Đang xem dữ liệu lưu trong máy (Offline)</string>
     <string name="book_bible_refresh">Làm mới dữ liệu</string>
     <string name="book_bible_retry">Thử lại</string>
+    <string name="book_bible_consent_title">Book Bible đang tắt cho sách này</string>
+    <string name="book_bible_consent_body">Khi bật, nội dung các chương bạn mở trong sách này sẽ được gửi lên máy chủ EpubPro để AI tổng hợp hồ sơ nhân vật và dòng thời gian. Khi còn tắt, sách này không gửi bất kỳ dữ liệu nào. Bạn có thể tắt lại bất cứ lúc nào.</string>
+    <string name="book_bible_consent_enable">Bật Book Bible cho sách này</string>
+    <string name="book_bible_consent_disable">Tắt Book Bible cho sách này</string>
+    <string name="book_bible_more_actions">Tùy chọn khác</string>
     <string name="book_bible_error_loading">Không thể tải dữ liệu Book Bible</string>
     <string name="book_bible_empty_desc">Chưa có thông tin nhân vật nào được ghi nhận cho chương này.</string>
     <string name="book_bible_section_main_character">Nhân vật chính</string>

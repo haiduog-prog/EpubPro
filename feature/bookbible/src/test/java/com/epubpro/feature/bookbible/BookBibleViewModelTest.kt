@@ -71,6 +71,8 @@ class BookBibleViewModelTest {
         )
 
         `when`(repository.observeSnapshot(source, 3)).thenReturn(flowOf(sampleSnapshot))
+        // Mặc định người dùng đã bật Book Bible cho sách; test riêng bên dưới kiểm tra trạng thái tắt.
+        `when`(repository.observeSubmissionEnabled(source)).thenReturn(flowOf(true))
     }
 
     @After
@@ -116,5 +118,36 @@ class BookBibleViewModelTest {
         viewModel.selectCharacter(null)
         assertNull(viewModel.uiState.value.selectedCharacterId)
         assertNull(viewModel.uiState.value.selectedCharacter)
+    }
+
+    /**
+     * Kiểm tra sách EPUB chưa bật Book Bible: hiện trạng thái tắt và không gọi máy chủ làm mới snapshot.
+     */
+    @Test
+    fun testDisabledSubmissionDoesNotRefreshFromServer() = runTest {
+        `when`(repository.observeSubmissionEnabled(source)).thenReturn(flowOf(false))
+
+        viewModel = BookBibleViewModel(savedStateHandle, repository)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertEquals(false, state.isSubmissionEnabled)
+        assertFalse(state.isLoading)
+        assertFalse(state.canDisableSubmission)
+        org.mockito.Mockito.verify(repository, org.mockito.Mockito.never()).refreshSnapshot(source, 3)
+    }
+
+    /**
+     * Kiểm tra sách đã bật Book Bible thì cho phép tắt lại từ màn hình.
+     */
+    @Test
+    fun testEnabledLocalBookCanDisableSubmission() = runTest {
+        `when`(repository.refreshSnapshot(source, 3)).thenReturn(Result.success(sampleSnapshot))
+
+        viewModel = BookBibleViewModel(savedStateHandle, repository)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(true, viewModel.uiState.value.isSubmissionEnabled)
+        assertTrue(viewModel.uiState.value.canDisableSubmission)
     }
 }
