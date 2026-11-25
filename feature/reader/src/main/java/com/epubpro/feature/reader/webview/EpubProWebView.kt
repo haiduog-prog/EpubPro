@@ -318,20 +318,32 @@ fun EpubProWebView(
     // Tăng mỗi khi gộp thêm yêu cầu chuyển chương dưới màn che để gia hạn thời gian chờ timeout.
     var coalesceRevision by remember { mutableStateOf(0) }
 
-    val sanitizedCurrentHtml by produceState<SanitizedEpubHtml?>(
-        initialValue = preSanitizedHtml,
+    // Giữ kèm HTML nguồn của bản đã sanitize. Khi htmlContent đổi, produceState vẫn giữ bản của chương cũ
+    // cho tới khi sanitize nền xong; nếu dùng bản đó cùng chapterReloadToken mới thì WebView nạp lại chương
+    // cũ một lần thừa (và JS của document đó báo vị trí cho chương mới).
+    val sanitizedCurrent by produceState<Pair<String, SanitizedEpubHtml>?>(
+        initialValue = preSanitizedHtml?.let { htmlContent to it },
         htmlContent,
         preSanitizedHtml
     ) {
-        value = preSanitizedHtml ?: withContext(Dispatchers.Default) {
-            EpubHtmlSanitizer.sanitize(htmlContent)
-        }
+        value = htmlContent to (
+            preSanitizedHtml ?: withContext(Dispatchers.Default) {
+                EpubHtmlSanitizer.sanitize(htmlContent)
+            }
+        )
     }
 
     val requestChapterTransition by rememberUpdatedState<(ChapterTransitionDirection, Boolean) -> Unit> {
         direction, coalesceWhileCovered ->
         val webView = webViewRef
         val activeCover = transitionCover
+        // Gộp được khi nút chuyển chương bấm liên tục: màn che đang giữ khung hình cũ và lần chuyển đầu
+        // đã được gửi tới ViewModel.
+        val canCoalesce = webView != null &&
+            coalesceWhileCovered &&
+            activeCover != null &&
+            !isTransitionCapturePending &&
+            dispatchedCoverToken == activeCover.token
         if (webView == null) {
             mainHandler.post {
                 when (direction) {
@@ -339,17 +351,10 @@ fun EpubProWebView(
                     ChapterTransitionDirection.PREVIOUS -> currentOnPreviousChapter()
                 }
             }
-        } else if (
-            coalesceWhileCovered &&
-            activeCover != null &&
-            !isTransitionCapturePending &&
-            dispatchedCoverToken == activeCover.token &&
-            // Dời đích chờ trước khi gửi yêu cầu, để document đang layout không gỡ màn che trước khi
-            // document của chương mới được nạp.
-            generationTracker.extendPendingToNextLoad()
-        ) {
-            // Nút chuyển chương bấm liên tục: màn che đang giữ khung hình cũ và lần chuyển đầu đã gửi đi,
-            // nên chuyển tiếp ngay bên dưới màn che và gia hạn bộ đếm timeout.
+        } else if (canCoalesce && generationTracker.extendPendingToNextLoad()) {
+            // Đích chờ đã được dời sang lần nạp kế tiếp trước khi gửi yêu cầu, để document đang layout
+            // không gỡ màn che trước khi document của chương mới được nạp. Chuyển tiếp ngay bên dưới màn
+            // che và gia hạn bộ đếm timeout.
             coalesceRevision += 1
             Log.d("EpubPro_TRANSITION", "Coalescing chapter request under active cover direction=${direction}")
             when (direction) {
@@ -638,7 +643,9 @@ fun EpubProWebView(
                 }
             },
             update = update@{ webView ->
-                val sanitized = sanitizedCurrentHtml ?: return@update
+                val (sanitizedSource, sanitized) = sanitizedCurrent ?: return@update
+                // Bản sanitize chưa theo kịp HTML mới: chờ lần update kế tiếp (state đổi sẽ gọi lại update).
+                if (sanitizedSource !== htmlContent && sanitizedSource != htmlContent) return@update
                 webView.isVerticalScrollBarEnabled =
                     settings.showScrollBar && !settings.isHorizontalPagination
                 webView.isHorizontalScrollBarEnabled =

@@ -69,6 +69,23 @@ class ReaderChapterTransitionContractTest {
         assertTrue(source.contains("coalesceRevision != observedRevision"))
     }
 
+    /**
+     * Kiểm tra WebView chỉ tính khóa nạp khi bản sanitize thuộc đúng HTML đang cần hiển thị. Nếu không,
+     * `chapterReloadToken` mới đi kèm bản sanitize cũ sẽ nạp lại chương cũ một lần thừa trước chương mới.
+     */
+    @Test
+    fun reloadKeyWaitsForSanitizedHtmlOfCurrentContent() {
+        val updateBlock = source
+            .substringAfter("update = update@{ webView ->")
+            .substringBefore("val newHtmlKey =")
+
+        assertAppearsInOrder(
+            updateBlock,
+            "val (sanitizedSource, sanitized) = sanitizedCurrent ?: return@update",
+            "if (sanitizedSource !== htmlContent && sanitizedSource != htmlContent) return@update"
+        )
+    }
+
     private fun assertAppearsInOrder(text: String, vararg markers: String) {
         var previousIndex = -1
         markers.forEach { marker ->

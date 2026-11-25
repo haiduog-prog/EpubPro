@@ -293,7 +293,7 @@ fun ReaderScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "Không thể tải nội dung sách",
+                    text = stringResource(R.string.reader_load_content_error),
                     style = MaterialTheme.typography.titleMedium
                 )
                 Spacer(modifier = Modifier.height(8.dp))
@@ -303,7 +303,7 @@ fun ReaderScreen(
                 )
                 Spacer(modifier = Modifier.height(16.dp))
                 Button(onClick = viewModel::retryLoad) {
-                    Text("Thử lại")
+                    Text(stringResource(R.string.reader_retry))
                 }
             }
         } else if (uiState.chapters.isNotEmpty()) {
@@ -722,7 +722,7 @@ fun ReaderScreen(
                 chapterTitle = uiState.chapters
                     .getOrNull(uiState.currentChapterIndex)
                     ?.title
-                    ?: "Chương " + (uiState.currentChapterIndex + 1),
+                    ?: stringResource(R.string.reader_chapter_number_format, uiState.currentChapterIndex + 1),
                 onDismiss = viewModel::dismissAiBottomSheet,
                 onSaveConfiguration = viewModel::saveAiConfiguration,
                 onTestConnection = viewModel::testAiConnection,

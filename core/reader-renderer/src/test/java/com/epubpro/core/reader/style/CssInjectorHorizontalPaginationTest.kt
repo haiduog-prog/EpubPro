@@ -165,6 +165,53 @@ class CssInjectorHorizontalPaginationTest {
     }
 
     @Test
+    fun committedChapterHasInitLayoutSafetyNetSoGesturesCannotStayBlocked() {
+        val script = CssInjector.generateJsBridgeScript(
+            isHorizontalPagination = true,
+            settings = asymmetricSettings
+        )
+
+        val replaceBody = script
+            .substringAfter("function replaceAdjacentChapterInDocument(")
+            .substringBefore("function mountPageOverlay(")
+        val scheduleIndex = replaceBody.indexOf("scheduleInitLayout();")
+        val safetyNetIndex = replaceBody.indexOf("setTimeout(initLayout, 500);")
+        assertTrue(scheduleIndex >= 0)
+        assertTrue(safetyNetIndex > scheduleIndex)
+    }
+
+    @Test
+    fun blockedTapStillRunsConfiguredActionSoControlsCanToggle() {
+        val script = CssInjector.generateJsBridgeScript(
+            isHorizontalPagination = true,
+            settings = asymmetricSettings
+        )
+
+        val blockedTouchEnd = script
+            .substringAfter("document.addEventListener('touchend'")
+            .substringBefore("if (!isDraggingPage) return;")
+        assertTrue(blockedTouchEnd.contains("handleConfiguredTap(blockedEndX, blockedEndY);"))
+    }
+
+    @Test
+    fun boundarySwipeWithoutPreviewSnapsBackAndUsesCoveredFallback() {
+        val script = CssInjector.generateJsBridgeScript(
+            isHorizontalPagination = true,
+            settings = asymmetricSettings
+        )
+
+        assertTrue(script.contains("(!hasNextChapter || !hasNextPreview)"))
+        assertTrue(script.contains("(!hasPreviousChapter || !hasPreviousPreview)"))
+        assertTrue(script.contains("var useCoveredFallback = boundaryTriggered && !hasAdjacentPreview;"))
+        val finishBody = script
+            .substringAfter("function finishBoundaryGesture()")
+            .substringBefore("replaceAdjacentChapterInDocument(adjacentHtml, chapterDirection)")
+        assertTrue(finishBody.contains("if (useCoveredFallback)"))
+        assertTrue(finishBody.contains("requestFallbackBoundary(chapterDirection);"))
+        assertTrue(script.contains("(boundaryTriggered && !useCoveredFallback)"))
+    }
+
+    @Test
     fun layoutReadyCarriesGenerationAfterInitialPageSettles() {
         val script = CssInjector.generateJsBridgeScript(
             isHorizontalPagination = true,

@@ -627,7 +627,7 @@ class ReaderViewModel @Inject constructor(
                 snapshotSanitizedHtml?.let { sanitizedChapterCache.put(sanitizedCacheKey, it) }
                 val restoredSanitizedHtml = snapshotSanitizedHtml ?: sanitizedChapterCache.get(sanitizedCacheKey)
                 val currentHtml = cachedSnapshot?.normalizedHtml ?: epubEngine.loadChapterHtml(file, entryName)
-                require(currentHtml.isNotBlank()) { "Chương hiện tại không có nội dung" }
+                require(currentHtml.isNotBlank()) { context.getString(R.string.reader_empty_chapter_error) }
                 val convertedHtml = convertChapterHtml(currentHtml)
                 val suggestConvert = convertedHtml == null && !_uiState.value.convertEnabled &&
                     withContext(Dispatchers.Default) { looksChinese(currentHtml) }
@@ -674,7 +674,7 @@ class ReaderViewModel @Inject constructor(
                 enqueueBookBibleChapter(
                     book = book,
                     chapterIndex = initialIndex,
-                    chapterTitle = headers.getOrNull(initialIndex)?.title ?: "Chương ${initialIndex + 1}",
+                    chapterTitle = headers.getOrNull(initialIndex)?.title ?: context.getString(R.string.reader_chapter_number_format, initialIndex + 1),
                     originalHtml = currentHtml
                 )
 
@@ -728,7 +728,7 @@ class ReaderViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         isLoading = false,
-                        loadError = error.message ?: "Không thể tải nội dung sách"
+                        loadError = error.message ?: context.getString(R.string.reader_load_content_error)
                     )
                 }
             }
@@ -878,7 +878,7 @@ class ReaderViewModel @Inject constructor(
                     enqueueBookBibleChapter(
                         book = book,
                         chapterIndex = index,
-                        chapterTitle = state.chapters.getOrNull(index)?.title ?: "Chương ${index + 1}",
+                        chapterTitle = state.chapters.getOrNull(index)?.title ?: context.getString(R.string.reader_chapter_number_format, index + 1),
                         originalHtml = currentHtml
                     )
                 }
@@ -1308,7 +1308,7 @@ class ReaderViewModel @Inject constructor(
         viewModelScope.launch {
             val state = _uiState.value
             val chapterTitle = state.chapters.getOrNull(state.currentChapterIndex)?.title
-                ?: "Chapter ${state.currentChapterIndex + 1}"
+                ?: context.getString(R.string.reader_chapter_number_format, state.currentChapterIndex + 1)
             bookmarkRepository.addBookmark(
                 Bookmark(
                     id = UUID.randomUUID().toString(),
@@ -1640,12 +1640,15 @@ class ReaderViewModel @Inject constructor(
     fun setContentVersion(version: ReaderContentVersion) {
         val state = _uiState.value
         if (version == ReaderContentVersion.AI && state.aiChapterHtml == null) return
+        // Cùng phiên bản thì HTML không đổi, WebView không nạp lại và JS sẽ không báo số trang mới.
+        if (version == state.contentVersion) return
         _uiState.update {
             it.copy(
                 contentVersion = version,
                 initialPageRequest = 1,
                 currentPageInChapter = 1,
-                totalPagesInChapter = 1,
+                // Chưa đo cho tới khi document mới báo số trang; tránh nhãn nháy "1 / 1".
+                totalPagesInChapter = UNKNOWN_TOTAL_PAGES,
                 firstVisibleParagraphIndex = 0,
                 currentCfi = ""
             )

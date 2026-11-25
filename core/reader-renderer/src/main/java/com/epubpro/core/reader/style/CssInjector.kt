@@ -1026,6 +1026,9 @@ object CssInjector {
                         forceBodyDimensions();
                         if (window.epubproApplyContentFilter) window.epubproApplyContentFilter();
                         scheduleInitLayout();
+                        // Same safety net as the initial load: if fonts.ready never settles, still lay out,
+                        // otherwise isLayoutReady stays false and every gesture keeps being swallowed.
+                        setTimeout(initLayout, 500);
                         return true;
                     } catch (error) {
                         dbg('CHAPTER_COMMIT_ERROR', error && error.message ? error.message : 'Unable to replace chapter DOM');
@@ -1129,6 +1132,10 @@ object CssInjector {
                     if (e.touches && e.touches.length === 1) {
                         isGestureBlockedByLayout = !!window.epubproIsHorizontal && !isLayoutReady;
                         if (isGestureBlockedByLayout) {
+                            // Remember where the blocked touch started so a plain tap can still toggle controls.
+                            startTouchX = e.touches[0].clientX;
+                            startTouchY = e.touches[0].clientY;
+                            startTouchTime = Date.now();
                             isDraggingPage = false;
                             return;
                         }
@@ -1187,8 +1194,12 @@ object CssInjector {
                             var clampedX = deltaX;
                             var hasNextPreview = !!(nextChapterHtml && nextChapterHtml.trim());
                             var hasPreviousPreview = !!(previousChapterHtml && previousChapterHtml.trim());
-                            var isBlockedNextBoundary = dragDirection < 0 && currentPage === totalPages && !hasNextChapter;
-                            var isBlockedPreviousBoundary = dragDirection > 0 && currentPage === 1 && !hasPreviousChapter;
+                            // No adjacent chapter, or its preview has not arrived yet: dragging further would
+                            // reveal an empty bottom layer (white), so apply rubber-band resistance instead.
+                            var isBlockedNextBoundary = dragDirection < 0 && currentPage === totalPages &&
+                                (!hasNextChapter || !hasNextPreview);
+                            var isBlockedPreviousBoundary = dragDirection > 0 && currentPage === 1 &&
+                                (!hasPreviousChapter || !hasPreviousPreview);
 
                             if (isBlockedNextBoundary) {
                                 clampedX = Math.max(-pw * 0.3, deltaX * 0.3);
@@ -1206,6 +1217,17 @@ object CssInjector {
                 document.addEventListener('touchend', function(e) {
                     if (isGestureBlockedByLayout) {
                         isGestureBlockedByLayout = false;
+                        // A plain tap still runs its configured action: page turns are ignored by
+                        // epubproGoNext/PrevPage until the layout is ready, but toggling controls works.
+                        if (e.changedTouches && e.changedTouches.length > 0) {
+                            var blockedEndX = e.changedTouches[0].clientX;
+                            var blockedEndY = e.changedTouches[0].clientY;
+                            if (Math.abs(blockedEndX - startTouchX) <= 15 &&
+                                Math.abs(blockedEndY - startTouchY) <= 15 &&
+                                Date.now() - startTouchTime <= 300) {
+                                handleConfiguredTap(blockedEndX, blockedEndY);
+                            }
+                        }
                         return;
                     }
                     if (!isDraggingPage) return;
@@ -1258,6 +1280,9 @@ object CssInjector {
                             : (currentDeltaX >= threshold || (currentDeltaX > pw * 0.20 && velocity > 0.35));
                         var hasAdjacentChapter = isNextBoundary ? hasNextChapter : hasPreviousChapter;
                         var boundaryTriggered = hasAdjacentChapter && crossedBoundaryThreshold;
+                        // Without a preview, sliding the page out would reveal an empty layer. Snap back to
+                        // the current page instead and let native cover the reload with a PixelCopy snapshot.
+                        var useCoveredFallback = boundaryTriggered && !hasAdjacentPreview;
                         if (boundaryTriggered) {
                             if (isNextBoundary && window.ReaderJsBridge && window.ReaderJsBridge.onNextChapterPrefetchRequested) {
                                 window.ReaderJsBridge.onNextChapterPrefetchRequested();
@@ -1277,8 +1302,14 @@ object CssInjector {
                                 return;
                             }
 
-                            var chapterRequested = false;
                             var chapterDirection = isNextBoundary ? 1 : -1;
+                            if (useCoveredFallback) {
+                                cleanupCoverOverlay();
+                                requestFallbackBoundary(chapterDirection);
+                                return;
+                            }
+
+                            var chapterRequested = false;
                             var adjacentHtml = isNextBoundary ? nextChapterHtml : previousChapterHtml;
                             var committedInDocument = replaceAdjacentChapterInDocument(adjacentHtml, chapterDirection);
                             if (committedInDocument && window.ReaderJsBridge && window.ReaderJsBridge.onAdjacentChapterCommitted) {
@@ -1312,7 +1343,7 @@ object CssInjector {
                                 finishBoundaryGesture();
                             });
                             boundaryOverlay.style.transition = 'transform ' + (transitionSpeedMs / 1000).toFixed(2) + 's cubic-bezier(0.2, 0.8, 0.2, 1)';
-                            boundaryOverlay.style.transform = boundaryTriggered
+                            boundaryOverlay.style.transform = (boundaryTriggered && !useCoveredFallback)
                                 ? (isNextBoundary ? 'translateX(-' + pw + 'px)' : 'translateX(' + pw + 'px)')
                                 : 'translateX(0px)';
                         }
