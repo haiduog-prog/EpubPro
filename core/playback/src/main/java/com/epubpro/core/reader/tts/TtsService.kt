@@ -94,8 +94,15 @@ class TtsService : Service() {
     private lateinit var mediaSessionManager: TtsMediaSessionManager
     private lateinit var playbackNotificationManager: TtsPlaybackNotificationManager
     private lateinit var audioFocusController: TtsAudioFocusController
+    private lateinit var playbackWakeLock: TtsPlaybackWakeLock
 
     private var chunks: List<TtsChunk> = emptyList()
+    private var cachedTotalParagraphs: Int = 0
+    private var cachedWidgetParagraphIndex: Int = -1
+    private var cachedWidgetParagraphText: String = ""
+    private val baseLaunchIntent: Intent? by lazy(LazyThreadSafetyMode.NONE) {
+        packageManager.getLaunchIntentForPackage(packageName)
+    }
     private var currentIndex: Int = 0
     private var currentChapterIndex: Int = 0
     private var currentChapterTitle: String = ""
@@ -204,6 +211,13 @@ class TtsService : Service() {
         serviceScope.launch {
             preferencesManager.settingsFlow.collect { settings ->
                 updateSettings(settings)
+            }
+        }
+        // Giữ CPU thức trong lúc đọc khi tắt màn hình (tổng hợp đoạn kế tiếp, chuyển chương) và nhả khi dừng.
+        playbackWakeLock = TtsPlaybackWakeLock(applicationContext)
+        serviceScope.launch {
+            _playerState.collect { state ->
+                playbackWakeLock.update(state)
             }
         }
         serviceScope.launch {
@@ -355,6 +369,19 @@ class TtsService : Service() {
             }
         }
     }
+    /**
+     * Nạp nội dung chương cho phiên phát TTS; quá trình tách câu `BreakIterator` trên toàn chương
+     * được chuyển sang [Dispatchers.Default] để không chặn Main Thread khi bấm Play.
+     *
+     * @param id Mã sách.
+     * @param title Tên sách.
+     * @param bookAuthor Tác giả sách.
+     * @param parsedChunks Danh sách đoạn văn đã bóc tách từ HTML.
+     * @param startIndex Chỉ số đoạn văn bắt đầu đọc.
+     * @param chapterIndex Chỉ số chương.
+     * @param chapterTitle Tiêu đề chương.
+     * @param preferAiContent `true` nếu đang đọc bản AI thuần Việt.
+     */
     fun loadContent(
         id: String,
         title: String,
@@ -380,13 +407,6 @@ class TtsService : Service() {
         this.preferAiContent = preferAiContent
         activeSettings = preferencesManager.getSettings().normalizedForPlayback()
         applySettingsToEngines(activeSettings)
-
-        chunks = TtsSentenceSegmenter.segment(parsedChunks, activeSettings.language)
-        currentIndex = chunks.indexOfFirst { it.paragraphIndex >= startIndex }
-            .takeIf { it >= 0 }
-            ?: 0
-        rebuildEstimatedTimeline(activeSettings.speed)
-        saveCurrentSnapshot(currentChunkStartPositionMs)
         refreshBookVisuals(id)
 
         chapterPreparation?.cancel()
@@ -398,11 +418,30 @@ class TtsService : Service() {
             }
         }
 
-        if (chunks.isEmpty()) {
-            showPlaybackError("Chương hiện tại không có nội dung để đọc")
-            return
+        val loadGeneration = playbackGeneration
+        val languageSnapshot = activeSettings.language
+        updateActiveChunks(emptyList())
+        currentIndex = 0
+        enterChapterTransitionState()
+        serviceScope.launch {
+            val segmentedChunks = withContext(Dispatchers.Default) {
+                TtsSentenceSegmenter.segment(parsedChunks, languageSnapshot)
+            }
+            if (loadGeneration != playbackGeneration) return@launch
+
+            updateActiveChunks(segmentedChunks)
+            currentIndex = chunks.indexOfFirst { it.paragraphIndex >= startIndex }
+                .takeIf { it >= 0 }
+                ?: 0
+            rebuildEstimatedTimeline(activeSettings.speed)
+            saveCurrentSnapshot(currentChunkStartPositionMs)
+
+            if (chunks.isEmpty()) {
+                showPlaybackError("Chương hiện tại không có nội dung để đọc")
+                return@launch
+            }
+            completeChapterTransition()
         }
-        playCurrentChunk()
     }
 
     /**
@@ -1111,9 +1150,12 @@ class TtsService : Service() {
         if (chapterIndex < 0) return null
         val content = chapterPlaybackCoordinator.loadChapter(chapterIndex) ?: return null
         ensureRestoreCurrent(expectedGeneration)
+        val segmentedChunks = withContext(Dispatchers.Default) {
+            TtsSentenceSegmenter.segment(content.chunks, activeSettings.language)
+        }
         return RestoredChapter(
             content = content,
-            chunks = TtsSentenceSegmenter.segment(content.chunks, activeSettings.language)
+            chunks = segmentedChunks
         )
     }
 
@@ -1229,7 +1271,7 @@ class TtsService : Service() {
         preferAiContent = snapshot.preferAiContent
         currentChapterIndex = restored.chapter.content.chapterIndex
         currentChapterTitle = restored.chapter.content.chapterTitle
-        chunks = restored.chapter.chunks
+        updateActiveChunks(restored.chapter.chunks)
         currentIndex = restored.currentIndex
         currentCoverBitmap = restored.coverBitmap
         activeSettings = preferencesManager.getSettings().normalizedForPlayback()
@@ -1246,7 +1288,7 @@ class TtsService : Service() {
     }
 
     private fun clearRestoredPlaybackData() {
-        chunks = emptyList()
+        updateActiveChunks(emptyList())
         currentIndex = 0
         currentChapterIndex = 0
         bookId = ""
@@ -1469,16 +1511,18 @@ class TtsService : Service() {
                 return
             }
 
-            val nextChunks = TtsSentenceSegmenter.segment(
-                nextChapter.chunks,
-                activeSettings.language
-            )
+            val nextChunks = withContext(Dispatchers.Default) {
+                TtsSentenceSegmenter.segment(
+                    nextChapter.chunks,
+                    activeSettings.language
+                )
+            }
             if (nextChunks.isNotEmpty()) {
                 chapterPlaybackCoordinator.saveChapterProgress(nextChapter.chapterIndex)
                 if (navigationGeneration != playbackGeneration) return
                 currentChapterIndex = nextChapter.chapterIndex
                 currentChapterTitle = nextChapter.chapterTitle
-                chunks = nextChunks
+                updateActiveChunks(nextChunks)
                 currentIndex = 0
                 rebuildEstimatedTimeline(activeSettings.speed)
                 preferencesManager.saveLastTtsChunkIndex(
@@ -1535,16 +1579,18 @@ class TtsService : Service() {
                 continue
             }
 
-            val previousChunks = TtsSentenceSegmenter.segment(
-                previousChapter.chunks,
-                activeSettings.language
-            )
+            val previousChunks = withContext(Dispatchers.Default) {
+                TtsSentenceSegmenter.segment(
+                    previousChapter.chunks,
+                    activeSettings.language
+                )
+            }
             if (previousChunks.isNotEmpty()) {
                 chapterPlaybackCoordinator.saveChapterProgress(previousChapter.chapterIndex)
                 if (navigationGeneration != playbackGeneration) return
                 currentChapterIndex = previousChapter.chapterIndex
                 currentChapterTitle = previousChapter.chapterTitle
-                chunks = previousChunks
+                updateActiveChunks(previousChunks)
                 currentIndex = chunks.lastIndex
                 rebuildEstimatedTimeline(activeSettings.speed)
                 preferencesManager.saveLastTtsChunkIndex(
@@ -2089,6 +2135,18 @@ class TtsService : Service() {
         }
     }
 
+    /**
+     * Cập nhật danh sách câu [newChunks] đang phát và làm mới bộ nhớ đệm số đoạn văn.
+     *
+     * @param newChunks Danh sách câu đã phân đoạn của chương hiện tại.
+     */
+    private fun updateActiveChunks(newChunks: List<TtsChunk>) {
+        chunks = newChunks
+        cachedTotalParagraphs = totalParagraphCount(newChunks)
+        cachedWidgetParagraphIndex = -1
+        cachedWidgetParagraphText = ""
+    }
+
     private fun publishWidgetState() {
         if (!::widgetStateStore.isInitialized) return
         val presentation = currentPlaybackPresentation()
@@ -2101,6 +2159,11 @@ class TtsService : Service() {
         } else {
             0f
         }
+        val activeParagraphIndex = chunks.getOrNull(currentIndex)?.paragraphIndex ?: 0
+        if (cachedWidgetParagraphIndex != activeParagraphIndex) {
+            cachedWidgetParagraphIndex = activeParagraphIndex
+            cachedWidgetParagraphText = buildReadingWidgetText(activeParagraphIndex)
+        }
         val changed = widgetStateStore.saveState(
             TtsWidgetState(
                 bookTitle = bookTitle,
@@ -2111,11 +2174,9 @@ class TtsService : Service() {
                 durationMs = estimatedTotalDurationMs.coerceAtLeast(0L),
                 hasSnapshot = playbackSnapshotStore.getSnapshot() != null,
                 coverPath = bookCoverPath,
-                paragraphIndex = chunks.getOrNull(currentIndex)?.paragraphIndex ?: 0,
-                totalParagraphs = totalParagraphCount(chunks),
-                paragraphText = buildReadingWidgetText(
-                    chunks.getOrNull(currentIndex)?.paragraphIndex ?: 0
-                )
+                paragraphIndex = activeParagraphIndex,
+                totalParagraphs = cachedTotalParagraphs,
+                paragraphText = cachedWidgetParagraphText
             )
         )
         if (changed) {
@@ -2254,7 +2315,8 @@ class TtsService : Service() {
     }
 
     private fun createOpenBookIntent(): Intent? {
-        val intent = packageManager.getLaunchIntentForPackage(packageName) ?: return null
+        val template = baseLaunchIntent ?: return null
+        val intent = Intent(template)
         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val snapshot = playbackSnapshotStore.getSnapshot()
         val targetBookId = bookId.ifBlank { snapshot?.bookId.orEmpty() }
@@ -2448,6 +2510,7 @@ class TtsService : Service() {
         piperTtsEngineWrapper.shutdown()
         vieNeuTtsEngineWrapper.shutdown()
         if (::bubbleRuntime.isInitialized) bubbleRuntime.close()
+        if (::playbackWakeLock.isInitialized) playbackWakeLock.release()
         serviceJob.cancel()
         mediaSessionManager.release()
         currentCoverBitmap = null

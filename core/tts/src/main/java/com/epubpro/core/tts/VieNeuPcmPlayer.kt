@@ -5,9 +5,11 @@ import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
@@ -252,22 +254,23 @@ open class VieNeuPcmPlayer(
         trailingSilenceSamples: Int = 0,
         isCancelled: () -> Boolean = { false },
         onSpeechStarted: (() -> Unit)? = null,
-    ): Boolean {
+    ): Boolean = withContext(Dispatchers.IO) {
         val activeEpoch = ensureStarted()
         if (prePauseSamples > 0 && writeSilence(prePauseSamples, activeEpoch, isCancelled) < 0L) {
-            return false
+            return@withContext false
         }
         onSpeechStarted?.invoke()
         val speechEndFrame = writeSamples(samples, activeEpoch, isCancelled)
-        if (speechEndFrame < 0L) return false
+        if (speechEndFrame < 0L) return@withContext false
         if (trailingSilenceSamples > 0 && writeSilence(trailingSilenceSamples, activeEpoch, isCancelled) < 0L) {
-            return false
+            return@withContext false
         }
-        return awaitFramePlayed(speechEndFrame, activeEpoch, isCancelled)
+        awaitFramePlayed(speechEndFrame, activeEpoch, isCancelled)
     }
 
     /**
      * Phát một đoạn mẫu ngắn độc lập (dùng cho nút Nghe thử trong Cài đặt) rồi tự giải phóng phần cứng.
+     * Luôn thực thi trên [Dispatchers.IO] để `WRITE_BLOCKING` không bao giờ chặn Main Thread.
      *
      * @param samples Mảng mẫu PCM cần phát.
      * @param isCancelled Hàm kiểm tra yêu cầu hủy.
@@ -275,12 +278,12 @@ open class VieNeuPcmPlayer(
     open suspend fun playOneShot(
         samples: FloatArray,
         isCancelled: () -> Boolean = { false },
-    ) {
-        if (samples.isEmpty()) return
+    ) = withContext(Dispatchers.IO) {
+        if (samples.isEmpty()) return@withContext
         pauseAndFlush()
         try {
             val activeEpoch = ensureStarted()
-            if (writeSamples(samples, activeEpoch, isCancelled) < 0L) return
+            if (writeSamples(samples, activeEpoch, isCancelled) < 0L) return@withContext
             val targetFrame = writeSilence(sampleRate / 12, activeEpoch, isCancelled)
             if (targetFrame >= 0L) {
                 awaitFramePlayed(targetFrame, activeEpoch, isCancelled)
@@ -292,30 +295,20 @@ open class VieNeuPcmPlayer(
 
     /**
      * Dừng phát ngay lập tức, xoá toàn bộ dữ liệu đang xếp hàng trong [AudioTrack] và giải phóng track.
+     *
+     * Tách tham chiếu [AudioTrack] và đánh thức `WRITE_BLOCKING` ngay tức thì trước khi vào `trackLock`
+     * để luồng UI không bị chờ khi luồng ghi nền đang giữ lock hoặc giải phóng phần cứng.
      */
     open fun pauseAndFlush() {
         epoch.incrementAndGet()
-        synchronized(trackLock) {
+        val trackToRelease = synchronized(trackLock) {
             val current = track
             track = null
             totalFramesWritten = 0L
-            if (current != null) {
-                try {
-                    current.pause()
-                    current.flush()
-                } catch (_: IllegalStateException) {
-                }
-                try {
-                    current.stop()
-                } catch (_: IllegalStateException) {
-                }
-                try {
-                    current.release()
-                } catch (_: IllegalStateException) {
-                }
-            }
             abandonAudioFocusLocked()
+            current
         }
+        releaseTrackQuietly(trackToRelease)
     }
 
     /**
@@ -355,17 +348,30 @@ open class VieNeuPcmPlayer(
         val current = track
         track = null
         totalFramesWritten = 0L
-        if (current != null) {
-            try {
-                current.stop()
-            } catch (_: IllegalStateException) {
-            }
-            try {
-                current.release()
-            } catch (_: IllegalStateException) {
-            }
-        }
         abandonAudioFocusLocked()
+        releaseTrackQuietly(current)
+    }
+
+    /**
+     * Dừng, xả buffer và giải phóng [AudioTrack] an toàn ngoài `trackLock`.
+     *
+     * @param target Đối tượng [AudioTrack] cần đóng (có thể `null`).
+     */
+    private fun releaseTrackQuietly(target: AudioTrack?) {
+        if (target == null) return
+        try {
+            target.pause()
+            target.flush()
+        } catch (_: IllegalStateException) {
+        }
+        try {
+            target.stop()
+        } catch (_: IllegalStateException) {
+        }
+        try {
+            target.release()
+        } catch (_: IllegalStateException) {
+        }
     }
 
     companion object {

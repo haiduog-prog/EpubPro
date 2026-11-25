@@ -39,8 +39,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -80,7 +84,16 @@ fun TtsSetupBottomSheet(
     var showLanguageMenu by remember { mutableStateOf(false) }
     var showVoiceMenu by remember { mutableStateOf(false) }
 
-    val availableVoices = onGetAvailableVoices(isAiVoice, language)
+    val currentOnGetAvailableVoices by rememberUpdatedState(onGetAvailableVoices)
+    val availableVoices by produceState(
+        initialValue = emptyList<TtsVoice>(),
+        key1 = isAiVoice,
+        key2 = language
+    ) {
+        value = withContext(Dispatchers.IO) {
+            currentOnGetAvailableVoices(isAiVoice, language)
+        }
+    }
     val hasVieNeuVoices = availableVoices.any { it.aiBackend == AiTtsBackend.VIENEU_NANO }
     val hasSherpaVoices = availableVoices.any {
         it.aiBackend == AiTtsBackend.SHERPA_VITS || it.aiBackend == null

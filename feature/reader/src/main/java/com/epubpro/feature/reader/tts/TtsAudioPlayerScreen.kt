@@ -60,7 +60,7 @@ fun TtsAudioPlayerScreen(
             val startTime = System.currentTimeMillis() - currentChunkElapsedMs
             while (true) {
                 currentChunkElapsedMs = System.currentTimeMillis() - startTime
-                kotlinx.coroutines.delay(100)
+                kotlinx.coroutines.delay(250)
             }
         }
     }
@@ -391,42 +391,54 @@ fun TtsAudioPlayerScreen(
 
 @Composable
 fun AudioVisualizer(isPlaying: Boolean) {
-    val infiniteTransition = rememberInfiniteTransition()
-    val heights = List(24) { index ->
-        if (isPlaying) {
-            infiniteTransition.animateFloat(
-                initialValue = 8f,
-                targetValue = (20..40).random().toFloat(),
-                animationSpec = infiniteRepeatable(
-                    animation = tween(durationMillis = 300 + index * 30, easing = LinearEasing),
-                    repeatMode = RepeatMode.Reverse
-                )
-            ).value
-        } else {
-            8f
-        }
+    val barTargets = remember {
+        FloatArray(24) { index -> 18f + ((index * 7 + 5) % 22).toFloat() }
+    }
+    val phaseState = if (isPlaying) {
+        val infiniteTransition = rememberInfiniteTransition(label = "tts_visualizer")
+        infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = (2.0 * Math.PI).toFloat(),
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1200, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "tts_visualizer_phase"
+        )
+    } else {
+        null
     }
 
-    Row(
+    Canvas(
         modifier = Modifier
             .fillMaxWidth()
-            .height(44.dp),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically
+            .height(44.dp)
     ) {
-        heights.forEach { h ->
-            Canvas(
-                modifier = Modifier
-                    .width(4.dp)
-                    .height(h.dp)
-                    .padding(horizontal = 1.dp)
-            ) {
-                drawRoundRect(
-                    color = Color(0xFFD97757).copy(alpha = 0.7f),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx(), 2.dp.toPx())
-                )
+        val barCount = barTargets.size
+        val barWidthPx = 4.dp.toPx()
+        val spacingPx = 5.dp.toPx()
+        val totalWidth = barCount * barWidthPx + (barCount - 1) * spacingPx
+        val startX = ((size.width - totalWidth) / 2f).coerceAtLeast(0f)
+        val corner = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx(), 2.dp.toPx())
+        val barColor = Color(0xFFD97757).copy(alpha = 0.7f)
+        val phase = phaseState?.value ?: 0f
+
+        for (index in 0 until barCount) {
+            val heightDp = if (isPlaying) {
+                val wave = (kotlin.math.sin(phase + index * 0.55f) + 1f) * 0.5f
+                8f + (barTargets[index] - 8f) * wave
+            } else {
+                8f
             }
-            Spacer(modifier = Modifier.width(3.dp))
+            val barHeightPx = heightDp.dp.toPx().coerceAtMost(size.height)
+            val x = startX + index * (barWidthPx + spacingPx)
+            val y = (size.height - barHeightPx) / 2f
+            drawRoundRect(
+                color = barColor,
+                topLeft = androidx.compose.ui.geometry.Offset(x, y),
+                size = androidx.compose.ui.geometry.Size(barWidthPx, barHeightPx),
+                cornerRadius = corner
+            )
         }
     }
 }

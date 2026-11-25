@@ -1,11 +1,16 @@
 # Android Text-to-Speech & Background Media Architecture
 
 > Tổng hợp kiến thức về hệ thống TTS Engine, Sherpa-ONNX, VieNeu-TTS v3-Nano (`sea-g2p`), Foreground Service, MediaSessionCompat và đồng bộ Highlight trong WebView EPUB Reader.
-> Cập nhật lần cuối: 2026-11-13
+> Cập nhật lần cuối: 2026-11-25
 
 ---
 
 ## Architecture
+
+### `PARTIAL_WAKE_LOCK` Theo Vòng Đời State Phát TTS Khi Tắt Màn Hình
+- **Ngày**: 2026-11-25
+- **Chi tiết**: Khi màn hình tắt, khoảng lặng lúc tổng hợp giọng AI hoặc chuyển chương không có luồng audio nên hệ thống có thể đưa CPU vào giấc ngủ. `TtsPlaybackWakeLock` (tách chính sách thuần `TtsWakeLockPolicy` để unit test không cần Android framework) giữ `PARTIAL_WAKE_LOCK` không đếm tham chiếu (`setReferenceCounted(false)`) với thời hạn an toàn (`10 phút`), tự gia hạn tối đa mỗi `60 giây` khi `_playerState` là `Playing`/`Preparing`/`Loading`, và nhả ngay khi `Idle`/`Paused`/`Completed`/`Error` hoặc `onDestroy()`.
+- **Files liên quan**: `core/playback/src/main/java/com/epubpro/core/reader/tts/TtsPlaybackWakeLock.kt`, `core/playback/src/test/java/com/epubpro/core/reader/tts/TtsWakeLockPolicyTest.kt`, `core/playback/src/main/java/com/epubpro/core/reader/tts/TtsService.kt`, `app/src/main/AndroidManifest.xml`
 
 ### Dual AI TTS Backend (`VieNeu v3-Nano` + `Sherpa VITS`) & `arm64-v8a` Guard
 - **Ngày**: 2026-11-13
@@ -97,6 +102,20 @@
 
 ---
 ## Bugs & Solutions
+
+### Đẩy `pauseAndFlush()` Ra Coroutine Nền Gây Cắt Mất Câu Mới & Race `_uiState` Khi Preview VieNeu
+- **Ngày**: 2026-11-25
+- **Vấn đề**: Đẩy `pcmPlayer.pauseAndFlush()` sang `launch` nền làm lệnh dọn cũ chạy muộn tăng `epoch` và giải phóng nhầm `AudioTrack` của câu vừa bắt đầu; trong `AudioSettingsViewModel`, chuyển `playVieNeuPreview` sang `Dispatchers.IO` nhưng giữ `_uiState.value = _uiState.value.copy(...)` gây race read-modify-write và `finally` của job cũ tắt nhầm `isPlaying = false` của preview mới.
+- **Root cause**: Tách bất đồng bộ bước tăng `epoch` ra khỏi `stopPlayback()`; cập nhật `MutableStateFlow` không nguyên tử giữa IO và Main thread.
+- **Fix**: Gọi `pcmPlayer.pauseAndFlush()` trực tiếp (chỉ đưa bước `releaseTrackQuietly` ra ngoài `trackLock`); dùng `_uiState.update { ... }` và chỉ đặt `isPlaying = false` trong `finally` khi `previewGeneration.get() == generation` (tránh lỗi so sánh `previewJob` chưa kịp gán khi chạy với `Dispatchers.Unconfined`).
+- **Files liên quan**: `core/playback/src/main/java/com/epubpro/core/reader/tts/VieNeuTtsEngineWrapper.kt`, `core/tts/src/main/java/com/epubpro/core/tts/VieNeuPcmPlayer.kt`, `feature/profile/src/main/java/com/epubpro/feature/profile/audio/AudioSettingsViewModel.kt`
+
+### Tách Câu Bất Đồng Bộ Trong `TtsService.loadContent()` Để Lại `chunks` Cũ & Bỏ Qua Pause
+- **Ngày**: 2026-11-25
+- **Vấn đề**: Chuyển `TtsSentenceSegmenter.segment()` sang `Dispatchers.Default` trong `loadContent()` nhưng vẫn giữ `chunks` chương cũ khi `bookId`/`currentChapterIndex` đã đổi, dễ ghi sai snapshot/widget hoặc tự phát khi người dùng bấm Pause trong lúc đang tách câu.
+- **Root cause**: Chưa xóa `chunks` cũ và chưa đưa service vào trạng thái chuyển tiếp trước khi `launch`.
+- **Fix**: Gọi `updateActiveChunks(emptyList())`, `currentIndex = 0`, `enterChapterTransitionState()` ngay trước `launch`, và kết thúc bằng `completeChapterTransition()` để tôn trọng trạng thái Pause.
+- **Files liên quan**: `core/playback/src/main/java/com/epubpro/core/reader/tts/TtsService.kt`
 
 ### Eager Android Fields, Direct `Log.*` Calls & Cross-Module Constructor Visibility Breaking JVM Unit Tests
 - **Ngày**: 2026-11-13
@@ -366,6 +385,11 @@
 
 ---
 ## Patterns
+
+### Tối Ưu Compose Cho TTS UI: Single-Canvas Visualizer & `produceState` Không Key Theo Lambda
+- **Ngày**: 2026-11-25
+- **Chi tiết**: Với `AudioVisualizer`, dùng 1 `Canvas` duy nhất và 1 `phaseState` đọc trong draw scope thay vì 24 `animateFloat` + 24 `Canvas` trong `Row`, đồng thời chỉ khởi tạo `rememberInfiniteTransition` khi `isPlaying == true` để dừng frame clock khi tạm dừng. Với `TtsSetupBottomSheet`, bọc callback đọc danh sách giọng bằng `rememberUpdatedState` và chỉ truyền `key1 = isAiVoice, key2 = language` vào `produceState` (bỏ lambda khỏi key) để tránh nạp lại trên IO và nháy UI mỗi lần recompose.
+- **Files liên quan**: `feature/reader/src/main/java/com/epubpro/feature/reader/tts/TtsAudioPlayerScreen.kt`, `feature/reader/src/main/java/com/epubpro/feature/reader/tts/TtsSetupBottomSheet.kt`
 
 ### Cầu nối JNI `jbyteArray` UTF-8 thay `GetStringUTFChars` (2026-11-13)
 - **Áp dụng cho:** Tích hợp thư viện C/C++ hoặc Rust FFI trên Android cần nhận/trả chuỗi tiếng Việt/Unicode chuẩn.

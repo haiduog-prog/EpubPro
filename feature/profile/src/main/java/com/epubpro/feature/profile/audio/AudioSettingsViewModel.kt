@@ -29,12 +29,16 @@ import com.epubpro.domain.model.VieNeuQualityPreset
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import kotlin.math.roundToInt
 
@@ -118,6 +122,7 @@ class AudioSettingsViewModel internal constructor(
     nativeTtsEngineFactory: () -> TtsEngine,
     private val vieNeuPcmPlayer: VieNeuPcmPlayer,
     private val resolveString: (Int, Array<out Any>) -> String,
+    private val previewAudioDispatcher: CoroutineDispatcher = Dispatchers.Unconfined,
 ) : ViewModel() {
 
     @Inject
@@ -143,6 +148,7 @@ class AudioSettingsViewModel internal constructor(
         resolveString = { resId, args ->
             if (args.isEmpty()) context.getString(resId) else context.getString(resId, *args)
         },
+        previewAudioDispatcher = Dispatchers.IO,
     )
 
     companion object {
@@ -814,6 +820,8 @@ class AudioSettingsViewModel internal constructor(
         }
     }
 
+    private val previewGeneration = AtomicLong(0L)
+
     /**
      * Chạy nghe thử trực tiếp bằng `VieNeuRuntimeManager` theo đúng cấu hình `steps/cfg/sway/threads` đang hiển thị.
      *
@@ -822,9 +830,10 @@ class AudioSettingsViewModel internal constructor(
      */
     private fun playVieNeuPreview(voiceId: String, sampleText: String) {
         stopActivePreview()
+        val generation = previewGeneration.incrementAndGet()
         val snapshot = _uiState.value
-        previewJob = viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isPlaying = true, vieNeuDownloadError = null)
+        _uiState.update { it.copy(isPlaying = true, vieNeuDownloadError = null) }
+        previewJob = viewModelScope.launch(previewAudioDispatcher) {
             try {
                 val voice = vieNeuRuntimeManager.resolveVoice(voiceId)
                 val chunks = vieNeuRuntimeManager.prepareChunks(
@@ -856,11 +865,15 @@ class AudioSettingsViewModel internal constructor(
             } catch (error: Throwable) {
                 logError("testVoice VieNeu failed", error)
                 val detail = error.localizedMessage ?: error.javaClass.simpleName
-                _uiState.value = _uiState.value.copy(
-                    vieNeuDownloadError = resolveString(R.string.audio_vieneu_preview_error, arrayOf(detail)),
-                )
+                _uiState.update { current ->
+                    current.copy(
+                        vieNeuDownloadError = resolveString(R.string.audio_vieneu_preview_error, arrayOf(detail)),
+                    )
+                }
             } finally {
-                _uiState.value = _uiState.value.copy(isPlaying = false)
+                if (previewGeneration.get() == generation) {
+                    _uiState.update { it.copy(isPlaying = false) }
+                }
             }
         }
     }
