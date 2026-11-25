@@ -113,11 +113,18 @@ class TokenRefreshManager @Inject constructor(
                         val expiresAt = tokenResponse.expiresAt
                             ?: (System.currentTimeMillis() / 1000 + tokenResponse.expiresIn)
 
-                        authPreferencesManager.saveTokens(
+                        // Chỉ nhận kết quả nếu phiên vẫn là phiên đã gửi refresh token này; người dùng có thể
+                        // đã đăng xuất hoặc đổi tài khoản trong lúc chờ mạng.
+                        val stored = authPreferencesManager.replaceTokensIfCurrent(
+                            expectedRefreshToken = refreshToken,
                             accessToken = tokenResponse.accessToken,
                             refreshToken = tokenResponse.refreshToken ?: refreshToken,
                             expiresAt = expiresAt
                         )
+                        if (!stored) {
+                            Log.w(TAG, "⚠️ [AUTH] Bỏ token vừa làm mới vì phiên đã đăng xuất hoặc đổi tài khoản.")
+                            return null
+                        }
                         Log.i(TAG, "✅ [AUTH] Tự động làm mới Token thành công! (Thời hạn mới: $expiresAt)")
                         return tokenResponse.accessToken
                     }

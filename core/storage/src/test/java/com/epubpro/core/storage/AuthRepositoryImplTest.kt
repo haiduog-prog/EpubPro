@@ -238,6 +238,64 @@ class AuthRepositoryImplTest {
         assertEquals("new_refresh_token", authPreferencesManager.getRefreshToken())
     }
 
+    /**
+     * Kiểm tra token làm mới về sau khi đã đăng xuất không được ghi lại vào phiên.
+     */
+    @Test
+    fun testRefreshedTokensAreDroppedAfterLogout() {
+        authPreferencesManager.saveUser(
+            User(
+                id = "user_1",
+                email = "user@test.com",
+                displayName = "User",
+                token = "old_access_token",
+                refreshToken = "old_refresh_token"
+            )
+        )
+        authPreferencesManager.clearSession()
+
+        val stored = authPreferencesManager.replaceTokensIfCurrent(
+            expectedRefreshToken = "old_refresh_token",
+            accessToken = "late_access_token",
+            refreshToken = "late_refresh_token",
+            expiresAt = 1L
+        )
+
+        assertFalse(stored)
+        assertFalse(authPreferencesManager.saveTokens("late_access_token", "late_refresh_token", 1L))
+        assertNull(authPreferencesManager.getAuthToken())
+        assertNull(authPreferencesManager.getRefreshToken())
+    }
+
+    /**
+     * Kiểm tra token làm mới của tài khoản cũ không ghi đè phiên của tài khoản vừa đăng nhập.
+     */
+    @Test
+    fun testRefreshedTokensAreDroppedAfterAccountSwitch() {
+        authPreferencesManager.saveUser(
+            User(id = "user_1", email = "a@test.com", displayName = "A", token = "a_access", refreshToken = "a_refresh")
+        )
+        authPreferencesManager.saveUser(
+            User(id = "user_2", email = "b@test.com", displayName = "B", token = "b_access", refreshToken = "b_refresh")
+        )
+
+        val stored = authPreferencesManager.replaceTokensIfCurrent(
+            expectedRefreshToken = "a_refresh",
+            accessToken = "a_new_access",
+            refreshToken = "a_new_refresh",
+            expiresAt = 1L
+        )
+
+        assertFalse(stored)
+        assertEquals("b_access", authPreferencesManager.getAuthToken())
+        assertEquals("b_refresh", authPreferencesManager.getRefreshToken())
+        assertTrue(
+            authPreferencesManager.replaceTokensIfCurrent("b_refresh", "b_new_access", null, 1L)
+        )
+        assertEquals("b_new_access", authPreferencesManager.getAuthToken())
+        assertEquals("b_refresh", authPreferencesManager.getRefreshToken())
+    }
+
     @Test
     fun testLogoutCallsSupabaseAndClearsSession(): Unit = runBlocking {
         whenever(mockBackendAuthApiService.getAuthConfig()).thenReturn(supabaseConfig)

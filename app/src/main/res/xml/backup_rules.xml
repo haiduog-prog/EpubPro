@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Quy tắc sao lưu cho Android 11 trở xuống (fullBackupContent).
+    Loại trừ phiên đăng nhập và cấu hình server; xem data_extraction_rules.xml cho Android 12+.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="epubpro_auth_prefs.xml" />
+    <exclude domain="sharedpref" path="server_settings_prefs.xml" />
+</full-backup-content>

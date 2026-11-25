@@ -73,7 +73,7 @@ class AuthRepositoryImpl @Inject constructor(
             ) {
                 val supabaseUrl = authConfig.supabaseUrl.trimEnd('/')
                 val tokenEndpoint = "$supabaseUrl/auth/v1/token?grant_type=password"
-                logDebug("API_HTTP", "🚀 [AUTH] Đang gửi đăng nhập tới Supabase: $tokenEndpoint (email: $trimmedEmail)")
+                logDebug("API_HTTP", "🚀 [AUTH] Đang gửi đăng nhập tới Supabase: $tokenEndpoint")
 
                 try {
                     val tokenResponse = supabaseAuthApiService.loginWithPassword(
@@ -110,7 +110,7 @@ class AuthRepositoryImpl @Inject constructor(
                         refreshToken = tokenResponse.refreshToken,
                         expiresAt = tokenResponse.expiresAt ?: (System.currentTimeMillis() / 1000 + tokenResponse.expiresIn)
                     )
-                    logDebug("API_HTTP", "✅ [AUTH] Đăng nhập Supabase thành công! User=${user.email}, Token length=${tokenResponse.accessToken.length}")
+                    logDebug("API_HTTP", "✅ [AUTH] Đăng nhập Supabase thành công!")
 
                     Result.success(user)
                 } catch (e: CancellationException) {
@@ -282,11 +282,15 @@ class AuthRepositoryImpl @Inject constructor(
                     body = SupabaseRefreshTokenRequestDto(refreshToken = currentRefreshToken)
                 )
 
-                authPreferencesManager.saveTokens(
+                val stored = authPreferencesManager.replaceTokensIfCurrent(
+                    expectedRefreshToken = currentRefreshToken,
                     accessToken = tokenResponse.accessToken,
                     refreshToken = tokenResponse.refreshToken,
                     expiresAt = tokenResponse.expiresAt ?: (System.currentTimeMillis() / 1000 + tokenResponse.expiresIn)
                 )
+                if (!stored) {
+                    return@withContext Result.failure(IllegalStateException("Phiên đăng nhập đã thay đổi."))
+                }
 
                 val updatedUser = authPreferencesManager.getSavedUser()
                     ?: return@withContext Result.failure(IllegalStateException("Không tìm thấy thông tin người dùng."))
@@ -491,6 +495,8 @@ class AuthRepositoryImpl @Inject constructor(
     }
 
     private fun logDebug(tag: String, msg: String) {
+        // Log chẩn đoán chỉ dành cho bản debug; không bao giờ đưa email, token hay mật khẩu vào message.
+        if (!com.epubpro.core.storage.BuildConfig.DEBUG) return
         try {
             android.util.Log.d(tag, msg)
         } catch (_: Throwable) {

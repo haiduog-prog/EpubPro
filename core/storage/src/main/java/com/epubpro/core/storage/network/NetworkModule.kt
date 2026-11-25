@@ -118,8 +118,11 @@ object NetworkModule {
                 val token = tokenRefreshManager.getValidAuthToken()
                 if (!token.isNullOrBlank() && original.header("Authorization") == null) {
                     builder.header("Authorization", "Bearer $token")
-                    android.util.Log.d("API_HTTP", "🔑 [AUTH] Đã đính kèm Authorization Bearer (${token.take(8)}...) vào request: ${original.method} ${original.url.encodedPath}")
-                } else if (token.isNullOrBlank()) {
+                    // Không log bất kỳ phần nào của token; đường dẫn request chỉ log ở bản debug.
+                    if (com.epubpro.core.storage.BuildConfig.DEBUG) {
+                        android.util.Log.d("API_HTTP", "🔑 [AUTH] Đã đính kèm Authorization Bearer vào request: ${original.method} ${original.url.encodedPath}")
+                    }
+                } else if (token.isNullOrBlank() && com.epubpro.core.storage.BuildConfig.DEBUG) {
                     android.util.Log.w("API_HTTP", "⚠️ [AUTH] Request ${original.method} ${original.url.encodedPath} KHÔNG có Token (Chưa đăng nhập / Token trống)")
                 }
             }

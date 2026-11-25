@@ -25,6 +25,10 @@ class AuthPreferencesManager @Inject constructor(
     private val preferences =
         context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
 
+    // Khóa chung cho mọi thao tác đọc-ghi phiên, để lần làm mới token chạy trên luồng OkHttp không ghi
+    // đè lên trạng thái vừa bị đăng xuất hoặc vừa chuyển sang tài khoản khác.
+    private val sessionLock = Any()
+
     private val _authState = MutableStateFlow<AuthState>(readInitialAuthState())
 
     /**
@@ -51,7 +55,7 @@ class AuthPreferencesManager @Inject constructor(
      *
      * @param user Đối tượng [User] chứa thông tin tài khoản cần lưu.
      */
-    fun saveUser(user: User) {
+    fun saveUser(user: User) = synchronized(sessionLock) {
         val userJson = gson.toJson(user)
         preferences.edit()
             .putString(KEY_USER_DATA, userJson)
@@ -63,13 +67,51 @@ class AuthPreferencesManager @Inject constructor(
     }
 
     /**
-     * Lưu trữ bộ Token xác thực phiên đăng nhập (Access Token, Refresh Token, Expires At).
+     * Lưu trữ bộ Token xác thực phiên đăng nhập (Access Token, Refresh Token, Expires At) cho phiên đang đăng nhập.
+     * Bỏ qua nếu không còn phiên nào (đã đăng xuất), để token không "sống lại" sau khi người dùng đăng xuất.
      *
      * @param accessToken Token truy cập Bearer.
      * @param refreshToken Token làm mới phiên.
      * @param expiresAt Thời điểm hết hạn (Unix timestamp).
+     * @return `true` nếu đã lưu; `false` nếu không còn phiên đăng nhập.
      */
-    fun saveTokens(accessToken: String, refreshToken: String?, expiresAt: Long?) {
+    fun saveTokens(accessToken: String, refreshToken: String?, expiresAt: Long?): Boolean = synchronized(sessionLock) {
+        if (!preferences.getBoolean(KEY_IS_LOGGED_IN, false)) return@synchronized false
+        writeTokensLocked(accessToken, refreshToken, expiresAt)
+        true
+    }
+
+    /**
+     * Lưu token mới nhận từ một lần làm mới phiên, chỉ khi phiên vẫn là phiên đã dùng [expectedRefreshToken] để
+     * làm mới. Lần làm mới chạy trên luồng mạng có thể kết thúc sau khi người dùng đăng xuất hoặc đăng nhập tài
+     * khoản khác; khi đó kết quả cũ phải bị bỏ.
+     *
+     * @param expectedRefreshToken Refresh token đã gửi lên server cho lần làm mới này.
+     * @param accessToken Access token mới.
+     * @param refreshToken Refresh token mới, hoặc null nếu server không xoay vòng.
+     * @param expiresAt Thời điểm hết hạn mới (Unix timestamp giây).
+     * @return `true` nếu đã lưu; `false` nếu phiên đã đổi hoặc đã đăng xuất.
+     */
+    fun replaceTokensIfCurrent(
+        expectedRefreshToken: String,
+        accessToken: String,
+        refreshToken: String?,
+        expiresAt: Long?
+    ): Boolean = synchronized(sessionLock) {
+        if (!preferences.getBoolean(KEY_IS_LOGGED_IN, false)) return@synchronized false
+        if (preferences.getString(KEY_REFRESH_TOKEN, null) != expectedRefreshToken) return@synchronized false
+        writeTokensLocked(accessToken, refreshToken, expiresAt)
+        true
+    }
+
+    /**
+     * Ghi token vào SharedPreferences và đồng bộ vào [User] đang lưu; caller phải giữ [sessionLock].
+     *
+     * @param accessToken Access token mới.
+     * @param refreshToken Refresh token mới, hoặc null để giữ token cũ.
+     * @param expiresAt Thời điểm hết hạn, hoặc null để giữ giá trị cũ.
+     */
+    private fun writeTokensLocked(accessToken: String, refreshToken: String?, expiresAt: Long?) {
         val editor = preferences.edit()
             .putString(KEY_AUTH_TOKEN, accessToken)
         if (refreshToken != null) {
@@ -118,7 +160,7 @@ class AuthPreferencesManager @Inject constructor(
     /**
      * Xóa sạch phiên đăng nhập hiện tại và phát ra trạng thái [AuthState.Unauthenticated].
      */
-    fun clearSession() {
+    fun clearSession() = synchronized(sessionLock) {
         preferences.edit()
             .remove(KEY_USER_DATA)
             .remove(KEY_AUTH_TOKEN)
@@ -135,11 +177,11 @@ class AuthPreferencesManager @Inject constructor(
      * @param transform Hàm biến đổi nhận vào [User] hiện tại và trả về [User] mới.
      * @return [User] sau khi được cập nhật, hoặc null nếu chưa đăng nhập.
      */
-    fun updateUser(transform: (User) -> User): User? {
-        val currentUser = getSavedUser() ?: return null
+    fun updateUser(transform: (User) -> User): User? = synchronized(sessionLock) {
+        val currentUser = getSavedUser() ?: return@synchronized null
         val updated = transform(currentUser)
         saveUser(updated)
-        return updated
+        updated
     }
 
     /**
