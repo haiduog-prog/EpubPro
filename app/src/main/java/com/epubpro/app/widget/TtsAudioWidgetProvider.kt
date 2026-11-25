@@ -7,8 +7,8 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.widget.RemoteViews
-import com.epubpro.app.MainActivity
 import com.epubpro.app.R
+import com.epubpro.core.reader.tts.TtsOpenBookContract
 import com.epubpro.core.reader.tts.TtsService
 import com.epubpro.core.reader.tts.TtsWidgetContract
 import com.epubpro.core.storage.TtsWidgetPlaybackStatus
@@ -17,19 +17,19 @@ import com.epubpro.core.storage.TtsWidgetStateStore
 import kotlin.math.roundToInt
 
 class TtsAudioWidgetProvider : AppWidgetProvider() {
-    override fun onUpdate(context: Context, manager: AppWidgetManager, appWidgetIds: IntArray) {
-        val state = TtsWidgetStateStore(context).getState()
-        appWidgetIds.forEach { updateWidget(context, manager, it, state) }
-    }
-
     /**
-     * Xử lý broadcast trạng thái phát trong phạm vi ứng dụng và chỉ cập nhật các audio widget;
-     * reading widget tự nhận và hiển thị cùng broadcast một cách độc lập.
+     * Vẽ lại các audio widget theo yêu cầu của launcher; việc đọc store và giải mã ảnh bìa chạy nền.
+     * Cập nhật khi trạng thái phát đổi do [TtsWidgetStateReceiver] (không export) đảm nhận.
+     *
+     * @param context Context của receiver.
+     * @param manager AppWidgetManager của hệ thống.
+     * @param appWidgetIds Các widget cần vẽ lại.
      */
-    override fun onReceive(context: Context, intent: Intent) {
-        super.onReceive(context, intent)
-        if (intent.action == TtsWidgetContract.ACTION_STATE_CHANGED) {
-            updateAll(context)
+    override fun onUpdate(context: Context, manager: AppWidgetManager, appWidgetIds: IntArray) {
+        val appContext = context.applicationContext
+        WidgetBackgroundUpdater.run(this) {
+            val state = TtsWidgetStateStore(appContext).getState()
+            appWidgetIds.forEach { updateWidget(appContext, manager, it, state) }
         }
     }
 
@@ -139,10 +139,11 @@ class TtsAudioWidgetProvider : AppWidgetProvider() {
          *
          * @param context Context ứng dụng.
          * @param flags Cờ cho [PendingIntent].
-         * @return [PendingIntent] mở [MainActivity] với action mở thư viện.
+         * @return [PendingIntent] mở MainActivity qua alias nội bộ không export với action mở thư viện.
          */
         private fun openLibraryIntent(context: Context, flags: Int): PendingIntent {
-            val intent = Intent(context, MainActivity::class.java).apply {
+            val intent = Intent().apply {
+                component = TtsOpenBookContract.internalEntryComponent(context)
                 action = TtsWidgetContract.ACTION_OPEN_LIBRARY
                 this.flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             }

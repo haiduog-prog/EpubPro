@@ -2317,6 +2317,8 @@ class TtsService : Service() {
     private fun createOpenBookIntent(): Intent? {
         val template = baseLaunchIntent ?: return null
         val intent = Intent(template)
+        // Action mở sách chỉ được MainActivity chấp nhận khi đi qua alias nội bộ không export.
+        intent.component = TtsOpenBookContract.internalEntryComponent(this)
         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val snapshot = playbackSnapshotStore.getSnapshot()
         val targetBookId = bookId.ifBlank { snapshot?.bookId.orEmpty() }

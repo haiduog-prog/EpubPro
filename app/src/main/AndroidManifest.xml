@@ -156,12 +156,28 @@
                 <data android:mimeType="application/x-cbz" />
             </intent-filter>
         </activity>
+
+        <!-- Cửa vào nội bộ không export: widget, notification và bubble mở sách/kệ sách qua alias này.
+             MainActivity chỉ tin action nội bộ khi Intent đi qua đây (TtsOpenBookContract.INTERNAL_ENTRY_CLASS). -->
+        <activity-alias
+            android:name=".InternalEntryActivity"
+            android:exported="false"
+            android:targetActivity=".MainActivity" />
+
+        <!-- Nhận broadcast cập nhật widget từ chính app; không export để app khác không ép vẽ lại widget. -->
+        <receiver
+            android:name=".widget.TtsWidgetStateReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.epubpro.tts.ACTION_WIDGET_STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
+
         <receiver
             android:name=".widget.TtsAudioWidgetProvider"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="com.epubpro.tts.ACTION_WIDGET_STATE_CHANGED" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
@@ -173,7 +189,6 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="com.epubpro.tts.ACTION_WIDGET_STATE_CHANGED" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"

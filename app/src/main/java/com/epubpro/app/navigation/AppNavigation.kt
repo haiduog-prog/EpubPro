@@ -95,7 +95,10 @@ fun AppNavHost(
 
     LaunchedEffect(navController, openBrowserRequests) {
         openBrowserRequests.collect { url ->
-            navController.navigate(Screen.Browser.createRoute(url))
+            // Mỗi lần chia sẻ link thay màn trình duyệt cũ thay vì chồng thêm; popUpTo bỏ qua nếu chưa có.
+            navController.navigate(Screen.Browser.createRoute(url)) {
+                popUpTo(Screen.Browser.route) { inclusive = true }
+            }
         }
     }
 

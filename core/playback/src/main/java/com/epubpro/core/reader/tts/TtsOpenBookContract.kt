@@ -1,5 +1,7 @@
 package com.epubpro.core.reader.tts
 
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 
 /** Intent contract shared by the TTS notification/bubble and the app navigation layer. */
@@ -13,6 +15,30 @@ object TtsOpenBookContract {
     const val NAV_ARGUMENT_CHAPTER_INDEX = "chapterIndex"
     const val NAV_ARGUMENT_OPEN_TTS_PLAYER = "openTtsPlayer"
     const val NO_CHAPTER_OVERRIDE = -1
+
+    /**
+     * Tên `activity-alias` không export trỏ tới MainActivity. Action nội bộ (mở sách, mở kệ sách)
+     * chỉ được tin khi Intent đi qua alias này, nên app khác không giả được yêu cầu điều hướng.
+     */
+    const val INTERNAL_ENTRY_CLASS = "com.epubpro.app.InternalEntryActivity"
+
+    /**
+     * Tạo component của alias nội bộ cho package hiện tại.
+     *
+     * @param context Context dùng để lấy package name (hỗ trợ cả applicationIdSuffix).
+     * @return [ComponentName] của `InternalEntryActivity`.
+     */
+    fun internalEntryComponent(context: Context): ComponentName =
+        ComponentName(context.packageName, INTERNAL_ENTRY_CLASS)
+
+    /**
+     * Kiểm tra Intent có đi qua alias nội bộ không export hay không.
+     *
+     * @param intent Intent Activity nhận được.
+     * @return `true` nếu component của Intent là [INTERNAL_ENTRY_CLASS].
+     */
+    fun isInternalEntry(intent: Intent?): Boolean =
+        intent?.component?.className == INTERNAL_ENTRY_CLASS
 
     /**
      * Adds the complete request to an explicit MainActivity intent supplied by the caller.
@@ -36,9 +62,11 @@ object TtsOpenBookContract {
 
     fun parse(intent: Intent?): TtsOpenBookRequest? {
         if (intent?.action != ACTION_OPEN_BOOK) return null
-        if (!intent.hasExtra(EXTRA_CHAPTER_INDEX) || !intent.hasExtra(EXTRA_OPEN_TTS_PLAYER)) {
-            return null
-        }
+        // hasExtra unparcel toàn bộ Bundle; extra hỏng không được làm crash Activity.
+        val hasRequiredExtras = runCatching {
+            intent.hasExtra(EXTRA_CHAPTER_INDEX) && intent.hasExtra(EXTRA_OPEN_TTS_PLAYER)
+        }.getOrDefault(false)
+        if (!hasRequiredExtras) return null
 
         val bookId = runCatching { intent.getStringExtra(EXTRA_BOOK_ID) }
             .getOrNull()

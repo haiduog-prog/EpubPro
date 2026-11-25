@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import java.io.File
 
 /**
  * Yêu cầu nạp file sách từ ứng dụng bên ngoài sau khi đã được thẩm định an toàn.
@@ -40,17 +41,27 @@ object ExternalBookImportHandler {
         "cbz"
     )
 
+    /** Các thư mục hệ thống ảo không bao giờ chứa file sách hợp lệ. */
+    private val SYSTEM_PSEUDO_DIRS = listOf(File("/proc"), File("/sys"), File("/dev"))
+
     /**
      * Phân tích Intent từ hệ thống hoặc ứng dụng khác để tạo yêu cầu nạp sách.
      *
      * Phương thức thẩm định scheme (chỉ chấp nhận content hoặc file), lấy tên hiển thị an toàn
-     * và xác thực định dạng trước khi chuyển tiếp cho pipeline xử lý.
+     * và xác thực định dạng trước khi chuyển tiếp cho pipeline xử lý. Với `file://`, đường dẫn
+     * được chuẩn hóa (giải symlink, `..`) và bị từ chối nếu nằm trong [protectedDirs] hoặc thư mục
+     * hệ thống ảo, để ứng dụng khác không mượn quyền của EpubPro đọc dữ liệu riêng của app.
      *
      * @param intent Intent nhận được từ onCreate hoặc onNewIntent.
      * @param contentResolver ContentResolver dùng để truy vấn tên hiển thị của URI.
+     * @param protectedDirs Các thư mục dữ liệu riêng của app (ví dụ `dataDir`) không được phép nạp qua `file://`.
      * @return [ExternalBookImportRequest] nếu Intent hợp lệ và là file sách được hỗ trợ, ngược lại trả về null.
      */
-    fun parse(intent: Intent?, contentResolver: ContentResolver): ExternalBookImportRequest? {
+    fun parse(
+        intent: Intent?,
+        contentResolver: ContentResolver,
+        protectedDirs: List<File> = emptyList()
+    ): ExternalBookImportRequest? {
         if (intent == null) return null
         val action = intent.action ?: return null
         if (action != Intent.ACTION_VIEW && action != Intent.ACTION_SEND) return null
@@ -58,6 +69,9 @@ object ExternalBookImportHandler {
         val uri = extractUri(intent, action) ?: return null
         val scheme = uri.scheme?.lowercase() ?: return null
         if (scheme != ContentResolver.SCHEME_CONTENT && scheme != ContentResolver.SCHEME_FILE) {
+            return null
+        }
+        if (scheme == ContentResolver.SCHEME_FILE && !isAllowedFilePath(uri.path, protectedDirs)) {
             return null
         }
 
@@ -75,6 +89,26 @@ object ExternalBookImportHandler {
     }
 
     /**
+     * Kiểm tra đường dẫn của URI `file://` có được phép nạp hay không.
+     *
+     * Đường dẫn được chuẩn hóa bằng `canonicalFile` để `..`, `/data/data` và `/data/user/0`
+     * hay symlink đều quy về cùng một đường dẫn thật trước khi so sánh.
+     *
+     * @param path Đường dẫn lấy từ [Uri.getPath].
+     * @param protectedDirs Các thư mục không được phép đọc.
+     * @return `true` nếu đường dẫn hợp lệ và nằm ngoài mọi thư mục bị chặn; `false` nếu rỗng,
+     *         không chuẩn hóa được hoặc nằm trong thư mục bị chặn.
+     */
+    internal fun isAllowedFilePath(path: String?, protectedDirs: List<File>): Boolean {
+        if (path.isNullOrBlank()) return false
+        val target = runCatching { File(path).canonicalFile }.getOrNull() ?: return false
+        return (protectedDirs + SYSTEM_PSEUDO_DIRS).none { dir ->
+            val root = runCatching { dir.canonicalFile }.getOrNull() ?: dir.absoluteFile
+            target.path == root.path || target.path.startsWith(root.path + File.separator)
+        }
+    }
+
+    /**
      * Trích xuất URI nguồn từ Intent tùy theo Action mở hoặc chia sẻ.
      *
      * @param intent Intent cần trích xuất URI.
@@ -87,12 +121,15 @@ object ExternalBookImportHandler {
                 intent.data ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
             }
             Intent.ACTION_SEND -> {
-                val streamUri = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableExtra(Intent.EXTRA_STREAM)
-                }
+                // Extra từ app khác có thể hỏng hoặc sai kiểu; lỗi unparcel không được làm crash Activity.
+                val streamUri = runCatching {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                        intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableExtra(Intent.EXTRA_STREAM)
+                    }
+                }.getOrNull()
                 streamUri ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
             }
             else -> null

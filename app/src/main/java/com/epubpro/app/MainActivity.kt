@@ -4,38 +4,27 @@ import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.Toast
-import androidx.work.WorkInfo
-import androidx.work.WorkManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation.compose.rememberNavController
 import com.epubpro.app.intent.ExternalBookImportHandler
-import com.epubpro.app.intent.ExternalBookImportRequest
 import com.epubpro.app.intent.SharedLinkParser
 import com.epubpro.app.navigation.AppNavHost
-import com.epubpro.core.designsystem.R
 import com.epubpro.core.designsystem.theme.EpubProTheme
 import com.epubpro.core.reader.tts.TtsOpenBookContract
 import com.epubpro.core.reader.tts.TtsOpenBookRequest
 import com.epubpro.core.reader.tts.TtsService
 import com.epubpro.core.reader.tts.TtsWidgetContract
-import com.epubpro.core.bookconverter.BookConversionException
-import com.epubpro.core.storage.BookFileTooLargeException
 import com.epubpro.core.storage.ReaderPreferencesManager
 import com.epubpro.core.storage.TtsBubblePreferencesManager
-import com.epubpro.core.storage.worker.LocalBookImportScheduler
-import com.epubpro.core.storage.worker.LocalBookImportWorker
 import com.epubpro.domain.model.BookSourceFormat
 import com.epubpro.domain.repository.BookRepository
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.receiveAsFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -51,9 +40,6 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var bookRepository: BookRepository
-
-    @Inject
-    lateinit var localBookImportScheduler: LocalBookImportScheduler
 
     private val intentViewModel: MainIntentViewModel by viewModels()
     private var bubbleStartupRestored = false
@@ -72,6 +58,7 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null && !hasExplicitSharedLink && !hasExplicitOpenBook && !hasExplicitOpenLibrary && !hasExplicitImportBook) {
             checkAndAutoResumeLastBook()
         }
+        collectNotices()
 
         enableEdgeToEdge()
         setContent {
@@ -109,6 +96,32 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * Thu thông báo một lần từ [MainIntentViewModel] (kết quả nạp sách) và hiển thị Toast khi Activity
+     * đang ở trạng thái STARTED; thông báo phát lúc app ở nền được giữ lại tới khi quay lại.
+     */
+    private fun collectNotices() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                intentViewModel.notices.collect(::showNotice)
+            }
+        }
+    }
+
+    /**
+     * Hiển thị một thông báo từ ViewModel dưới dạng Toast.
+     *
+     * @param notice Thông báo cần hiển thị.
+     */
+    private fun showNotice(notice: MainIntentNotice) {
+        val (message, duration) = when (notice) {
+            is MainIntentNotice.Res -> getString(notice.resId, *notice.args.toTypedArray()) to
+                if (notice.isLong) Toast.LENGTH_LONG else Toast.LENGTH_SHORT
+            is MainIntentNotice.Text -> notice.message to Toast.LENGTH_LONG
+        }
+        Toast.makeText(this, message, duration).show()
+    }
+
+    /**
      * Kiểm tra cấu hình và tự động mở cuốn sách vừa đọc gần nhất khi khởi động ứng dụng mới.
      */
     private fun checkAndAutoResumeLastBook() {
@@ -143,6 +156,8 @@ class MainActivity : ComponentActivity() {
      * @return true nếu intent chứa yêu cầu mở sách hợp lệ, ngược lại false.
      */
     private fun dispatchOpenBookRequest(intent: Intent?): Boolean {
+        // Action nội bộ chỉ được tin khi đi qua alias không export; app khác gọi thẳng MainActivity bị bỏ qua.
+        if (!TtsOpenBookContract.isInternalEntry(intent)) return false
         val request = TtsOpenBookContract.parse(intent) ?: return false
         intentViewModel.dispatch(request)
         intent?.apply {
@@ -162,6 +177,7 @@ class MainActivity : ComponentActivity() {
      */
     private fun dispatchOpenLibraryRequest(intent: Intent?): Boolean {
         if (intent?.action != TtsWidgetContract.ACTION_OPEN_LIBRARY) return false
+        if (!TtsOpenBookContract.isInternalEntry(intent)) return false
         intentViewModel.dispatchOpenLibrary()
         intent.action = null
         return true
@@ -176,7 +192,9 @@ class MainActivity : ComponentActivity() {
     private fun dispatchSharedLinkRequest(intent: Intent?): Boolean {
         val baseMime = intent?.type?.substringBefore(';')?.trim()
         if (intent?.action != Intent.ACTION_SEND || !baseMime.equals("text/plain", ignoreCase = true)) return false
-        val url = SharedLinkParser.extractUrl(intent.getStringExtra(Intent.EXTRA_TEXT)) ?: return false
+        // Extra từ app khác có thể hỏng; lỗi unparcel không được làm crash Activity.
+        val sharedText = runCatching { intent.getStringExtra(Intent.EXTRA_TEXT) }.getOrNull()
+        val url = SharedLinkParser.extractUrl(sharedText) ?: return false
         intentViewModel.dispatchOpenBrowser(url)
         intent.action = null
         intent.removeExtra(Intent.EXTRA_TEXT)
@@ -190,8 +208,10 @@ class MainActivity : ComponentActivity() {
      * @return true nếu intent chứa yêu cầu nạp sách hợp lệ và đã được tiếp nhận, ngược lại false.
      */
     private fun dispatchImportBookRequest(intent: Intent?): Boolean {
-        val request = ExternalBookImportHandler.parse(intent, contentResolver) ?: return false
-        handleExternalBookImport(request)
+        val request = runCatching {
+            ExternalBookImportHandler.parse(intent, contentResolver, privateStorageDirs())
+        }.getOrNull() ?: return false
+        intentViewModel.importExternalBook(request.uri, request.displayName)
         intent?.apply {
             action = null
             data = null
@@ -201,69 +221,14 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Thực hiện điều hướng UI về Kệ sách, hiển thị thông báo và lập lịch nạp file sách bất đồng bộ.
+     * Liệt kê các thư mục dữ liệu riêng của app không được phép nạp qua `file://`.
      *
-     * @param request Thông tin yêu cầu nạp sách gồm URI và tên hiển thị.
+     * @return Thư mục dữ liệu credential-encrypted và device-protected của ứng dụng.
      */
-    private fun handleExternalBookImport(request: ExternalBookImportRequest) {
-        intentViewModel.dispatchOpenLibrary()
-        val bookTitle = request.displayName ?: getString(R.string.nav_library)
-        Toast.makeText(
-            this,
-            getString(R.string.import_external_started, bookTitle),
-            Toast.LENGTH_SHORT
-        ).show()
-
-        lifecycleScope.launch {
-            try {
-                val workId = localBookImportScheduler.enqueue(request.uri, request.displayName)
-                    ?: return@launch
-                val workInfo = WorkManager.getInstance(this@MainActivity)
-                    .getWorkInfoByIdFlow(workId)
-                    .first { it?.state?.isFinished == true }
-                if (workInfo?.state == WorkInfo.State.SUCCEEDED) {
-                    workInfo.outputData
-                        .getString(LocalBookImportWorker.KEY_BOOK_ID)
-                        ?.takeIf { it.isNotBlank() }
-                        ?.let { bookId ->
-                            val importedFormat = workInfo.outputData.getString(LocalBookImportWorker.KEY_SOURCE_FORMAT)
-                            if (importedFormat == BookSourceFormat.CBZ.name) {
-                                intentViewModel.dispatchOpenComic(bookId)
-                                return@let
-                            }
-                            intentViewModel.dispatch(
-                                TtsOpenBookRequest(
-                                    bookId = bookId,
-                                    chapterIndex = 0,
-                                    openTtsPlayer = false
-                                )
-                            )
-                        }
-                } else if (workInfo?.state == WorkInfo.State.FAILED) {
-                    val failureMsg = workInfo.outputData
-                        .getString(LocalBookImportWorker.KEY_ERROR_MESSAGE)
-                        ?.takeIf { it.isNotBlank() }
-                        ?: getString(R.string.library_import_failed)
-                    Toast.makeText(this@MainActivity, failureMsg, Toast.LENGTH_LONG).show()
-                }
-            } catch (error: kotlinx.coroutines.CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                val errorMsg = when (error) {
-                    is BookFileTooLargeException -> {
-                        getString(R.string.book_import_error_too_large, error.limitMiB)
-                    }
-                    is BookConversionException -> {
-                        getString(R.string.library_import_book_failed)
-                    }
-                    else -> {
-                        getString(R.string.library_import_failed)
-                    }
-                }
-                Toast.makeText(this@MainActivity, errorMsg, Toast.LENGTH_LONG).show()
-            }
-        }
-    }
+    private fun privateStorageDirs(): List<java.io.File> = listOfNotNull(
+        java.io.File(applicationInfo.dataDir),
+        runCatching { createDeviceProtectedStorageContext().dataDir }.getOrNull()
+    )
 
     private fun restoreEnabledAudioBubble() {
         if (
@@ -274,41 +239,4 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-}
-
-internal class MainIntentViewModel : ViewModel() {
-    private val requestChannel = Channel<TtsOpenBookRequest>(Channel.BUFFERED)
-    private val libraryChannel = Channel<Unit>(Channel.BUFFERED)
-    private val comicChannel = Channel<String>(Channel.BUFFERED)
-    private val browserChannel = Channel<String>(Channel.BUFFERED)
-    val openBookRequests: Flow<TtsOpenBookRequest> = requestChannel.receiveAsFlow()
-    val openLibraryRequests: Flow<Unit> = libraryChannel.receiveAsFlow()
-    val openComicRequests: Flow<String> = comicChannel.receiveAsFlow()
-    val openBrowserRequests: Flow<String> = browserChannel.receiveAsFlow()
-
-    fun dispatch(request: TtsOpenBookRequest) {
-        requestChannel.trySend(request)
-    }
-
-    fun dispatchOpenLibrary() {
-        libraryChannel.trySend(Unit)
-    }
-
-    /**
-     * Yêu cầu mở Reader truyện tranh cho một cuốn CBZ (sau import từ app ngoài hoặc tự mở sách gần nhất).
-     *
-     * @param bookId ID sách trong thư viện.
-     */
-    fun dispatchOpenComic(bookId: String) {
-        comicChannel.trySend(bookId)
-    }
-
-    /**
-     * Yêu cầu mở trình duyệt tích hợp tại một URL được chia sẻ từ ứng dụng khác.
-     *
-     * @param url URL http(s) đã kiểm tra.
-     */
-    fun dispatchOpenBrowser(url: String) {
-        browserChannel.trySend(url)
-    }
 }
