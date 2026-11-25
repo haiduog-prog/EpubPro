@@ -155,6 +155,10 @@
     <string name="reader_display_settings">Cài đặt hiển thị</string>
     <string name="reader_prev_chapter">Chương trước</string>
     <string name="reader_next_chapter">Chương sau</string>
+    <string name="reader_page_chapter_progress_format">Trang %1$d / %2$d • Chương %3$d</string>
+    <string name="reader_page_progress_format">Trang %1$d / %2$d</string>
+    <string name="reader_chapter_number_format">Chương %1$d</string>
+    <string name="reader_chapter_progress_format">Chương %1$d / %2$d</string>
     <string name="reader_horizontal_scroll">Lật trang ngang</string>
     <string name="reader_horizontal_scroll_desc">Phân trang theo chiều ngang kiểu sách truyền thống</string>
     <string name="reader_font_family">Kiểu phông</string>

@@ -1,7 +1,7 @@
 # EPUB Reader & Layout Engine
 
 > Tổng hợp kiến thức về hệ thống đọc EPUB, WebView rendering, TTS, tối ưu bộ nhớ RAM, Room FTS5 và cài đặt mặc định đọc / chuyển trang trong dự án.
-> Cập nhật lần cuối: 2026-08-28
+> Cập nhật lần cuối: 2026-11-25
 
 ---
 
@@ -312,6 +312,20 @@
 - **Fix**: Dung animateChapterBoundary(direction) cho ca tap va swipe; commit body preview trong DOM, gui onAdjacentChapterCommitted(direction), roi native bo qua reload neu hash HTML trung document da commit.
 - **Files lien quan**: core/reader-renderer/src/main/java/com/epubpro/core/reader/style/CssInjector.kt, core/reader-renderer/src/main/java/com/epubpro/core/reader/bridge/ReaderJsBridge.kt, feature/reader/src/main/java/com/epubpro/feature/reader/webview/EpubProWebView.kt
 
+### Nhãn số trang kẹt "Trang 1 / 1" khi chuyển chương ngay trong DOM
+- **Ngày**: 2026-11-25
+- **Vấn đề**: Khi vuốt qua chương mới hoặc lùi về trang cuối chương trước ở chế độ ngang, nhãn số trang kẹt ở `"Trang 1 / 1"`, tên chương cập nhật chậm ~1 giây và có thể ghi nhầm `pageIndex = 1` vào DB.
+- **Root cause**: (1) JS `notifyPageChangeCompleted()` bị chặn bởi `isCoverOverlayActive`, sau đó `cleanupCoverOverlay()` gọi `suppressScrollMetrics(300)` nên `updatePageMetrics()` thoát sớm; (2) ViewModel chờ đọc Zip xong mới đổi `currentChapterIndex` và ghi đè `currentPageInChapter = 1`, `totalPagesInChapter = 1`, trong khi WebView bỏ qua reload.
+- **Fix**: JS lưu cờ `pendingPageMetrics` (chặn `touchstart` nếu `!isLayoutReady`), gọi `flushPendingPageMetrics()` cuối `cleanupCoverOverlay()`. ViewModel thêm `onAdjacentChapterCommitted()` cập nhật index ngay, xoay preview chiều ngược lại, đặt `totalPagesInChapter = UNKNOWN_TOTAL_PAGES` (`0`), giữ nguyên vị trí JS khi load nền xong, và chặn ghi DB tạm bằng `shouldPersistReadingProgress()`.
+- **Files liên quan**: `core/reader-renderer/src/main/java/com/epubpro/core/reader/style/CssInjector.kt`, `feature/reader/src/main/java/com/epubpro/feature/reader/ReaderViewModel.kt`, `feature/reader/src/main/java/com/epubpro/feature/reader/ReaderScreen.kt`
+
+### Bấm nút chuyển chương liên tục hoặc đảo chiều dưới màn che gây treo cover 2.5s
+- **Ngày**: 2026-11-25
+- **Vấn đề**: Bấm nút chuyển chương dưới màn che `PixelCopy` liên tục hoặc bấm Next rồi Previous ngay làm màn che treo 2.5s mới tắt, hoặc gõ quá nhanh khiến `!isLayoutReady` hiểu nhầm trang 1 là biên chương.
+- **Root cause**: Nút BottomBar không đi qua màn che; khi bấm đảo chiều về đúng HTML đang hiển thị, `newHtmlKey == loadedHtmlKey` nên WebView bỏ qua reload và không bắn `onReaderLayoutReady`.
+- **Fix**: Thêm `ReaderChapterNavigator` để nút BottomBar đi qua màn che `PixelCopy`; `ReaderDocumentGenerationTracker.extendPendingToNextLoad()` + `coalesceRevision` dời đích chờ và gia hạn timeout khi gộp yêu cầu; gắn `chapterReloadToken` (chỉ tăng khi nạp từ ngoài) vào key WebView để đảo chiều về chương cũ vẫn reload đúng.
+- **Files liên quan**: `feature/reader/src/main/java/com/epubpro/feature/reader/webview/EpubProWebView.kt`, `feature/reader/src/main/java/com/epubpro/feature/reader/webview/ReaderDocumentGenerationTracker.kt`, `feature/reader/src/main/java/com/epubpro/feature/reader/ReaderViewModel.kt`
+
 ## How-To
 
 ### Cách triển khai auto-resume sách đang đọc dở an toàn
@@ -518,6 +532,6 @@
 
 
 ### Boundary Commit Bridge + Reload Guard Pattern
-- **Ngay**: 2026-08-18
-- **Chi tiet**: Su kien chuyen chuong co hai duong: onAdjacentChapterCommitted(direction) cho document da thay DOM va onNext/PreviousChapterRequested() cho fallback. Native luu locallyCommittedHtmlKey; khi Compose doi state, neu key trung thi khong goi loadDataWithBaseURL(). Guard nay phai co generation/HTML hash de tranh bo qua nham reload cua chuong khac.
-- **Files lien quan**: core/reader-renderer/src/main/java/com/epubpro/core/reader/bridge/ReaderJsBridge.kt, feature/reader/src/main/java/com/epubpro/feature/reader/webview/EpubProWebView.kt
+- **Ngày**: 2026-11-25
+- **Chi tiết**: Tách 2 luồng chuyển chương: `onAdjacentChapterCommitted(direction)` cho DOM commit (cập nhật index ngay, xoay preview, không tăng `chapterReloadToken`) và `onNext/PreviousChapterRequested()` cho fallback/nút BottomBar/TOC (tăng `chapterReloadToken`). Khóa nhận diện HTML của WebView kết hợp `rawHtml.hashCode()`, `contentReloadKey()`, `filterPreferences.hashCode()` và `chapterReloadToken`, đồng thời tiêu thụ `locallyCommittedHtmlKey` đúng một lần để tránh bỏ qua nhầm reload khi quay lại đúng HTML cũ.
+- **Files liên quan**: `core/reader-renderer/src/main/java/com/epubpro/core/reader/bridge/ReaderJsBridge.kt`, `feature/reader/src/main/java/com/epubpro/feature/reader/webview/EpubProWebView.kt`, `feature/reader/src/main/java/com/epubpro/feature/reader/ReaderViewModel.kt`

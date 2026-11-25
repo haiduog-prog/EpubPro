@@ -56,6 +56,19 @@ class ReaderChapterTransitionContractTest {
         )
     }
 
+    /**
+     * Kiểm tra khóa nhận diện HTML của WebView gắn kèm `chapterReloadToken` ở cả hai đầu (commit trong DOM
+     * và nạp ngoài), để bấm Next rồi Previous dưới màn che hoặc chọn lại chương hiện tại từ Mục lục vẫn
+     * nạp lại document và gỡ màn che đúng hạn, đồng thời gộp yêu cầu dưới màn che có gia hạn timeout.
+     */
+    @Test
+    fun reloadKeyCarriesReloadTokenAndCoalescingExtendsTimeout() {
+        assertTrue(source.contains("""_${'$'}currentChapterReloadToken""""))
+        assertTrue(source.contains("""_${'$'}chapterReloadToken""""))
+        assertTrue(source.contains("coalesceRevision += 1"))
+        assertTrue(source.contains("coalesceRevision != observedRevision"))
+    }
+
     private fun assertAppearsInOrder(text: String, vararg markers: String) {
         var previousIndex = -1
         markers.forEach { marker ->

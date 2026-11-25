@@ -55,6 +55,21 @@ class ReaderProgressTest {
     }
 
     /**
+     * Kiểm tra chương cuối chưa đo số trang (vừa commit trong DOM) không bị coi là đã đọc xong cả sách.
+     */
+    @Test
+    fun unknownTotalPagesOnLastChapterCountsOnlyToChapterStart() {
+        val state = ReaderUiState(
+            chapters = List(4) { index -> EpubChapterHeader(index, "Chapter", "chapter.xhtml") },
+            currentChapterIndex = 3,
+            currentPageInChapter = 1,
+            totalPagesInChapter = UNKNOWN_TOTAL_PAGES
+        )
+
+        assertEquals(0.75f, calculateReaderProgress(state), 0.001f)
+    }
+
+    /**
      * Kiểm tra chapter một trang ở đầu sách chưa được tính là đã hoàn tất.
      */
     @Test
@@ -67,5 +82,33 @@ class ReaderProgressTest {
         )
 
         assertEquals(0f, calculateReaderProgress(state), 0.001f)
+    }
+
+    /**
+     * Kiểm tra không ghi tiến độ định kỳ khi chương ngang chưa đo xong số trang, tránh ghi sai trang 1
+     * lúc vừa lùi về trang cuối chương trước; riêng khi thoát màn đọc thì chỉ cho lưu nếu mở từ trang đầu.
+     */
+    @Test
+    fun persistenceGuardSkipsUnmeasuredHorizontalPagesExceptFirstPageFlush() {
+        val chapters = List(4) { index -> EpubChapterHeader(index, "Chapter", "chapter.xhtml") }
+        val baseUnmeasured = ReaderUiState(
+            chapters = chapters,
+            currentChapterIndex = 2,
+            currentPageInChapter = 1,
+            initialPageRequest = 1,
+            totalPagesInChapter = UNKNOWN_TOTAL_PAGES,
+            isLoading = false
+        )
+
+        assertEquals(false, shouldPersistReadingProgress(baseUnmeasured, isFlush = false))
+        assertEquals(true, shouldPersistReadingProgress(baseUnmeasured, isFlush = true))
+
+        val backwardUnmeasured = baseUnmeasured.copy(initialPageRequest = Int.MAX_VALUE)
+        assertEquals(false, shouldPersistReadingProgress(backwardUnmeasured, isFlush = false))
+        assertEquals(false, shouldPersistReadingProgress(backwardUnmeasured, isFlush = true))
+
+        val measured = backwardUnmeasured.copy(currentPageInChapter = 11, totalPagesInChapter = 11)
+        assertEquals(true, shouldPersistReadingProgress(measured, isFlush = false))
+        assertEquals(true, shouldPersistReadingProgress(measured, isFlush = true))
     }
 }

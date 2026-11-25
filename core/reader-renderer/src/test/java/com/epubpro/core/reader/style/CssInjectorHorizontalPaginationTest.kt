@@ -66,10 +66,102 @@ class CssInjectorHorizontalPaginationTest {
         assertTrue(
             script.contains(
                 "if (!isLayoutReady || isExecutingScroll || isDraggingPage || " +
-                    "isCoverOverlayActive || ignoreScrollMetrics) return"
+                    "isCoverOverlayActive) return"
             )
         )
+        assertTrue(script.contains("if (ignoreScrollMetrics && force !== true) return"))
         assertTrue(script.contains("isLayoutReady = true"))
+    }
+
+    @Test
+    fun pageMetricsBlockedByOverlayAreDeferredAndFlushedOnCleanup() {
+        val script = CssInjector.generateJsBridgeScript(
+            isHorizontalPagination = true,
+            settings = asymmetricSettings
+        )
+
+        val notifyBody = script
+            .substringAfter("function notifyPageChangeCompleted()")
+            .substringBefore("function flushPendingPageMetrics()")
+        assertTrue(notifyBody.contains("pendingPageMetrics = true;"))
+
+        val flushBody = script
+            .substringAfter("function flushPendingPageMetrics()")
+            .substringBefore("function notifyReaderLayoutReady()")
+        assertTrue(
+            flushBody.contains(
+                "if (!isLayoutReady || isExecutingScroll || isDraggingPage || isCoverOverlayActive) return;"
+            )
+        )
+        assertTrue(flushBody.contains("updatePageMetrics(true);"))
+
+        val cleanupBody = script
+            .substringAfter("function cleanupCoverOverlay()")
+            .substringBefore("function configurePageLayer(")
+        val suppressIndex = cleanupBody.indexOf("suppressScrollMetrics(300);")
+        val flushIndex = cleanupBody.indexOf("flushPendingPageMetrics();")
+        assertTrue(suppressIndex >= 0)
+        assertTrue(flushIndex > suppressIndex)
+    }
+
+    @Test
+    fun pageTurnsAndGesturesAreIgnoredUntilLayoutIsMeasured() {
+        val script = CssInjector.generateJsBridgeScript(
+            isHorizontalPagination = true,
+            settings = asymmetricSettings
+        )
+
+        val nextBody = script
+            .substringAfter("window.epubproGoNextPage = function()")
+            .substringBefore("window.epubproGoPrevPage = function()")
+        assertTrue(nextBody.indexOf("if (!isLayoutReady) return;") in 0 until nextBody.indexOf("animateChapterBoundary(1)"))
+        val prevBody = script
+            .substringAfter("window.epubproGoPrevPage = function()")
+            .substringBefore("window.epubproUpdateMetrics")
+        assertTrue(prevBody.indexOf("if (!isLayoutReady) return;") in 0 until prevBody.indexOf("animateChapterBoundary(-1)"))
+
+        val touchStartBody = script
+            .substringAfter("document.addEventListener('touchstart'")
+            .substringBefore("document.addEventListener('touchmove'")
+        val blockGuardIndex = touchStartBody.indexOf("isGestureBlockedByLayout = !!window.epubproIsHorizontal && !isLayoutReady;")
+        val cleanupInTouchStartIndex = touchStartBody.indexOf("cleanupCoverOverlay();")
+        assertTrue(blockGuardIndex >= 0)
+        assertTrue(cleanupInTouchStartIndex > blockGuardIndex)
+
+        val touchEndBody = script
+            .substringAfter("document.addEventListener('touchend'")
+            .substringBefore("if (!isDraggingPage) return;")
+        assertTrue(touchEndBody.contains("if (isGestureBlockedByLayout)"))
+    }
+
+    @Test
+    fun chapterBoundaryWithoutPreviewUsesCoveredFallbackInsteadOfEmptySlide() {
+        val script = CssInjector.generateJsBridgeScript(
+            isHorizontalPagination = true,
+            settings = asymmetricSettings
+        )
+
+        val boundaryBody = script
+            .substringAfter("function animateChapterBoundary(direction)")
+            .substringBefore("initCoverOverlay(")
+        assertTrue(boundaryBody.contains("if (!adjacentPreviewHtml || !adjacentPreviewHtml.trim())"))
+        assertTrue(boundaryBody.contains("requestFallbackBoundary(direction);"))
+    }
+
+    @Test
+    fun adjacentChapterCommitResetsPendingMetricsAndDropsBlockedUpdateAfterCleanup() {
+        val script = CssInjector.generateJsBridgeScript(
+            isHorizontalPagination = true,
+            settings = asymmetricSettings
+        )
+
+        val replaceBody = script
+            .substringAfter("function replaceAdjacentChapterInDocument(")
+            .substringBefore("function mountPageOverlay(")
+        assertTrue(replaceBody.contains("pendingPageMetrics = false;"))
+        assertFalse(
+            Regex("""cleanupCoverOverlay\(\);\s*updatePageMetrics\(\);""").containsMatchIn(script)
+        )
     }
 
     @Test

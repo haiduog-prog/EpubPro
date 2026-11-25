@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -73,6 +74,38 @@ private data class ChapterTransitionCover(
     val direction: ChapterTransitionDirection,
     val image: ImageBitmap
 )
+
+/**
+ * Cầu nối để UI bên ngoài WebView (nút chuyển chương ở thanh dưới) yêu cầu chuyển chương qua cùng luồng
+ * màn che [PixelCopy] với chuyển chương bằng cử chỉ, tránh WebView nháy trắng khi nạp lại document.
+ * [EpubProWebView] đăng ký xử lý khi đang hiển thị; khi chưa đăng ký, caller tự gọi ViewModel.
+ */
+@Stable
+class ReaderChapterNavigator internal constructor() {
+    internal var handler: ((next: Boolean) -> Unit)? = null
+
+    /**
+     * Yêu cầu chuyển sang chương kế tiếp có màn che chuyển cảnh.
+     *
+     * @return `true` nếu WebView đã nhận yêu cầu; `false` nếu chưa có WebView để xử lý.
+     */
+    fun goToNextChapter(): Boolean = handler?.let { it(true); true } ?: false
+
+    /**
+     * Yêu cầu quay về chương trước (mở ở trang cuối) có màn che chuyển cảnh.
+     *
+     * @return `true` nếu WebView đã nhận yêu cầu; `false` nếu chưa có WebView để xử lý.
+     */
+    fun goToPreviousChapter(): Boolean = handler?.let { it(false); true } ?: false
+}
+
+/**
+ * Tạo và ghi nhớ một [ReaderChapterNavigator] trong composition hiện tại.
+ *
+ * @return Navigator dùng chung giữa nút chuyển chương và [EpubProWebView].
+ */
+@Composable
+fun rememberReaderChapterNavigator(): ReaderChapterNavigator = remember { ReaderChapterNavigator() }
 
 /**
  * Gói dữ liệu HTML chương hiện tại và hai chương xem trước đã được làm sạch an toàn.
@@ -203,6 +236,8 @@ private fun WebView.captureTransitionFrame(
  * @param hasNextChapter Cho biết danh sách còn chương kế tiếp hay không.
  * @param initialPage Trang bắt đầu hiển thị khi mở chương.
  * @param initialVisibleParagraphIndex Chỉ số đoạn văn bắt đầu hiển thị khi mở chương.
+ * @param chapterReloadToken Bộ đếm tăng khi yêu cầu nạp lại chương từ bên ngoài (TOC, nút chương, fallback),
+ *        đảm bảo WebView vẫn nạp lại kể cả khi quay về đúng HTML đang hiển thị.
  * @param settings Cấu hình cài đặt đọc sách [ReaderSettings].
  * @param filterPreferences Cấu hình bộ lọc từ ngữ nhạy cảm.
  * @param activeTtsParagraphIndex Chỉ số đoạn văn đang được TTS đọc và tô màu highlight.
@@ -212,6 +247,9 @@ private fun WebView.captureTransitionFrame(
  * @param onPreviousChapter Callback yêu cầu chuyển về chương trước đó.
  * @param onNextChapterPrefetch Callback preload chương kế tiếp ngay khi gesture commit.
  * @param onPreviousChapterPrefetch Callback preload chương trước ngay khi gesture commit.
+ * @param onAdjacentChapterCommitted Callback khi JS đã thay DOM sang chương kề ngay tại chỗ (không reload);
+ *        tham số là hướng chuyển: dương là chương sau, âm là chương trước.
+ * @param chapterNavigator Navigator để nút chuyển chương bên ngoài đi qua luồng màn che chuyển cảnh.
  * @param onTextSelected Callback khi người dùng bôi đen chọn đoạn văn bản.
  * @param onAddSelectionToFilter Callback thêm đoạn văn bản đang chọn vào bộ lọc nội dung.
  * @param onCfiChanged Callback báo mã vị trí CFI thay đổi.
@@ -230,6 +268,7 @@ fun EpubProWebView(
     hasNextChapter: Boolean = true,
     initialPage: Int,
     initialVisibleParagraphIndex: Int,
+    chapterReloadToken: Int = 0,
     settings: ReaderSettings,
     filterPreferences: ContentFilterPreferences = ContentFilterPreferences(),
     activeTtsParagraphIndex: Int? = null,
@@ -239,6 +278,8 @@ fun EpubProWebView(
     onPreviousChapter: () -> Unit,
     onNextChapterPrefetch: () -> Unit = {},
     onPreviousChapterPrefetch: () -> Unit = {},
+    onAdjacentChapterCommitted: (direction: Int) -> Unit,
+    chapterNavigator: ReaderChapterNavigator? = null,
     onTextSelected: (String) -> Unit,
     onAddSelectionToFilter: (String) -> Unit = {},
     onCfiChanged: (String) -> Unit
@@ -251,12 +292,14 @@ fun EpubProWebView(
     val currentOnPreviousChapter by rememberUpdatedState(onPreviousChapter)
     val currentOnNextChapterPrefetch by rememberUpdatedState(onNextChapterPrefetch)
     val currentOnPreviousChapterPrefetch by rememberUpdatedState(onPreviousChapterPrefetch)
+    val currentOnAdjacentChapterCommitted by rememberUpdatedState(onAdjacentChapterCommitted)
     val currentPreSanitizedPreviousChapterHtml by rememberUpdatedState(preSanitizedPreviousChapterHtml)
     val currentPreSanitizedNextChapterHtml by rememberUpdatedState(preSanitizedNextChapterHtml)
     val currentPreviousChapterHtml by rememberUpdatedState(previousChapterHtml)
     val currentNextChapterHtml by rememberUpdatedState(nextChapterHtml)
     val currentReaderSettings by rememberUpdatedState(settings)
     val currentFilterPreferences by rememberUpdatedState(filterPreferences)
+    val currentChapterReloadToken by rememberUpdatedState(chapterReloadToken)
     val currentOnTextSelected by rememberUpdatedState(onTextSelected)
     val currentOnAddSelectionToFilter by rememberUpdatedState(onAddSelectionToFilter)
     val currentOnCfiChanged by rememberUpdatedState(onCfiChanged)
@@ -270,6 +313,10 @@ fun EpubProWebView(
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var transitionCover by remember { mutableStateOf<ChapterTransitionCover?>(null) }
     var isTransitionCapturePending by remember { mutableStateOf(false) }
+    // Token của màn che mà lần chuyển chương đầu tiên đã được gửi tới ViewModel.
+    var dispatchedCoverToken by remember { mutableStateOf<Long?>(null) }
+    // Tăng mỗi khi gộp thêm yêu cầu chuyển chương dưới màn che để gia hạn thời gian chờ timeout.
+    var coalesceRevision by remember { mutableStateOf(0) }
 
     val sanitizedCurrentHtml by produceState<SanitizedEpubHtml?>(
         initialValue = preSanitizedHtml,
@@ -281,9 +328,10 @@ fun EpubProWebView(
         }
     }
 
-    val requestChapterTransition by rememberUpdatedState<(ChapterTransitionDirection) -> Unit> {
-        direction ->
+    val requestChapterTransition by rememberUpdatedState<(ChapterTransitionDirection, Boolean) -> Unit> {
+        direction, coalesceWhileCovered ->
         val webView = webViewRef
+        val activeCover = transitionCover
         if (webView == null) {
             mainHandler.post {
                 when (direction) {
@@ -291,7 +339,24 @@ fun EpubProWebView(
                     ChapterTransitionDirection.PREVIOUS -> currentOnPreviousChapter()
                 }
             }
-        } else if (transitionCover != null || isTransitionCapturePending) {
+        } else if (
+            coalesceWhileCovered &&
+            activeCover != null &&
+            !isTransitionCapturePending &&
+            dispatchedCoverToken == activeCover.token &&
+            // Dời đích chờ trước khi gửi yêu cầu, để document đang layout không gỡ màn che trước khi
+            // document của chương mới được nạp.
+            generationTracker.extendPendingToNextLoad()
+        ) {
+            // Nút chuyển chương bấm liên tục: màn che đang giữ khung hình cũ và lần chuyển đầu đã gửi đi,
+            // nên chuyển tiếp ngay bên dưới màn che và gia hạn bộ đếm timeout.
+            coalesceRevision += 1
+            Log.d("EpubPro_TRANSITION", "Coalescing chapter request under active cover direction=${direction}")
+            when (direction) {
+                ChapterTransitionDirection.NEXT -> currentOnNextChapter()
+                ChapterTransitionDirection.PREVIOUS -> currentOnPreviousChapter()
+            }
+        } else if (activeCover != null || isTransitionCapturePending) {
             Log.d("EpubPro_TRANSITION", "Ignoring duplicate boundary request")
         } else {
             isTransitionCapturePending = true
@@ -345,12 +410,12 @@ fun EpubProWebView(
             },
             onNextChapterListener = {
                 mainHandler.post {
-                    requestChapterTransition(ChapterTransitionDirection.NEXT)
+                    requestChapterTransition(ChapterTransitionDirection.NEXT, false)
                 }
             },
             onPreviousChapterListener = {
                 mainHandler.post {
-                    requestChapterTransition(ChapterTransitionDirection.PREVIOUS)
+                    requestChapterTransition(ChapterTransitionDirection.PREVIOUS, false)
                 }
             },
             onNextChapterPrefetchListener = {
@@ -370,9 +435,9 @@ fun EpubProWebView(
                     }
                     if (adjacent != null) {
                         locallyCommittedHtmlKey =
-                            "${adjacent.hashCode()}_${currentReaderSettings.contentReloadKey()}_${currentFilterPreferences.hashCode()}"
+                            "${adjacent.hashCode()}_${currentReaderSettings.contentReloadKey()}_${currentFilterPreferences.hashCode()}_$currentChapterReloadToken"
                     }
-                    if (direction > 0) currentOnNextChapter() else currentOnPreviousChapter()
+                    currentOnAdjacentChapterCommitted(direction)
                 }
             },
             onReaderLayoutReadyListener = { loadGeneration ->
@@ -380,7 +445,7 @@ fun EpubProWebView(
                     val cover = transitionCover
                     if (
                         cover != null &&
-                        cover.expectedLoadGeneration == loadGeneration
+                        generationTracker.isPendingDestination(loadGeneration)
                     ) {
                         val destinationWebView = webViewRef ?: return@post
                         Log.d(
@@ -423,11 +488,18 @@ fun EpubProWebView(
             ChapterTransitionDirection.NEXT -> currentOnNextChapter()
             ChapterTransitionDirection.PREVIOUS -> currentOnPreviousChapter()
         }
+        dispatchedCoverToken = cover.token
 
-        delay(CHAPTER_TRANSITION_TIMEOUT_MS)
+        var observedRevision: Int
+        do {
+            observedRevision = coalesceRevision
+            delay(CHAPTER_TRANSITION_TIMEOUT_MS)
+        } while (transitionCover?.token == cover.token && coalesceRevision != observedRevision)
+
         if (
             transitionCover?.token == cover.token &&
-            generationTracker.cancelIfExpected(cover.expectedLoadGeneration)
+            // Đích có thể đã được dời sang document mới hơn khi bấm chuyển chương liên tục.
+            generationTracker.cancelPending()
         ) {
             Log.w(
                 "EpubPro_TRANSITION",
@@ -466,6 +538,16 @@ fun EpubProWebView(
             "if (typeof epubproSetAdjacentChapters === 'function') { epubproSetAdjacentChapters($currentLoadedGeneration, $quotedPrev, $quotedNext, $hasPreviousChapter, $hasNextChapter); }",
             null
         )
+    }
+
+    DisposableEffect(chapterNavigator) {
+        chapterNavigator?.handler = { next ->
+            requestChapterTransition(
+                if (next) ChapterTransitionDirection.NEXT else ChapterTransitionDirection.PREVIOUS,
+                true
+            )
+        }
+        onDispose { chapterNavigator?.handler = null }
     }
 
     LaunchedEffect(activeTtsParagraphIndex) {
@@ -610,11 +692,15 @@ fun EpubProWebView(
                 )
 
                 val newHtmlKey =
-                    "${sanitized.rawHtml.hashCode()}_${settings.contentReloadKey()}_${filterPreferences.hashCode()}"
+                    "${sanitized.rawHtml.hashCode()}_${settings.contentReloadKey()}_${filterPreferences.hashCode()}_$chapterReloadToken"
                 if (loadedHtmlKey != newHtmlKey) {
                     loadedHtmlKey = newHtmlKey
-                    if (locallyCommittedHtmlKey == newHtmlKey) {
-                        locallyCommittedHtmlKey = null
+                    // Key commit chỉ dùng cho lần đổi HTML đầu tiên sau khi commit. Nếu lần nạp chương đó bị
+                    // hủy (bấm chuyển chương tiếp), key cũ không được giữ lại, vì lần sau quay về đúng chương
+                    // đó sẽ bỏ qua reload và WebView hiển thị sai chương.
+                    val committedKey = locallyCommittedHtmlKey
+                    locallyCommittedHtmlKey = null
+                    if (committedKey == newHtmlKey) {
                         Log.d("EpubPro_HTML", "Skipping WebView reload because chapter was committed in the existing DOM")
                     } else {
                         val loadGeneration = generationTracker.nextLoadGeneration()

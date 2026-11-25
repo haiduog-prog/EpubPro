@@ -437,6 +437,9 @@ object CssInjector {
 
                 var ignoreScrollMetrics = false;
                 var ignoreScrollTimeout = null;
+                // Set when a completed page change could not be reported because an overlay
+                // or drag was active; flushed once the overlay is cleaned up.
+                var pendingPageMetrics = false;
 
                 function suppressScrollMetrics(durationMs) {
                     ignoreScrollMetrics = true;
@@ -509,7 +512,7 @@ object CssInjector {
                     }
                 }
 
-                function updatePageMetrics() {
+                function updatePageMetrics(force) {
                     if (!window.epubproIsHorizontal) {
                         var verticalParagraphIndex = getFirstVisibleParagraphIndex();
                         notifyPositionChanged(verticalParagraphIndex);
@@ -518,7 +521,10 @@ object CssInjector {
                         }
                         return;
                     }
-                    if (!isLayoutReady || isExecutingScroll || isDraggingPage || isCoverOverlayActive || ignoreScrollMetrics) return;
+                    if (!isLayoutReady || isExecutingScroll || isDraggingPage || isCoverOverlayActive) return;
+                    // force bypasses only the post-cleanup scroll suppression window.
+                    if (ignoreScrollMetrics && force !== true) return;
+                    pendingPageMetrics = false;
                     var pw = measureTotalPages();
                     var sl = window.scrollX || window.pageXOffset || 0;
                     currentPage = Math.min(totalPages, Math.max(1, Math.round(sl / pw) + 1));
@@ -534,12 +540,24 @@ object CssInjector {
                 }
 
                 function notifyPageChangeCompleted() {
-                    if (isDraggingPage || isCoverOverlayActive) return;
+                    if (isDraggingPage || isCoverOverlayActive) {
+                        pendingPageMetrics = true;
+                        return;
+                    }
+                    pendingPageMetrics = false;
                     if (window.ReaderJsBridge && window.ReaderJsBridge.onPageChanged) {
                         var visibleIndex = getFirstVisibleParagraphIndex();
                         notifyPositionChanged(visibleIndex);
                         window.ReaderJsBridge.onPageChanged(currentPage, totalPages, visibleIndex);
                     }
+                }
+
+                // Re-measures from scrollX instead of trusting currentPage, which can hold a
+                // temporary sentinel (1000000) while a backward chapter commit is laying out.
+                function flushPendingPageMetrics() {
+                    if (!pendingPageMetrics || !window.epubproIsHorizontal) return;
+                    if (!isLayoutReady || isExecutingScroll || isDraggingPage || isCoverOverlayActive) return;
+                    updatePageMetrics(true);
                 }
 
                 function notifyReaderLayoutReady() {
@@ -640,6 +658,13 @@ object CssInjector {
                         requestFallbackBoundary(direction);
                         return;
                     }
+                    var adjacentPreviewHtml = direction > 0 ? nextChapterHtml : previousChapterHtml;
+                    if (!adjacentPreviewHtml || !adjacentPreviewHtml.trim()) {
+                        // Without a preview the slide would reveal an empty layer (a white flash).
+                        // The native fallback covers the reload with a PixelCopy snapshot instead.
+                        requestFallbackBoundary(direction);
+                        return;
+                    }
 
                     if (!isCoverOverlayActive) {
                         initCoverOverlay(direction > 0 ? -1 : 1);
@@ -665,8 +690,8 @@ object CssInjector {
                         }
                         setTimeout(function() {
                             if (token === gestureToken) {
+                                // cleanupCoverOverlay() flushes metrics deferred while the overlay was active.
                                 cleanupCoverOverlay();
-                                updatePageMetrics();
                             }
                         }, Math.max(transitionSpeedMs + 120, 180));
                     }
@@ -694,6 +719,9 @@ object CssInjector {
                         }
                         return;
                     }
+                    // totalPages is provisional until the layout is measured; acting now could
+                    // misread page 1 as the last page and commit another chapter.
+                    if (!isLayoutReady) return;
                     if (currentPage < totalPages) {
                         scrollToPage(currentPage + 1, true);
                     } else {
@@ -711,6 +739,7 @@ object CssInjector {
                         }
                         return;
                     }
+                    if (!isLayoutReady) return;
                     if (currentPage > 1) {
                         scrollToPage(currentPage - 1, true);
                     } else {
@@ -801,6 +830,10 @@ object CssInjector {
                 var currentDeltaX = 0;
                 var isDraggingPage = false;
                 var isHorizontalDragConfirmed = false;
+                // A gesture that starts before the horizontal layout is measured (e.g. right after an
+                // adjacent chapter was swapped into the DOM, when totalPages is still the provisional 1)
+                // would be misread as a chapter boundary and skip a whole chapter, so it is swallowed.
+                var isGestureBlockedByLayout = false;
                 var activeTopOverlay = null;
                 var activeBottomOverlay = null;
                 var isCoverOverlayActive = false;
@@ -870,6 +903,7 @@ object CssInjector {
                     isHorizontalDragConfirmed = false;
                     currentDeltaX = 0;
                     suppressScrollMetrics(300);
+                    flushPendingPageMetrics();
                 }
 
                 function configurePageLayer(layer, pw, vh, bg) {
@@ -984,6 +1018,7 @@ object CssInjector {
                         targetInitParagraph = 0;
                         currentPage = targetInitPage;
                         totalPages = 1;
+                        pendingPageMetrics = false;
                         scrollExtentBaseWidth = 0;
                         hasInitializedLayout = false;
                         hasNotifiedLayoutReady = false;
@@ -1092,6 +1127,11 @@ object CssInjector {
                 }
                 document.addEventListener('touchstart', function(e) {
                     if (e.touches && e.touches.length === 1) {
+                        isGestureBlockedByLayout = !!window.epubproIsHorizontal && !isLayoutReady;
+                        if (isGestureBlockedByLayout) {
+                            isDraggingPage = false;
+                            return;
+                        }
                         gestureToken += 1;
                         if (window.epubproIsHorizontal) {
                             cleanupCoverOverlay();
@@ -1107,6 +1147,11 @@ object CssInjector {
                 }, { passive: true });
 
                 document.addEventListener('touchmove', function(e) {
+                    if (isGestureBlockedByLayout) {
+                        // Keep native horizontal scrolling from moving the half-laid-out document.
+                        if (e.cancelable) e.preventDefault();
+                        return;
+                    }
                     if (!window.epubproIsHorizontal || !isDraggingPage || !e.touches || e.touches.length === 0) return;
 
                     // MUST preventDefault IMMEDIATELY before WebView commits scroll gesture
@@ -1159,6 +1204,10 @@ object CssInjector {
                 }, { passive: false });
 
                 document.addEventListener('touchend', function(e) {
+                    if (isGestureBlockedByLayout) {
+                        isGestureBlockedByLayout = false;
+                        return;
+                    }
                     if (!isDraggingPage) return;
                     isDraggingPage = false;
 
@@ -1250,9 +1299,9 @@ object CssInjector {
 
                             setTimeout(function() {
                                 if (completingGestureToken === gestureToken) {
-                                     cleanupCoverOverlay();
-                                     updatePageMetrics();
-                                 }
+                                    // cleanupCoverOverlay() flushes metrics deferred while the overlay was active.
+                                    cleanupCoverOverlay();
+                                }
                             }, Math.max(transitionSpeedMs + 120, 180));
                         }
 
@@ -1366,6 +1415,10 @@ object CssInjector {
                 }, { passive: true });
 
                 document.addEventListener('touchcancel', function() {
+                    if (isGestureBlockedByLayout) {
+                        isGestureBlockedByLayout = false;
+                        return;
+                    }
                     if (!window.epubproIsHorizontal) return;
                     gestureToken += 1;
                     window.scrollTo(startScrollX, 0);

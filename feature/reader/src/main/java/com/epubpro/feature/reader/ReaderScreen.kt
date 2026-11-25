@@ -126,6 +126,7 @@ import com.epubpro.feature.reader.tts.TtsAudioPlayerScreen
 import com.epubpro.feature.reader.tts.TtsMiniPlayerBar
 import com.epubpro.feature.reader.tts.TtsSetupBottomSheet
 import com.epubpro.feature.reader.webview.EpubProWebView
+import com.epubpro.feature.reader.webview.rememberReaderChapterNavigator
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -140,6 +141,7 @@ fun ReaderScreen(
     viewModel: ReaderViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val chapterNavigator = rememberReaderChapterNavigator()
     var showTocDrawer by remember { mutableStateOf(false) }
     var showSettingsSheet by remember { mutableStateOf(false) }
     var showReaderOverflowMenu by remember { mutableStateOf(false) }
@@ -321,6 +323,7 @@ fun ReaderScreen(
                     hasNextChapter = uiState.currentChapterIndex < uiState.chapters.lastIndex,
                     initialPage = uiState.initialPageRequest,
                     initialVisibleParagraphIndex = uiState.firstVisibleParagraphIndex,
+                    chapterReloadToken = uiState.chapterReloadToken,
                     settings = uiState.settings,
                     filterPreferences = uiState.filterPreferences,
                     activeTtsParagraphIndex = activeChunkIndex,
@@ -328,6 +331,8 @@ fun ReaderScreen(
                     onPageChanged = viewModel::updatePageMetrics,
                     onNextChapter = viewModel::nextChapter,
                     onPreviousChapter = viewModel::previousChapter,
+                    onAdjacentChapterCommitted = viewModel::onAdjacentChapterCommitted,
+                    chapterNavigator = chapterNavigator,
                     onNextChapterPrefetch = {
                         viewModel.prefetchChapter(uiState.currentChapterIndex + 1)
                     },
@@ -553,7 +558,14 @@ fun ReaderScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(
-                        onClick = viewModel::previousChapter,
+                        // Đi qua màn che PixelCopy của WebView để không nháy trắng khi nạp chương mới.
+                        onClick = {
+                            if (viewModel.canGoToAdjacentChapter(forward = false) &&
+                                !chapterNavigator.goToPreviousChapter()
+                            ) {
+                                viewModel.previousChapter()
+                            }
+                        },
                         enabled = uiState.currentChapterIndex > 0
                     ) {
                         Icon(
@@ -562,14 +574,24 @@ fun ReaderScreen(
                         )
                     }
 
-                    val progressText = if (uiState.settings.isHorizontalPagination) {
-                        "Trang ${uiState.currentPageInChapter} / ${uiState.totalPagesInChapter} • Chương ${uiState.currentChapterIndex + 1}"
-                    } else {
-                        "Chương ${uiState.currentChapterIndex + 1} / ${
-                            uiState.chapters.size.coerceAtLeast(
-                                1
-                            )
-                        }"
+                    val chapterNumber = uiState.currentChapterIndex + 1
+                    val progressText = when {
+                        !uiState.settings.isHorizontalPagination -> stringResource(
+                            R.string.reader_chapter_progress_format,
+                            chapterNumber,
+                            uiState.chapters.size.coerceAtLeast(1)
+                        )
+                        // Chương vừa commit trong DOM, JS chưa đo xong số trang: không hiện "1 / 1".
+                        uiState.totalPagesInChapter <= UNKNOWN_TOTAL_PAGES -> stringResource(
+                            R.string.reader_chapter_number_format,
+                            chapterNumber
+                        )
+                        else -> stringResource(
+                            R.string.reader_page_chapter_progress_format,
+                            uiState.currentPageInChapter,
+                            uiState.totalPagesInChapter,
+                            chapterNumber
+                        )
                     }
 
                     if (uiState.settings.showStatusBar) {
@@ -582,7 +604,13 @@ fun ReaderScreen(
                         Spacer(modifier = Modifier.weight(1f))
                     }
                     IconButton(
-                        onClick = viewModel::nextChapter,
+                        onClick = {
+                            if (viewModel.canGoToAdjacentChapter(forward = true) &&
+                                !chapterNavigator.goToNextChapter()
+                            ) {
+                                viewModel.nextChapter()
+                            }
+                        },
                         enabled = uiState.currentChapterIndex < uiState.chapters.size - 1
                     ) {
                         Icon(
@@ -600,10 +628,21 @@ fun ReaderScreen(
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.BottomEnd)
         ) {
-            val progressText = if (uiState.settings.isHorizontalPagination) {
-                "Trang ${uiState.currentPageInChapter} / ${uiState.totalPagesInChapter}"
-            } else {
-                "Chương ${uiState.currentChapterIndex + 1} / ${uiState.chapters.size.coerceAtLeast(1)}"
+            val progressText = when {
+                !uiState.settings.isHorizontalPagination -> stringResource(
+                    R.string.reader_chapter_progress_format,
+                    uiState.currentChapterIndex + 1,
+                    uiState.chapters.size.coerceAtLeast(1)
+                )
+                uiState.totalPagesInChapter <= UNKNOWN_TOTAL_PAGES -> stringResource(
+                    R.string.reader_chapter_number_format,
+                    uiState.currentChapterIndex + 1
+                )
+                else -> stringResource(
+                    R.string.reader_page_progress_format,
+                    uiState.currentPageInChapter,
+                    uiState.totalPagesInChapter
+                )
             }
             Text(
                 text = progressText,

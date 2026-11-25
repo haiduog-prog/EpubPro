@@ -90,6 +90,12 @@ private const val AUTO_APPEND_REMAINING_CHAPTERS = 2
 /** Số chương tải thêm mỗi lần. */
 private const val APPEND_BATCH_CHAPTERS = 20
 
+/**
+ * Giá trị `totalPagesInChapter` khi chương vừa commit trong DOM nhưng JS chưa đo xong số trang.
+ * UI không hiển thị "Trang x / y" và tiến độ chỉ tính đến đầu chương trong trạng thái này.
+ */
+internal const val UNKNOWN_TOTAL_PAGES = 0
+
 enum class ReaderContentVersion {
     ORIGINAL,
     AI
@@ -110,6 +116,7 @@ data class ReaderUiState(
     val totalPagesInChapter: Int = 1,
     val firstVisibleParagraphIndex: Int = 0,
     val currentCfi: String = "",
+    val chapterReloadToken: Int = 0,
     val settings: ReaderSettings = ReaderSettings(),
     val showControls: Boolean = true,
     val isLoading: Boolean = true,
@@ -176,6 +183,77 @@ data class ReaderUiState(
 }
 
 /**
+ * Tính state ngay khi WebView đã thay DOM sang chương kề (không reload): đổi chỉ số chương, xoay HTML của
+ * chương vừa rời thành preview chiều ngược lại, đánh dấu số trang chưa đo. Hàm thuần để kiểm thử.
+ *
+ * Preview dùng đúng dạng HTML mà chương vừa rời sẽ hiển thị khi được nạp lại (gốc hoặc Convert, không
+ * phải AI) để key commit trong WebView khớp key nạp chương, tránh reload.
+ *
+ * @param state State hiện tại của reader.
+ * @param direction Hướng chuyển: dương là chương sau, âm là chương trước.
+ * @param leavingHtmlIsCurrent `false` khi lần nạp chương trước chưa xong, tức `currentChapterHtml` chưa
+ *        phải HTML của chương đang rời; khi đó không xoay preview mà để trống để JS dùng đường fallback.
+ * @return State mới, hoặc `null` nếu [direction] bằng 0 hoặc chương đích nằm ngoài danh sách.
+ */
+internal fun commitAdjacentChapterState(
+    state: ReaderUiState,
+    direction: Int,
+    leavingHtmlIsCurrent: Boolean
+): ReaderUiState? {
+    if (direction == 0) return null
+    val forward = direction > 0
+    val targetIndex = state.currentChapterIndex + if (forward) 1 else -1
+    if (targetIndex !in state.chapters.indices) return null
+
+    val leavingIsConverted = state.convertEnabled && state.convertedChapterHtml != null
+    val leavingHtml = when {
+        !leavingHtmlIsCurrent -> null
+        leavingIsConverted -> state.convertedChapterHtml
+        else -> state.currentChapterHtml
+    }
+    val leavingSanitized = when {
+        !leavingHtmlIsCurrent -> null
+        leavingIsConverted -> state.sanitizedConvertedChapterHtml
+        else -> state.sanitizedCurrentChapterHtml
+    }
+
+    return state.copy(
+        currentChapterIndex = targetIndex,
+        previousChapterHtml = if (forward) leavingHtml else null,
+        sanitizedPreviousChapterHtml = if (forward) leavingSanitized else null,
+        nextChapterHtml = if (forward) null else leavingHtml,
+        sanitizedNextChapterHtml = if (forward) null else leavingSanitized,
+        currentPageInChapter = 1,
+        initialPageRequest = if (forward) 1 else Int.MAX_VALUE,
+        totalPagesInChapter = UNKNOWN_TOTAL_PAGES,
+        firstVisibleParagraphIndex = 0,
+        currentCfi = ""
+    )
+}
+
+/**
+ * Giữ lại vị trí trang và preview chương kề khi HTML của chương đã commit trong DOM vừa nạp xong ở nền.
+ * JS là nguồn sự thật cho vị trí lúc này; nếu ghi đè, nhãn trang quay về 1/1 và preview trong JS bị
+ * xóa trắng. Hàm thuần để kiểm thử.
+ *
+ * @param loaded State sau khi áp HTML mới (đã đặt lại các trường vị trí theo luồng nạp chương thường).
+ * @param latest State mới nhất trước khi áp, chứa vị trí JS đã báo và preview đã xoay vòng.
+ * @return [loaded] với 5 trường vị trí và 4 trường preview lấy từ [latest].
+ */
+internal fun keepCommittedChapterPosition(loaded: ReaderUiState, latest: ReaderUiState): ReaderUiState =
+    loaded.copy(
+        previousChapterHtml = latest.previousChapterHtml,
+        nextChapterHtml = latest.nextChapterHtml,
+        sanitizedPreviousChapterHtml = latest.sanitizedPreviousChapterHtml,
+        sanitizedNextChapterHtml = latest.sanitizedNextChapterHtml,
+        currentPageInChapter = latest.currentPageInChapter,
+        initialPageRequest = latest.initialPageRequest,
+        totalPagesInChapter = latest.totalPagesInChapter,
+        firstVisibleParagraphIndex = latest.firstVisibleParagraphIndex,
+        currentCfi = latest.currentCfi
+    )
+
+/**
  * Lấy chapter override hợp lệ từ navigation request, độc lập với việc có mở màn hình TTS hay không.
  *
  * @param chapterIndex Chỉ số chapter nhận từ navigation, có thể là null hoặc giá trị sentinel âm.
@@ -188,13 +266,17 @@ internal fun resolveRequestedChapterIndex(chapterIndex: Int?): Int? =
  * Tính tỷ lệ tiến độ đọc dựa trên chapter hiện tại và trang hiện tại trong chapter.
  *
  * @param state Trạng thái reader chứa chapter, trang hiện tại và tổng số trang.
- * @return Tiến độ trong khoảng từ 0.0 đến 1.0; trang cuối của sách trả về 1.0.
+ * @return Tiến độ trong khoảng từ 0.0 đến 1.0; trang cuối của sách trả về 1.0. Khi tổng số trang
+ *         chưa đo ([UNKNOWN_TOTAL_PAGES]) chỉ tính đến đầu chương, không bao giờ coi là đọc xong.
  */
 internal fun calculateReaderProgress(state: ReaderUiState): Float {
     if (state.chapters.isEmpty()) return 0f
 
     val totalChapters = state.chapters.size
     val currentChapter = state.currentChapterIndex.coerceIn(0, totalChapters - 1)
+    if (state.totalPagesInChapter <= UNKNOWN_TOTAL_PAGES) {
+        return (currentChapter / totalChapters.toFloat()).coerceIn(0f, 1f)
+    }
     val totalPages = state.totalPagesInChapter.coerceAtLeast(1)
     val currentPage = state.currentPageInChapter.coerceIn(1, totalPages)
     val pageProgress = if (totalPages == 1) {
@@ -204,6 +286,28 @@ internal fun calculateReaderProgress(state: ReaderUiState): Float {
     }
     return ((currentChapter + pageProgress) / totalChapters.toFloat())
         .coerceIn(0f, 1f)
+}
+
+/**
+ * Kiểm tra trạng thái reader hiện tại đã đủ thông tin tin cậy để ghi tiến độ đọc xuống DB hay chưa.
+ *
+ * Khi ở chế độ lật trang ngang mà tổng số trang chưa đo xong ([UNKNOWN_TOTAL_PAGES]):
+ * - Lần lưu định kỳ (`isFlush = false`) luôn chờ JS báo số trang thật rồi mới ghi, tránh ghi tạm `pageIndex = 1`
+ *   khi vừa lùi về trang cuối chương trước.
+ * - Lần lưu khẩn khi thoát màn đọc (`isFlush = true`) vẫn cho phép ghi nếu đang mở từ trang đầu chương
+ *   (`initialPageRequest <= 1`) để giữ được chương vừa chuyển tới, nhưng bỏ qua nếu đang chờ mở ở trang cuối
+ *   (`initialPageRequest > 1`) để không ghi đè thành trang 1 hoặc giá trị sentinel `Int.MAX_VALUE`.
+ *
+ * @param state Trạng thái UI hiện tại của màn đọc sách.
+ * @param isFlush `true` khi ghi ngay lúc reader đi vào nền/dispose, `false` khi lưu định kỳ có debounce.
+ * @return `true` nếu an toàn để lưu tiến độ; `false` nếu cần bỏ qua.
+ */
+internal fun shouldPersistReadingProgress(state: ReaderUiState, isFlush: Boolean = false): Boolean {
+    if (state.isLoading || state.chapters.isEmpty()) return false
+    if (state.settings.isHorizontalPagination && state.totalPagesInChapter <= UNKNOWN_TOTAL_PAGES) {
+        return isFlush && state.initialPageRequest <= 1
+    }
+    return true
 }
 
 /**
@@ -304,6 +408,8 @@ class ReaderViewModel @Inject constructor(
     private var resumeSnapshotJob: Job? = null
     private var progressSaveVersion: Long = 0L
     private var chapterNavigationGeneration: Int = 0
+    /** Chương đích của lần nạp chương gần nhất, chỉ có nghĩa khi [chapterLoadJob] còn chạy. */
+    private var pendingChapterIndex: Int? = null
     private var cachedTtsChunks: Pair<String, List<TtsChunk>>? = null
 
     private val sanitizedChapterCache = object : LruCache<String, SanitizedEpubHtml>(
@@ -640,6 +746,61 @@ class ReaderViewModel @Inject constructor(
         autoStartTts: Boolean = false,
         ttsService: TtsService? = null
     ) {
+        loadChapter(
+            index = index,
+            openAtLastPage = openAtLastPage,
+            autoStartTts = autoStartTts,
+            ttsService = ttsService,
+            preserveCommittedPosition = false
+        )
+    }
+
+    /**
+     * Xử lý khi WebView đã thay DOM sang chương kề ngay tại chỗ (không reload). Cập nhật chỉ số chương
+     * đồng bộ để số liệu trang mà JS báo về sau đó được gán đúng chương, xoay preview của chương vừa rời
+     * thành preview chiều ngược lại, đánh dấu tổng số trang là "chưa đo" (`0`), rồi mới nạp HTML chương
+     * mới ở nền mà không ghi đè vị trí trang JS đã báo.
+     *
+     * @param direction Hướng chuyển chương: số dương là chương sau, số âm là chương trước.
+     */
+    fun onAdjacentChapterCommitted(direction: Int) {
+        if (_uiState.value.isLoading) return
+        // Nếu lần nạp chương trước còn chạy, currentChapterHtml chưa phải HTML của chương đang rời.
+        val leavingHtmlIsCurrent = chapterLoadJob?.isActive != true
+        var committed: ReaderUiState? = null
+        _uiState.update { current ->
+            commitAdjacentChapterState(current, direction, leavingHtmlIsCurrent)
+                .also { committed = it }
+                ?: current
+        }
+        val committedState = committed ?: return
+
+        loadChapter(
+            index = committedState.currentChapterIndex,
+            openAtLastPage = direction < 0,
+            autoStartTts = false,
+            ttsService = null,
+            preserveCommittedPosition = true
+        )
+    }
+
+    /**
+     * Nạp HTML chương [index] ở nền và cập nhật state reader.
+     *
+     * @param index Chỉ số chương cần nạp.
+     * @param openAtLastPage `true` để WebView mở ở trang cuối khi phải nạp lại document.
+     * @param autoStartTts `true` để bắt đầu phát TTS ngay sau khi nạp xong.
+     * @param ttsService Service TTS đang bind (nếu có) dùng khi [autoStartTts] bật.
+     * @param preserveCommittedPosition `true` khi chương đã được commit trong DOM: giữ nguyên các trường vị
+     *        trí trang và preview chương kề hiện có thay vì đặt lại, vì JS là nguồn sự thật cho vị trí.
+     */
+    private fun loadChapter(
+        index: Int,
+        openAtLastPage: Boolean,
+        autoStartTts: Boolean,
+        ttsService: TtsService?,
+        preserveCommittedPosition: Boolean
+    ) {
         val state = _uiState.value
         val file = bookFile
         if (file != null && index in 0 until state.chapters.size) {
@@ -653,6 +814,7 @@ class ReaderViewModel @Inject constructor(
             val requestedContentVersion = state.contentVersion
             val loadGen = ++chapterNavigationGeneration
 
+            pendingChapterIndex = index
             chapterLoadJob = viewModelScope.launch {
                 val entryName = state.chapters[index].entryName
                 val currentHtml = epubEngine.loadChapterHtml(file, entryName)
@@ -666,7 +828,7 @@ class ReaderViewModel @Inject constructor(
                 val convertedHtml = convertChapterHtml(currentHtml)
 
                 _uiState.update {
-                    it.copy(
+                    val reset = it.copy(
                         currentChapterIndex = index,
                         currentChapterHtml = currentHtml,
                         sanitizedCurrentChapterHtml = preSanitizedHtml,
@@ -685,11 +847,23 @@ class ReaderViewModel @Inject constructor(
                         aiError = null,
                         currentPageInChapter = 1,
                         initialPageRequest = if (openAtLastPage) Int.MAX_VALUE else 1,
-                        totalPagesInChapter = 1,
+                        // Chưa đo cho tới khi JS báo số trang của document mới; tránh nhãn nháy "1 / 1".
+                        totalPagesInChapter = UNKNOWN_TOTAL_PAGES,
                         firstVisibleParagraphIndex = 0,
+                        chapterReloadToken = if (preserveCommittedPosition) {
+                            it.chapterReloadToken
+                        } else {
+                            it.chapterReloadToken + 1
+                        },
                         isLoading = false,
                         ttsPlayerState = if (autoStartTts) TtsPlayerState.Loading else it.ttsPlayerState
                     )
+                    if (preserveCommittedPosition) keepCommittedChapterPosition(reset, it) else reset
+                }
+
+                if (preserveCommittedPosition && shouldPersistReadingProgress(_uiState.value)) {
+                    // Số liệu trang có thể đã về trước khi HTML nạp xong; lưu lại để widget dùng đúng HTML chương mới.
+                    saveProgress()
                 }
 
                 scheduleResumeSnapshot(
@@ -767,12 +941,36 @@ class ReaderViewModel @Inject constructor(
     }
 
     fun nextChapter() {
-        onChapterSelected(_uiState.value.currentChapterIndex + 1)
+        onChapterSelected(chapterNavigationBaseIndex() + 1)
     }
 
     fun previousChapter() {
-        onChapterSelected(_uiState.value.currentChapterIndex - 1, openAtLastPage = true)
+        onChapterSelected(chapterNavigationBaseIndex() - 1, openAtLastPage = true)
     }
+
+    /**
+     * Kiểm tra còn chương kề theo hướng yêu cầu hay không, tính từ chương đích đang nạp. Dùng trước khi
+     * yêu cầu chuyển chương có màn che, để không tạo màn che cho yêu cầu không dẫn tới lần nạp nào
+     * (màn che khi đó phải chờ hết thời gian mới gỡ).
+     *
+     * @param forward `true` để kiểm tra chương sau, `false` để kiểm tra chương trước.
+     * @return `true` nếu chương đích nằm trong danh sách chương.
+     */
+    fun canGoToAdjacentChapter(forward: Boolean): Boolean {
+        val target = chapterNavigationBaseIndex() + if (forward) 1 else -1
+        return target in _uiState.value.chapters.indices
+    }
+
+    /**
+     * Chương làm mốc cho thao tác chuyển chương kế tiếp. `currentChapterIndex` chỉ cập nhật khi HTML nạp
+     * xong, nên khi bấm chuyển chương liên tục phải tính từ chương đích đang nạp, nếu không các lần bấm
+     * trong lúc nạp đều trỏ về cùng một chương.
+     *
+     * @return Chỉ số chương đích đang nạp, hoặc `currentChapterIndex` nếu không có lần nạp nào đang chạy.
+     */
+    private fun chapterNavigationBaseIndex(): Int =
+        pendingChapterIndex.takeIf { chapterLoadJob?.isActive == true }
+            ?: _uiState.value.currentChapterIndex
 
     /**
      * Nạp trước và sanitize chương đích ngay khi gesture vượt ngưỡng chuyển chương.
@@ -863,12 +1061,15 @@ class ReaderViewModel @Inject constructor(
         val saveVersion = ++progressSaveVersion
         progressSaveJob?.cancel()
         progressSaveJob = viewModelScope.launch {
-            val state = _uiState.value
-            if (state.isLoading || state.chapters.isEmpty()) {
+            if (!shouldPersistReadingProgress(_uiState.value, isFlush = false)) {
                 return@launch
             }
             kotlinx.coroutines.delay(200) // 200ms debounce
             if (saveVersion != progressSaveVersion) return@launch
+            val state = _uiState.value
+            if (!shouldPersistReadingProgress(state, isFlush = false)) {
+                return@launch
+            }
 
             // TTS owns the shared playback/widget projection while it is active.
             if (TtsService.isPlaybackProjectionOwned()) {
@@ -897,7 +1098,7 @@ class ReaderViewModel @Inject constructor(
      */
     fun flushPendingProgress() {
         val state = _uiState.value
-        if (state.isLoading || state.chapters.isEmpty()) return
+        if (!shouldPersistReadingProgress(state, isFlush = true)) return
 
         progressSaveVersion++
         progressSaveJob?.cancel()
