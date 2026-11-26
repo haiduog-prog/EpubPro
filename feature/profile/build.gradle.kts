@@ -13,6 +13,7 @@ dependencies {
     implementation(project(":core:common"))
     implementation(project(":core:designsystem"))
     implementation(project(":core:storage"))
+    implementation(project(":core:security"))
     implementation(project(":core:playback"))
     implementation(project(":core:tts"))
 

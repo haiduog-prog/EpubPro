@@ -163,6 +163,14 @@ fun ProfileScreen(
             )
         }
 
+        // Nhóm: Bảo mật (khoá ứng dụng)
+        AppLockSettingsSection(
+            manager = viewModel.appLockManager,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+        )
+
         // Nhóm 3: Nâng cao
         ProfileSectionCard(
             title = stringResource(R.string.profile_section_advanced),

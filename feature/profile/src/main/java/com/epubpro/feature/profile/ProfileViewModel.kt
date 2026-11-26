@@ -2,6 +2,7 @@ package com.epubpro.feature.profile
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.epubpro.core.security.AppLockManager
 import com.epubpro.core.storage.ReaderPreferencesManager
 import com.epubpro.core.storage.ServerPreferencesManager
 import com.epubpro.domain.model.AuthState
@@ -28,7 +29,8 @@ class ProfileViewModel @Inject constructor(
     val serverPreferencesManager: ServerPreferencesManager,
     val onlineNovelRepository: OnlineNovelRepository,
     val readerPreferencesManager: ReaderPreferencesManager,
-    private val authRepository: AuthRepository
+    private val authRepository: AuthRepository,
+    val appLockManager: AppLockManager
 ) : ViewModel() {
 
     val readerSettings: StateFlow<ReaderSettings> = readerPreferencesManager.settings

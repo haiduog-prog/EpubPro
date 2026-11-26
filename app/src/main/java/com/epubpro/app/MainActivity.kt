@@ -3,11 +3,12 @@ package com.epubpro.app
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
+import android.view.KeyEvent
 import android.widget.Toast
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -17,6 +18,8 @@ import com.epubpro.app.intent.SharedLinkParser
 import com.epubpro.app.navigation.AppNavHost
 import com.epubpro.app.shortcut.BookEntryContract
 import com.epubpro.core.designsystem.theme.EpubProTheme
+import com.epubpro.core.security.AppLockGate
+import com.epubpro.core.security.AppLockManager
 import com.epubpro.core.reader.tts.TtsOpenBookContract
 import com.epubpro.core.reader.tts.TtsOpenBookRequest
 import com.epubpro.core.reader.tts.TtsService
@@ -31,8 +34,11 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+/**
+ * Activity duy nhất của app. Kế thừa [FragmentActivity] vì hộp thoại xác thực khoá app (BiometricPrompt) cần nó.
+ */
 @AndroidEntryPoint
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     @Inject
     lateinit var bubblePreferencesManager: TtsBubblePreferencesManager
 
@@ -41,6 +47,9 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var bookRepository: BookRepository
+
+    @Inject
+    lateinit var appLockManager: AppLockManager
 
     private val intentViewModel: MainIntentViewModel by viewModels()
     private var bubbleStartupRestored = false
@@ -66,15 +75,33 @@ class MainActivity : ComponentActivity() {
         setContent {
             EpubProTheme {
                 val navController = rememberNavController()
-                AppNavHost(
-                    navController = navController,
-                    openBookRequests = intentViewModel.openBookRequests,
-                    openLibraryRequests = intentViewModel.openLibraryRequests,
-                    openComicRequests = intentViewModel.openComicRequests,
-                    openBrowserRequests = intentViewModel.openBrowserRequests
-                )
+                // Khoá app phủ lên trên điều hướng; khi khoá tắt chỉ vẽ AppNavHost như trước.
+                AppLockGate(manager = appLockManager) {
+                    AppNavHost(
+                        navController = navController,
+                        openBookRequests = intentViewModel.openBookRequests,
+                        openLibraryRequests = intentViewModel.openLibraryRequests,
+                        openComicRequests = intentViewModel.openComicRequests,
+                        openBrowserRequests = intentViewModel.openBrowserRequests
+                    )
+                }
             }
         }
+    }
+
+    /**
+     * Khi app đang khoá, không cho phím đi vào cây View (WebView của Reader giữ focus sẽ lật trang bằng phím âm
+     * lượng hay bàn phím ngay dưới màn khoá). Phím vẫn tới callback của Activity, nên Back vẫn tới màn khoá và
+     * phím âm lượng vẫn chỉnh âm lượng của hệ thống.
+     *
+     * @param event Sự kiện phím.
+     * @return `true` nếu sự kiện đã được xử lý.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (appLockManager.locked.value) {
+            return event.dispatch(this, window.decorView.keyDispatcherState, this)
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onPostResume() {

@@ -5,6 +5,7 @@ import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import androidx.work.WorkManager
 import com.epubpro.app.shortcut.BookShortcutManager
+import com.epubpro.core.security.AppLockManager
 import com.epubpro.core.storage.worker.WebNovelCoverBackfillScheduler
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
@@ -29,10 +30,14 @@ class EpubApplication : Application(), Configuration.Provider {
     @Inject
     lateinit var webNovelCoverBackfillScheduler: WebNovelCoverBackfillScheduler
 
+    @Inject
+    lateinit var appLockManager: AppLockManager
+
     private val applicationScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun onCreate() {
         super.onCreate()
+        appLockManager.install()
         cleanupLegacyDriveSyncArtifacts()
         bookShortcutManager.startSync(applicationScope)
         runCatching { webNovelCoverBackfillScheduler.enqueue() }
