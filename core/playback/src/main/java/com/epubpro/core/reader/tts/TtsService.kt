@@ -13,6 +13,7 @@ import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
 import android.widget.Toast
+import androidx.annotation.StringRes
 import androidx.core.content.ContextCompat
 import com.epubpro.core.designsystem.R
 import com.epubpro.core.designsystem.R as ReaderR
@@ -109,7 +110,7 @@ class TtsService : Service() {
     private var bookId: String = ""
     private var bookTitle: String = ""
     private var bookCoverPath: String? = null
-    private var author: String = "EpubPro Reader"
+    private var author: String = ""
     private var preferAiContent: Boolean = false
 
     private var activeSettings: TtsSettings = TtsSettings()
@@ -155,6 +156,7 @@ class TtsService : Service() {
     override fun onCreate() {
         super.onCreate()
         bookTitle = getString(R.string.tts_default_book_title)
+        author = getString(R.string.tts_default_author)
         nativeTtsEngine = AndroidNativeTtsEngine(applicationContext)
 
         mediaSessionManager = TtsMediaSessionManager(
@@ -248,6 +250,7 @@ class TtsService : Service() {
             ACTION_WIDGET_READING_PREVIOUS -> handleReadingWidgetMove(startId, -1)
             ACTION_WIDGET_READING_NEXT -> handleReadingWidgetMove(startId, 1)
         }
+        detachPausedNotificationIfNeeded()
         return if (
             bubbleRuntime.isBubbleAvailable() &&
             bubblePreferencesManager.getPreferences().powerMode == TtsBubblePowerMode.ALWAYS_ON
@@ -261,6 +264,7 @@ class TtsService : Service() {
             stopSelfAfterForegroundStart(startId)
             return
         }
+        ensureForegroundForWidgetStart()
         startedSession = true
         if (isPlaybackRunning()) pause() else resume()
     }
@@ -270,6 +274,7 @@ class TtsService : Service() {
             stopSelfAfterForegroundStart(startId)
             return
         }
+        ensureForegroundForWidgetStart()
         startedSession = true
         previousChunk()
     }
@@ -279,6 +284,7 @@ class TtsService : Service() {
             stopSelfAfterForegroundStart(startId)
             return
         }
+        ensureForegroundForWidgetStart()
         startedSession = true
         nextChunk()
     }
@@ -437,7 +443,7 @@ class TtsService : Service() {
             saveCurrentSnapshot(currentChunkStartPositionMs)
 
             if (chunks.isEmpty()) {
-                showPlaybackError("Chương hiện tại không có nội dung để đọc")
+                showPlaybackError(getString(R.string.tts_error_chapter_empty))
                 return@launch
             }
             completeChapterTransition()
@@ -747,6 +753,7 @@ class TtsService : Service() {
 
     private fun cancelSnapshotRestoreToIdle() {
         invalidatePlayback()
+        cancelChapterPreparation()
         currentEngine.stop()
         audioFocusController.abandonFocus()
         chapterPlaybackCoordinator.clear()
@@ -897,7 +904,7 @@ class TtsService : Service() {
         currentTimelinePositionMs = currentPlaybackPositionMs()
         saveCurrentSnapshot(currentTimelinePositionMs)
         invalidatePlayback()
-        chapterPreparation?.cancel()
+        cancelChapterPreparation()
         currentEngine.stop()
         audioFocusController.abandonFocus()
         chapterPlaybackCoordinator.clear()
@@ -1058,7 +1065,7 @@ class TtsService : Service() {
                 snapshotRestoreJob = null
                 playbackSnapshotStore.clearSnapshot()
                 clearRestoredPlaybackData()
-                val message = error.message ?: "Không thể khôi phục phiên đọc gần nhất"
+                val message = playbackErrorMessage(error, R.string.tts_bubble_restore_error)
                 if (playWhenReady) {
                     showPlaybackError(message)
                 } else {
@@ -1078,19 +1085,19 @@ class TtsService : Service() {
         expectedGeneration: Long
     ): RestoredPlayback {
         val book = bookRepository.getBookById(snapshot.bookId)
-            ?: error("Sách của phiên đọc gần nhất không còn trong thư viện")
+            ?: throw TtsPlaybackException(R.string.tts_error_book_missing)
         ensureRestoreCurrent(expectedGeneration)
         chapterPlaybackCoordinator.prepare(snapshot.bookId, snapshot.preferAiContent)
         ensureRestoreCurrent(expectedGeneration)
 
         val initialChapter = loadSegmentedChapter(snapshot.chapterIndex, expectedGeneration)
             ?: loadSegmentedChapter(0, expectedGeneration)
-            ?: error("Sách không còn chương có thể đọc")
+            ?: throw TtsPlaybackException(R.string.tts_error_book_no_readable_chapter)
         var chapter: RestoredChapter = if (initialChapter.chunks.isEmpty()) {
             findNonEmptyChapter(
                 startChapterIndex = initialChapter.content.chapterIndex,
                 expectedGeneration = expectedGeneration
-            ) ?: error("Sách không có nội dung để đọc")
+            ) ?: throw TtsPlaybackException(R.string.tts_error_book_no_content)
         } else {
             initialChapter
         }
@@ -1293,7 +1300,7 @@ class TtsService : Service() {
         currentChapterIndex = 0
         bookId = ""
         bookTitle = getString(R.string.tts_default_book_title)
-        author = "EpubPro Reader"
+        author = getString(R.string.tts_default_author)
         currentChapterTitle = ""
         bookCoverPath = null
         preferAiContent = false
@@ -1336,7 +1343,7 @@ class TtsService : Service() {
     }
 
     fun speakPreview(
-        sampleText: String = "Xin chào, đây là giọng đọc thử nghiệm của ứng dụng EpubPro.",
+        sampleText: String = getString(R.string.tts_preview_sample_text),
         settings: TtsSettings
     ) {
         if (isPlaybackRunning()) {
@@ -1477,18 +1484,12 @@ class TtsService : Service() {
         playbackStartedAtElapsedRealtimeMs = null
         enterChapterTransitionState()
 
-        val preparationResult = chapterPreparation?.await()
-            ?: runCatching {
-                chapterPlaybackCoordinator.prepare(bookId, preferAiContent)
-            }
+        val preparationResult = awaitChapterPreparation()
         if (navigationGeneration != playbackGeneration) return
         if (preparationResult.isFailure) {
             val error = preparationResult.exceptionOrNull()
             if (error is CancellationException) throw error
-            showPlaybackError(
-                error?.message
-                    ?: "Không thể chuẩn bị chương kế tiếp"
-            )
+            showPlaybackError(playbackErrorMessage(error, R.string.tts_error_prepare_next_chapter))
             return
         }
 
@@ -1500,7 +1501,7 @@ class TtsService : Service() {
             if (navigationGeneration != playbackGeneration) return
             val nextChapter = nextChapterResult.getOrElse { error ->
                 if (error is CancellationException) throw error
-                showPlaybackError(error.message ?: "Không thể tải chương kế tiếp")
+                showPlaybackError(playbackErrorMessage(error, R.string.tts_error_load_next_chapter))
                 return
             }
 
@@ -1547,18 +1548,12 @@ class TtsService : Service() {
         playbackStartedAtElapsedRealtimeMs = null
         enterChapterTransitionState()
 
-        val preparationResult = chapterPreparation?.await()
-            ?: runCatching {
-                chapterPlaybackCoordinator.prepare(bookId, preferAiContent)
-            }
+        val preparationResult = awaitChapterPreparation()
         if (navigationGeneration != playbackGeneration) return
         if (preparationResult.isFailure) {
             val error = preparationResult.exceptionOrNull()
             if (error is CancellationException) throw error
-            showPlaybackError(
-                error?.message
-                    ?: "Không thể chuẩn bị chương trước"
-            )
+            showPlaybackError(playbackErrorMessage(error, R.string.tts_error_prepare_previous_chapter))
             return
         }
 
@@ -1570,7 +1565,7 @@ class TtsService : Service() {
             if (navigationGeneration != playbackGeneration) return
             val previousChapter = previousChapterResult.getOrElse { error ->
                 if (error is CancellationException) throw error
-                showPlaybackError(error.message ?: "Không thể tải chương trước")
+                showPlaybackError(playbackErrorMessage(error, R.string.tts_error_load_previous_chapter))
                 return
             }
 
@@ -1611,6 +1606,30 @@ class TtsService : Service() {
     }
 
     /**
+     * Chờ phiên chuẩn bị sách mà [loadContent] đã khởi chạy; nếu không có hoặc phiên đó đã bị huỷ
+     * (Stop, hết sách, hết thời gian chờ) thì chuẩn bị lại cho sách hiện tại.
+     *
+     * Không được `await()` một [Deferred] đã huỷ: lời gọi sẽ ném [CancellationException] làm coroutine
+     * chuyển chương kết thúc âm thầm và service kẹt mãi ở [TtsPlayerState.Loading].
+     *
+     * @return Kết quả chuẩn bị; lỗi huỷ của chính coroutine đang chạy vẫn được ném lại.
+     */
+    private suspend fun awaitChapterPreparation(): Result<Unit> {
+        val pending = chapterPreparation
+        if (pending != null && !pending.isCancelled) return pending.await()
+        chapterPreparation = null
+        return runCatching {
+            chapterPlaybackCoordinator.prepare(bookId, preferAiContent)
+        }
+    }
+
+    /** Huỷ và bỏ tham chiếu phiên chuẩn bị sách để lần chuyển chương sau không chờ một job đã chết. */
+    private fun cancelChapterPreparation() {
+        chapterPreparation?.cancel()
+        chapterPreparation = null
+    }
+
+    /**
      * Chuyển sang trạng thái kỹ thuật đang tải chương nhưng giữ MediaSession ở trạng thái đang phát
      * với progress đứng yên, để SystemUI giữ nút pause thay vì hiển thị vòng xoay buffering.
      */
@@ -1645,7 +1664,7 @@ class TtsService : Service() {
      */
     private fun settlePausedChapterTransition() {
         val currentChunk = chunks.getOrNull(currentIndex) ?: run {
-            showPlaybackError("Chapter does not contain readable content")
+            showPlaybackError(getString(R.string.tts_error_chapter_empty))
             return
         }
         currentChunkStartPositionMs =
@@ -1683,6 +1702,7 @@ class TtsService : Service() {
         saveCurrentSnapshot(currentTimelinePositionMs)
         invalidatePlayback()
         resetSleepTimer()
+        cancelChapterPreparation()
         currentEngine.stop()
         audioFocusController.abandonFocus()
         chapterPlaybackCoordinator.clear()
@@ -1729,6 +1749,21 @@ class TtsService : Service() {
                 isPlaying = false
             )
         }
+    }
+
+    /**
+     * Chọn thông báo lỗi hiển thị cho người dùng: dùng chuỗi của [TtsPlaybackException] nếu có, ngược
+     * lại dùng [fallbackRes]. `message` thô của exception chỉ ghi vào log, không đưa lên UI.
+     *
+     * @param error Lỗi gốc, có thể `null` khi không rõ nguyên nhân.
+     * @param fallbackRes Chuỗi mặc định theo ngữ cảnh lỗi.
+     * @return Thông báo đã bản địa hoá.
+     */
+    private fun playbackErrorMessage(error: Throwable?, @StringRes fallbackRes: Int): String {
+        if (error != null && error !is TtsPlaybackException) {
+            Log.w(TAG, "Playback error: ${error.javaClass.simpleName}")
+        }
+        return getString((error as? TtsPlaybackException)?.messageRes ?: fallbackRes)
     }
 
     private fun handleEngineInitializationError(message: String) {
@@ -1891,8 +1926,7 @@ class TtsService : Service() {
         idleTimeoutJob = null
         idleEpisodeId++
         invalidatePlayback()
-        chapterPreparation?.cancel()
-        chapterPreparation = null
+        cancelChapterPreparation()
         currentEngine.stop()
         audioFocusController.abandonFocus()
         chapterPlaybackCoordinator.clear()
@@ -2006,13 +2040,20 @@ class TtsService : Service() {
         forceForegroundEpisodeRestart: Boolean = false,
         requireFallbackServiceType: Boolean = false
     ) {
+        val model = TtsPlaybackNotificationModel(
+            bookTitle = bookTitle,
+            currentSnippet = text,
+            isPlaying = isPlaying,
+            openIntent = createOpenBookPendingIntent()
+        )
+        if (!isPlaying && !requireFallbackServiceType && !forceForegroundEpisodeRestart &&
+            shouldDetachPausedNotification()
+        ) {
+            if (playbackNotificationManager.showDetached(model)) startedSession = true
+            return
+        }
         val updated = playbackNotificationManager.showOrUpdate(
-            model = TtsPlaybackNotificationModel(
-                bookTitle = bookTitle,
-                currentSnippet = text,
-                isPlaying = isPlaying,
-                openIntent = createOpenBookPendingIntent()
-            ),
+            model = model,
             serviceTypes = requiredForegroundServiceTypes(
                 requireFallbackServiceType = requireFallbackServiceType
             ),
@@ -2025,13 +2066,57 @@ class TtsService : Service() {
         }
     }
 
+    /**
+     * Phiên tạm dừng không có bubble thì không cần giữ foreground: notification vẫn còn để phát tiếp,
+     * người dùng vuốt bỏ được và service không chạy foreground vô thời hạn sau khi đóng app.
+     *
+     * Không áp dụng khi hệ thống tạm dừng để tự phát lại (cuộc gọi, mất audio focus tạm thời): lúc đó
+     * app thường ở nền, và nếu đã rời foreground thì `startForeground()` khi phát lại sẽ bị từ chối.
+     *
+     * @return `true` nếu trạng thái hiện tại nên hiển thị notification ở dạng đã rời foreground.
+     */
+    private fun shouldDetachPausedNotification(): Boolean =
+        _playerState.value is TtsPlayerState.Paused &&
+            !pausedBySystem &&
+            !bubbleRuntime.isBubbleAvailable()
+
+    /**
+     * Rời foreground nếu phiên đang tạm dừng mà service vẫn còn foreground, ví dụ sau khi lệnh widget
+     * buộc phải `startForeground()` nhưng kết quả cuối vẫn là Paused.
+     */
+    private fun detachPausedNotificationIfNeeded() {
+        if (!playbackNotificationManager.isForeground || !shouldDetachPausedNotification()) return
+        val state = _playerState.value as? TtsPlayerState.Paused ?: return
+        playbackNotificationManager.showDetached(
+            TtsPlaybackNotificationModel(
+                bookTitle = bookTitle,
+                currentSnippet = state.currentChunk.text,
+                isPlaying = false,
+                openIntent = createOpenBookPendingIntent()
+            )
+        )
+    }
+
+    /**
+     * Lệnh widget đến qua `PendingIntent.getForegroundService()` nên service phải gọi `startForeground()`
+     * kể cả khi phiên đang tạm dừng (đã rời foreground) và lệnh không làm đổi trạng thái phát, nếu không
+     * hệ thống ném `ForegroundServiceDidNotStartInTimeException`.
+     */
+    private fun ensureForegroundForWidgetStart() {
+        if (playbackNotificationManager.isForeground || !isPlaybackSessionActive()) return
+        showForegroundNotification(
+            text = currentNotificationText(),
+            isPlaying = isPlaybackRunning(),
+            requireFallbackServiceType = true
+        )
+    }
+
     private fun handleForegroundPromotionFailure() {
         currentTimelinePositionMs = currentPlaybackPositionMs()
         saveCurrentSnapshot(currentTimelinePositionMs)
         invalidatePlayback()
         resetSleepTimer()
-        chapterPreparation?.cancel()
-        chapterPreparation = null
+        cancelChapterPreparation()
         snapshotRestoreJob?.cancel()
         snapshotRestoreJob = null
         currentEngine.stop()
@@ -2546,6 +2631,8 @@ class TtsService : Service() {
         private const val MIN_CHUNK_DURATION_MS = 2_000L
         private const val NOTIFICATION_PROGRESS_UPDATE_INTERVAL_MS = 1_000L
         private const val IDLE_TIMEOUT_MS = 5 * 60 * 1_000L
+        private const val BUBBLE_EXPANDED_UPDATE_INTERVAL_MS = 1_000L
+        private const val BUBBLE_COLLAPSED_UPDATE_INTERVAL_MS = 5_000L
 
         private val _playerState = MutableStateFlow<TtsPlayerState>(TtsPlayerState.Idle)
         val playerState: StateFlow<TtsPlayerState> = _playerState.asStateFlow()
@@ -2576,5 +2663,3 @@ class TtsService : Service() {
         }
     }
 }
-        private const val BUBBLE_EXPANDED_UPDATE_INTERVAL_MS = 1_000L
-        private const val BUBBLE_COLLAPSED_UPDATE_INTERVAL_MS = 5_000L

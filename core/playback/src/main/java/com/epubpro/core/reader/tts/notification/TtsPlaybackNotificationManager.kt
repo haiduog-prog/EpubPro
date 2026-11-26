@@ -87,6 +87,32 @@ internal class TtsPlaybackNotificationManager(
         }
     }
 
+    /**
+     * Rời trạng thái foreground nhưng vẫn giữ notification (đã tạm dừng) để người dùng tiếp tục phát
+     * hoặc vuốt bỏ. Không bao giờ gọi `startForeground()`, nên an toàn khi app đang ở nền.
+     *
+     * @param model Nội dung notification tạm dừng cần hiển thị.
+     * @return `false` nếu hệ thống từ chối đăng notification.
+     */
+    fun showDetached(model: TtsPlaybackNotificationModel): Boolean {
+        if (!isForeground && model == lastModel) return true
+        val notification = buildNotification(model)
+        return try {
+            // Đăng nội dung mới TRƯỚC rồi mới detach (giống Media3): nếu detach trước, hệ thống xử lý
+            // việc gỡ cờ foreground sau và đăng lại bản notification cũ, làm mất bản cập nhật này.
+            notificationManager.notify(NOTIFICATION_ID, notification)
+            if (isForeground) {
+                ServiceCompat.stopForeground(service, ServiceCompat.STOP_FOREGROUND_DETACH)
+                isForeground = false
+                foregroundServiceTypes = 0
+            }
+            lastModel = model
+            true
+        } catch (_: RuntimeException) {
+            false
+        }
+    }
+
     /** Gỡ foreground notification và xóa trạng thái foreground đang được theo dõi. */
     fun remove() {
         runCatching {
@@ -149,7 +175,9 @@ internal class TtsPlaybackNotificationManager(
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
             .setOnlyAlertOnce(true)
-            .setOngoing(true)
+            // Chỉ khoá vuốt khi đang phát; tạm dừng thì cho vuốt bỏ và coi như Stop.
+            .setOngoing(model.isPlaying)
+            .setDeleteIntent(createServicePendingIntent(ACTION_STOP))
             .addAction(
                 NotificationCompat.Action(
                     android.R.drawable.ic_media_previous,

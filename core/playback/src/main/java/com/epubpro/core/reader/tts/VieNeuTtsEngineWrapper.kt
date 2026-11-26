@@ -1,5 +1,6 @@
 package com.epubpro.core.reader.tts
 
+import com.epubpro.core.designsystem.R
 import com.epubpro.core.tts.PreparedChunk
 import com.epubpro.core.tts.TtsVoiceCatalog
 import com.epubpro.core.tts.VieNeuNanoEngine
@@ -36,20 +37,24 @@ import javax.inject.Singleton
  * @property runtimeManager Trình quản lý runtime dùng chung cho ONNX và G2P.
  * @property pcmPlayer Bộ phát audio PCM float32 24 kHz cho luồng đọc sách.
  * @property ioDispatcher Dispatcher chạy tác vụ tổng hợp và phát audio.
+ * @property messages Nguồn chuỗi thông báo lỗi hiển thị cho người dùng.
  */
 @Singleton
 class VieNeuTtsEngineWrapper internal constructor(
     private val runtimeManager: VieNeuRuntimeManager,
     private val pcmPlayer: VieNeuPcmPlayer,
     private val ioDispatcher: CoroutineDispatcher,
+    private val messages: TtsMessageResolver,
 ) : TtsEngine {
     @Inject
     constructor(
         runtimeManager: VieNeuRuntimeManager,
+        messages: TtsMessageResolver,
     ) : this(
         runtimeManager = runtimeManager,
         pcmPlayer = VieNeuPcmPlayer(),
         ioDispatcher = Dispatchers.IO,
+        messages = messages,
     )
 
     private var engineScope = CoroutineScope(ioDispatcher + SupervisorJob())
@@ -112,7 +117,7 @@ class VieNeuTtsEngineWrapper internal constructor(
         if (!runtimeManager.isSupportedDevice()) {
             val pending = pendingSpeech
             pendingSpeech = null
-            val errorMsg = "Thiết bị hiện tại không hỗ trợ VieNeu-TTS (yêu cầu arm64-v8a)"
+            val errorMsg = messages.getString(R.string.tts_error_vieneu_unsupported_device)
             onError(errorMsg)
             pending?.onError?.invoke(errorMsg)
             return
@@ -121,7 +126,7 @@ class VieNeuTtsEngineWrapper internal constructor(
         if (!runtimeManager.isModelReady()) {
             val pending = pendingSpeech
             pendingSpeech = null
-            val errorMsg = "Gói giọng đọc VieNeu-TTS v3-Nano chưa được tải xuống"
+            val errorMsg = messages.getString(R.string.tts_error_vieneu_not_downloaded)
             onError(errorMsg)
             pending?.onError?.invoke(errorMsg)
             return
@@ -145,7 +150,7 @@ class VieNeuTtsEngineWrapper internal constructor(
                 isEngineReady = false
                 val pending = pendingSpeech
                 pendingSpeech = null
-                val errorMsg = error.message ?: "Không thể khởi tạo VieNeu-TTS v3-Nano"
+                val errorMsg = messages.getString(R.string.tts_error_vieneu_init_failed)
                 onError(errorMsg)
                 pending?.onError?.invoke(errorMsg)
             }
@@ -167,7 +172,7 @@ class VieNeuTtsEngineWrapper internal constructor(
         onError: (String) -> Unit,
     ) {
         if (!currentLanguage.equals("vi", ignoreCase = true)) {
-            onError("VieNeu-TTS hiện chỉ hỗ trợ tiếng Việt")
+            onError(messages.getString(R.string.tts_error_vieneu_language_unsupported))
             return
         }
 
@@ -321,7 +326,7 @@ class VieNeuTtsEngineWrapper internal constructor(
             } catch (error: Throwable) {
                 synthGate.complete(Unit)
                 if (!cancelFlag.get() && isActive) {
-                    onError(error.message ?: "Lỗi tổng hợp giọng VieNeu-TTS")
+                    onError(messages.getString(R.string.tts_error_vieneu_synthesis_failed))
                 }
             } finally {
                 synthGate.complete(Unit)

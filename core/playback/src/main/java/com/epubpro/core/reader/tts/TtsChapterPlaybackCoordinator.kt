@@ -3,6 +3,7 @@ package com.epubpro.core.reader.tts
 import com.epubpro.core.reader.engine.EpubChapterHeader
 import com.epubpro.core.reader.engine.EpubEngine
 import com.epubpro.core.convert.HtmlConverter
+import com.epubpro.core.designsystem.R
 import com.epubpro.core.storage.ConvertDictionaryStore
 import com.epubpro.core.storage.EpubStorageManager
 import com.epubpro.domain.model.AiChapterStatus
@@ -53,9 +54,9 @@ class TtsChapterPlaybackCoordinator @Inject constructor(
                 return@withContext
             }
             val book = bookRepository.getBookById(bookId)
-                ?: error("Không tìm thấy sách để tiếp tục TTS")
+                ?: throw TtsPlaybackException(R.string.tts_error_book_not_found)
             val file = storageManager.getBookFile(book.filePath)
-            require(file.isFile) { "Tệp EPUB không còn tồn tại" }
+            if (!file.isFile) throw TtsPlaybackException(R.string.tts_error_book_file_missing)
             val preparedSession = Session(
                 book = book,
                 file = file,
@@ -69,7 +70,7 @@ class TtsChapterPlaybackCoordinator @Inject constructor(
     }
 
     suspend fun loadChapter(chapterIndex: Int): TtsChapterContent? = withContext(Dispatchers.IO) {
-        val activeSession = refreshIfBookFileReplaced(session ?: error("Phiên TTS chưa được chuẩn bị"))
+        val activeSession = refreshIfBookFileReplaced(session ?: throw TtsPlaybackException(R.string.tts_error_session_not_prepared))
         val header = activeSession.headers.getOrNull(chapterIndex) ?: return@withContext null
         val sourceHtml = epubEngine.loadChapterHtml(activeSession.file, header.entryName)
         val aiHtml = if (activeSession.preferAiContent) {

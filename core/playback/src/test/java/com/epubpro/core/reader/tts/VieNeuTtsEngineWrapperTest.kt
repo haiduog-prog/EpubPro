@@ -172,7 +172,7 @@ class VieNeuTtsEngineWrapperTest {
     @Test
     fun `initialize fails with message when device or model not ready`() {
         val runtime = FakeRuntimeManager(supported = false, ready = false)
-        val wrapper = VieNeuTtsEngineWrapper(runtime, FakePcmPlayer(), testDispatcher)
+        val wrapper = VieNeuTtsEngineWrapper(runtime, FakePcmPlayer(), testDispatcher, TestTtsMessages)
 
         var readyCalled = false
         var errorMsg: String? = null
@@ -192,7 +192,7 @@ class VieNeuTtsEngineWrapperTest {
     fun `speak replays pending speech once initialization finishes`() {
         val runtime = FakeRuntimeManager(supported = true, ready = true)
         val player = FakePcmPlayer()
-        val wrapper = VieNeuTtsEngineWrapper(runtime, player, testDispatcher)
+        val wrapper = VieNeuTtsEngineWrapper(runtime, player, testDispatcher, TestTtsMessages)
 
         val doneLatch = CountDownLatch(1)
         var startedId: Int? = null
@@ -224,7 +224,7 @@ class VieNeuTtsEngineWrapperTest {
         val runtime = FakeRuntimeManager().apply {
             customChunksProvider = { listOf(PreparedChunk(text = "---", phonemes = "   ", gapBefore = ChunkGap.FIRST)) }
         }
-        val wrapper = VieNeuTtsEngineWrapper(runtime, FakePcmPlayer(), testDispatcher)
+        val wrapper = VieNeuTtsEngineWrapper(runtime, FakePcmPlayer(), testDispatcher, TestTtsMessages)
         val readyLatch = CountDownLatch(1)
         wrapper.initialize(onReady = { readyLatch.countDown() }, onError = {})
         assertTrue(readyLatch.await(5, TimeUnit.SECONDS))
@@ -250,7 +250,7 @@ class VieNeuTtsEngineWrapperTest {
     @Test
     fun `prefetch avoids re-synthesizing matching chunk and invalidates on config change`() {
         val runtime = FakeRuntimeManager()
-        val wrapper = VieNeuTtsEngineWrapper(runtime, FakePcmPlayer(), testDispatcher)
+        val wrapper = VieNeuTtsEngineWrapper(runtime, FakePcmPlayer(), testDispatcher, TestTtsMessages)
         val readyLatch = CountDownLatch(1)
         wrapper.initialize(onReady = { readyLatch.countDown() }, onError = {})
         assertTrue(readyLatch.await(5, TimeUnit.SECONDS))
@@ -285,7 +285,7 @@ class VieNeuTtsEngineWrapperTest {
         val runtime = FakeRuntimeManager()
         val gate = CompletableDeferred<Boolean>()
         val player = FakePcmPlayer().apply { awaitGate = gate }
-        val wrapper = VieNeuTtsEngineWrapper(runtime, player, testDispatcher)
+        val wrapper = VieNeuTtsEngineWrapper(runtime, player, testDispatcher, TestTtsMessages)
         val readyLatch = CountDownLatch(1)
         wrapper.initialize(onReady = { readyLatch.countDown() }, onError = {})
         assertTrue(readyLatch.await(5, TimeUnit.SECONDS))
@@ -313,6 +313,7 @@ class VieNeuTtsEngineWrapperTest {
             FakeRuntimeManager(supported = true, ready = false),
             FakePcmPlayer(),
             testDispatcher,
+            TestTtsMessages,
         )
         val viVoices = supportedWrapper.getAvailableVoices("vi")
 
@@ -325,6 +326,7 @@ class VieNeuTtsEngineWrapperTest {
             FakeRuntimeManager(supported = false, ready = false),
             FakePcmPlayer(),
             testDispatcher,
+            TestTtsMessages,
         )
         assertTrue(unsupportedWrapper.getAvailableVoices("vi").isEmpty())
     }
@@ -332,7 +334,7 @@ class VieNeuTtsEngineWrapperTest {
     @Test
     fun `speak falls back to synthesis instead of hanging when matching prefetch failed`() {
         val runtime = FakeRuntimeManager().apply { failFirstSynth = true }
-        val wrapper = VieNeuTtsEngineWrapper(runtime, FakePcmPlayer(), testDispatcher)
+        val wrapper = VieNeuTtsEngineWrapper(runtime, FakePcmPlayer(), testDispatcher, TestTtsMessages)
         val readyLatch = CountDownLatch(1)
         wrapper.initialize(onReady = { readyLatch.countDown() }, onError = {})
         assertTrue(readyLatch.await(5, TimeUnit.SECONDS))
@@ -369,14 +371,14 @@ class VieNeuTtsEngineWrapperTest {
     fun `shutdown followed immediately by initialize waits for unload and preserves ready state`() {
         val gate = CompletableDeferred<Unit>()
         val runtime = FakeRuntimeManager().apply { unloadGate = gate }
-        val wrapper = VieNeuTtsEngineWrapper(runtime, FakePcmPlayer(), testDispatcher)
+        val wrapper = VieNeuTtsEngineWrapper(runtime, FakePcmPlayer(), testDispatcher, TestTtsMessages)
 
         val firstReady = CountDownLatch(1)
         wrapper.initialize(onReady = { firstReady.countDown() }, onError = {})
         assertTrue(firstReady.await(5, TimeUnit.SECONDS))
 
         wrapper.shutdown()
-        val secondWrapper = VieNeuTtsEngineWrapper(runtime, FakePcmPlayer(), testDispatcher)
+        val secondWrapper = VieNeuTtsEngineWrapper(runtime, FakePcmPlayer(), testDispatcher, TestTtsMessages)
         val secondReady = CountDownLatch(1)
         var reinitError: String? = null
         secondWrapper.initialize(

@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import com.epubpro.core.designsystem.R
 import com.epubpro.domain.model.TtsChunk
 import com.epubpro.domain.model.TtsVoice
 import java.util.Locale
@@ -57,7 +58,7 @@ class AndroidNativeTtsEngine(
             pendingSpeech = null
             tts?.shutdown()
             tts = null
-            onErrorCallback?.invoke("Không thể khởi tạo Android TextToSpeech Engine (mã lỗi: $status).")
+            onErrorCallback?.invoke(context.getString(R.string.tts_error_native_init_failed, status))
             return
         }
         initFailed = false
@@ -76,7 +77,7 @@ class AndroidNativeTtsEngine(
 
             @Deprecated("Deprecated in Java")
             override fun onError(utteranceId: String?) {
-                currentOnChunkError?.invoke("Android TextToSpeech không thể phát câu hiện tại")
+                currentOnChunkError?.invoke(context.getString(R.string.tts_error_native_speak_failed))
             }
         })
 
@@ -121,7 +122,7 @@ class AndroidNativeTtsEngine(
             chunk.id.toString()
         ) ?: TextToSpeech.ERROR
         if (result == TextToSpeech.ERROR) {
-            currentOnChunkError?.invoke("Android TextToSpeech từ chối phát câu hiện tại")
+            currentOnChunkError?.invoke(context.getString(R.string.tts_error_native_speak_rejected))
         }
     }
 

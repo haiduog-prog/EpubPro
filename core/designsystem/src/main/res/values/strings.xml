@@ -286,6 +286,32 @@
     <string name="tts_audio_focus_error">Không thể sử dụng đầu ra âm thanh</string>
     <string name="tts_chunk_timeout_error">Giọng đọc không phản hồi</string>
     <string name="tts_ai_fallback_to_native">Giọng AI gặp lỗi nhiều lần, tạm dùng giọng đọc của hệ thống</string>
+    <string name="tts_default_author">EpubPro Reader</string>
+    <string name="tts_preview_sample_text">Xin chào, đây là giọng đọc thử nghiệm của ứng dụng EpubPro.</string>
+    <string name="tts_error_chapter_empty">Chương hiện tại không có nội dung để đọc</string>
+    <string name="tts_error_book_missing">Sách của phiên đọc gần nhất không còn trong thư viện</string>
+    <string name="tts_error_book_no_readable_chapter">Sách không còn chương có thể đọc</string>
+    <string name="tts_error_book_no_content">Sách không có nội dung để đọc</string>
+    <string name="tts_error_book_not_found">Không tìm thấy sách để tiếp tục đọc</string>
+    <string name="tts_error_book_file_missing">Tệp sách không còn tồn tại</string>
+    <string name="tts_error_session_not_prepared">Phiên đọc chưa được chuẩn bị</string>
+    <string name="tts_error_prepare_next_chapter">Không thể chuẩn bị chương kế tiếp</string>
+    <string name="tts_error_load_next_chapter">Không thể tải chương kế tiếp</string>
+    <string name="tts_error_prepare_previous_chapter">Không thể chuẩn bị chương trước</string>
+    <string name="tts_error_load_previous_chapter">Không thể tải chương trước</string>
+    <string name="tts_error_native_init_failed">Không thể khởi tạo giọng đọc của hệ thống (mã lỗi: %1$d)</string>
+    <string name="tts_error_native_speak_failed">Giọng đọc hệ thống không thể phát câu hiện tại</string>
+    <string name="tts_error_native_speak_rejected">Giọng đọc hệ thống từ chối phát câu hiện tại</string>
+    <string name="tts_error_ai_voice_not_selected">Chưa chọn giọng AI Offline</string>
+    <string name="tts_error_ai_language_unsupported">Giọng AI không hỗ trợ ngôn ngữ: %1$s</string>
+    <string name="tts_error_ai_model_not_downloaded">Giọng AI Offline chưa được tải về</string>
+    <string name="tts_error_ai_init_failed">Không thể khởi tạo giọng AI Offline</string>
+    <string name="tts_error_ai_play_failed">Không thể phát giọng AI Offline</string>
+    <string name="tts_error_vieneu_unsupported_device">Thiết bị hiện tại không hỗ trợ VieNeu-TTS (yêu cầu arm64-v8a)</string>
+    <string name="tts_error_vieneu_not_downloaded">Gói giọng đọc VieNeu-TTS v3-Nano chưa được tải xuống</string>
+    <string name="tts_error_vieneu_init_failed">Không thể khởi tạo VieNeu-TTS v3-Nano</string>
+    <string name="tts_error_vieneu_language_unsupported">VieNeu-TTS hiện chỉ hỗ trợ tiếng Việt</string>
+    <string name="tts_error_vieneu_synthesis_failed">Lỗi tổng hợp giọng VieNeu-TTS</string>
 
     <!-- TTS Floating Bubble & Runtime -->
     <string name="tts_bubble_open_controls">Mở điều khiển audio</string>

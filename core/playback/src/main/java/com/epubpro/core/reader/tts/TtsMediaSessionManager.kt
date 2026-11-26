@@ -19,11 +19,13 @@ class TtsMediaSessionManager(
     val mediaSession: MediaSession = MediaSession(context, "EpubProTtsSession").apply {
         setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS or MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS)
         setCallback(object : MediaSession.Callback() {
-            override fun onPlay() { onPlay() }
-            override fun onPause() { onPause() }
+            // Phải gọi qua `this@TtsMediaSessionManager`: trong object này `onPlay()` trơn sẽ trỏ về
+            // chính hàm override và đệ quy vô hạn (StackOverflowError) khi bấm phím media.
+            override fun onPlay() { this@TtsMediaSessionManager.onPlay() }
+            override fun onPause() { this@TtsMediaSessionManager.onPause() }
             override fun onSkipToNext() { onSkipNext() }
             override fun onSkipToPrevious() { onSkipPrevious() }
-            override fun onStop() { onStop() }
+            override fun onStop() { this@TtsMediaSessionManager.onStop() }
         })
         isActive = true
     }

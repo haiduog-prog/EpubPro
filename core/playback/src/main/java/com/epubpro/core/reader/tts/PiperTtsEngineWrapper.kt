@@ -1,5 +1,6 @@
 package com.epubpro.core.reader.tts
 
+import com.epubpro.core.designsystem.R
 import com.epubpro.core.tts.SherpaTtsEngine
 import com.epubpro.core.tts.TtsVoiceCatalog
 import com.epubpro.core.tts.VoiceModelDownloader
@@ -30,10 +31,12 @@ import javax.inject.Inject
  *
  * @property sherpaTtsEngine Engine Sherpa-ONNX thực hiện tổng hợp PCM native.
  * @property downloader Trình tải và quản lý tệp giọng đọc AI offline.
+ * @property messages Nguồn chuỗi thông báo lỗi hiển thị cho người dùng.
  */
 class PiperTtsEngineWrapper @Inject constructor(
     private val sherpaTtsEngine: SherpaTtsEngine,
-    private val downloader: VoiceModelDownloader
+    private val downloader: VoiceModelDownloader,
+    private val messages: TtsMessageResolver
 ) : TtsEngine {
 
     private val engineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -110,7 +113,7 @@ class PiperTtsEngineWrapper @Inject constructor(
         if (voiceId == null) {
             val pending = pendingSpeech
             pendingSpeech = null
-            val errorMsg = "Chưa chọn giọng AI Offline"
+            val errorMsg = messages.getString(R.string.tts_error_ai_voice_not_selected)
             passedError(errorMsg)
             pending?.onError?.invoke(errorMsg)
             return
@@ -118,7 +121,7 @@ class PiperTtsEngineWrapper @Inject constructor(
         if (TtsVoiceCatalog.find(voiceId)?.language != currentLanguage) {
             val pending = pendingSpeech
             pendingSpeech = null
-            val errorMsg = "Giọng AI không hỗ trợ ngôn ngữ: $currentLanguage"
+            val errorMsg = messages.getString(R.string.tts_error_ai_language_unsupported, currentLanguage)
             passedError(errorMsg)
             pending?.onError?.invoke(errorMsg)
             return
@@ -131,7 +134,7 @@ class PiperTtsEngineWrapper @Inject constructor(
                 if (!downloader.isModelDownloaded(voiceId)) {
                     val pending = pendingSpeech
                     pendingSpeech = null
-                    val errorMsg = "Voice model not downloaded yet: $voiceId"
+                    val errorMsg = messages.getString(R.string.tts_error_ai_model_not_downloaded)
                     onErrorCallback?.invoke(errorMsg)
                     pending?.onError?.invoke(errorMsg)
                     return@launch
@@ -162,7 +165,7 @@ class PiperTtsEngineWrapper @Inject constructor(
                 if (error !is CancellationException) {
                     val pending = pendingSpeech
                     pendingSpeech = null
-                    val errorMsg = "Failed to initialize Piper TTS: ${error.message}"
+                    val errorMsg = messages.getString(R.string.tts_error_ai_init_failed)
                     onErrorCallback?.invoke(errorMsg)
                     pending?.onError?.invoke(errorMsg)
                 }
@@ -220,7 +223,7 @@ class PiperTtsEngineWrapper @Inject constructor(
         onError: (String) -> Unit
     ) {
         if (currentVoiceId == null) {
-            onError("Chưa chọn giọng AI Offline")
+            onError(messages.getString(R.string.tts_error_ai_voice_not_selected))
             return
         }
         if (!isEngineReady) {
@@ -262,7 +265,7 @@ class PiperTtsEngineWrapper @Inject constructor(
                 completedNormally = true
             } catch (error: Exception) {
                 if (error !is CancellationException) {
-                    onError(error.message ?: "Không thể phát giọng AI Offline")
+                    onError(messages.getString(R.string.tts_error_ai_play_failed))
                 }
             } finally {
                 if (completedNormally) onChunkDone(chunk.id)

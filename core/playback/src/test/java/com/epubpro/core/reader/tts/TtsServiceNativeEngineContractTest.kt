@@ -48,6 +48,54 @@ class TtsServiceNativeEngineContractTest {
         assertTrue(moveBody.contains("stopSelfAfterForegroundStart(startId)"))
     }
 
+    @Test
+    fun `chapter navigation never awaits a cancelled chapter preparation`() {
+        listOf("advanceToNextChapter", "advanceToPreviousChapter").forEach { name ->
+            val body = source
+                .substringAfter("private suspend fun $name(")
+                .substringBefore("private ")
+            org.junit.Assert.assertFalse(
+                "$name must not await chapterPreparation directly",
+                body.contains("chapterPreparation?.await()")
+            )
+            assertTrue("$name must use awaitChapterPreparation()", body.contains("awaitChapterPreparation()"))
+        }
+        val helper = source
+            .substringAfter("private suspend fun awaitChapterPreparation()")
+            .substringBefore("private fun cancelChapterPreparation()")
+        assertTrue(helper.contains("!pending.isCancelled"))
+        assertTrue(helper.contains("chapterPlaybackCoordinator.prepare(bookId, preferAiContent)"))
+    }
+
+    @Test
+    fun `session teardown drops the chapter preparation reference`() {
+        listOf(
+            "private fun stopSession()" to "private fun moveToChunk",
+            "private fun finishPlayback()" to "private fun showPlaybackError",
+            "private fun cancelSnapshotRestoreToIdle()" to "private fun pauseFromSystem"
+        ).forEach { (start, end) ->
+            val body = source.substringAfter(start).substringBefore(end)
+            assertTrue("$start must call cancelChapterPreparation()", body.contains("cancelChapterPreparation()"))
+        }
+    }
+
+    @Test
+    fun `widget commands satisfy the foreground start contract before dispatch`() {
+        listOf("handleWidgetPlayPause", "handleWidgetPrevious", "handleWidgetNext").forEach { name ->
+            val body = source
+                .substringAfter("private fun $name(")
+                .substringBefore("private fun ")
+            assertAppearsInOrder(body, "stopSelfAfterForegroundStart(startId)", "ensureForegroundForWidgetStart()")
+        }
+        val detachPolicy = source
+            .substringAfter("private fun shouldDetachPausedNotification()")
+            .substringBefore("private fun ")
+        assertTrue(
+            "System pauses must stay foreground so auto-resume can start playback from background",
+            detachPolicy.contains("!pausedBySystem")
+        )
+    }
+
     private fun assertAppearsInOrder(text: String, vararg markers: String) {
         var previousIndex = -1
         markers.forEach { marker ->

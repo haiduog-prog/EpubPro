@@ -1,6 +1,7 @@
 package com.epubpro.core.reader.tts
 
 import android.content.ContextWrapper
+import com.epubpro.core.designsystem.R
 import com.epubpro.core.tts.SherpaTtsEngine
 import com.epubpro.core.tts.VoiceModelDownloader
 import com.epubpro.domain.model.TtsChunk
@@ -62,7 +63,7 @@ class PiperTtsEngineWrapperTest {
     fun setUp() {
         sherpaTtsEngine = FakeSherpaTtsEngine()
         downloader = FakeVoiceModelDownloader()
-        piperWrapper = PiperTtsEngineWrapper(sherpaTtsEngine, downloader)
+        piperWrapper = PiperTtsEngineWrapper(sherpaTtsEngine, downloader, TestTtsMessages)
     }
 
     @Test
@@ -74,7 +75,7 @@ class PiperTtsEngineWrapperTest {
             onError = { error -> errorReported = error }
         )
 
-        assertEquals("Chưa chọn giọng AI Offline", errorReported)
+        assertEquals(TestTtsMessages.text(R.string.tts_error_ai_voice_not_selected), errorReported)
     }
 
     @Test
@@ -89,7 +90,7 @@ class PiperTtsEngineWrapperTest {
             onError = { error -> errorReported = error }
         )
 
-        assertEquals("Chưa chọn giọng AI Offline", errorReported)
+        assertEquals(TestTtsMessages.text(R.string.tts_error_ai_voice_not_selected), errorReported)
     }
 
     @Test
@@ -108,7 +109,7 @@ class PiperTtsEngineWrapperTest {
         Thread.sleep(200)
 
         assertFalse(readyCalled)
-        assertTrue(errorReported?.contains("Voice model not downloaded yet") == true)
+        assertEquals(TestTtsMessages.text(R.string.tts_error_ai_model_not_downloaded), errorReported)
     }
 
     @Test
@@ -128,7 +129,7 @@ class PiperTtsEngineWrapperTest {
 
         Thread.sleep(200)
 
-        assertTrue(errorReported?.contains("Voice model not downloaded yet") == true)
+        assertEquals(TestTtsMessages.text(R.string.tts_error_ai_model_not_downloaded), errorReported)
     }
 
     @Test
@@ -164,7 +165,7 @@ class PiperTtsEngineWrapperTest {
             onError = { error -> errorReported = error }
         )
 
-        assertEquals("Chưa chọn giọng AI Offline", errorReported)
+        assertEquals(TestTtsMessages.text(R.string.tts_error_ai_voice_not_selected), errorReported)
     }
 
     @Test
