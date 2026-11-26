@@ -685,4 +685,25 @@ class BookBibleRepositoryImplTest {
         assertTrue(result.exceptionOrNull() is BookBibleSubmissionDisabledException)
         verifyNoInteractions(mockApiService)
     }
+
+    /** Xóa sách phải dọn file payload chỉ nguồn đó dùng, và giữ file còn được nguồn khác tham chiếu. */
+    @Test
+    fun deleteDataForBookRemovesOnlyUnsharedPayloadFiles() = runBlocking {
+        val localKey = BookBibleSource(BookBibleSourceType.LOCAL_EPUB, "book_1").uniqueKey
+        val onlineKey = BookBibleSource(BookBibleSourceType.ONLINE_NOVEL, "book_1").uniqueKey
+        whenever(mockBookBibleDao.getPayloadPathsByLocalSource(localKey)).thenReturn(listOf("/p/a.txt", "/p/shared.txt"))
+        whenever(mockBookBibleDao.getPayloadPathsByLocalSource(onlineKey)).thenReturn(emptyList())
+        whenever(mockBookBibleDao.countSubmissionsUsingPayload("/p/a.txt")).thenReturn(0)
+        whenever(mockBookBibleDao.countSubmissionsUsingPayload("/p/shared.txt")).thenReturn(1)
+
+        repository.deleteDataForBook("book_1")
+
+        inOrder(mockBookBibleDao, mockPayloadStore) {
+            verify(mockBookBibleDao).getPayloadPathsByLocalSource(localKey)
+            verify(mockBookBibleDao).deleteByLocalSourceKey(localKey)
+            verify(mockPayloadStore).deletePayload("/p/a.txt")
+        }
+        verify(mockBookBibleDao).deleteByLocalSourceKey(onlineKey)
+        verify(mockPayloadStore, never()).deletePayload("/p/shared.txt")
+    }
 }

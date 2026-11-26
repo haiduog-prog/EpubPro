@@ -558,8 +558,14 @@ class BookBibleRepositoryImpl @Inject constructor(
     override suspend fun deleteDataForBook(sourceId: String) = withContext(Dispatchers.IO) {
         val localKey = BookBibleSource(BookBibleSourceType.LOCAL_EPUB, sourceId).uniqueKey
         val onlineKey = BookBibleSource(BookBibleSourceType.ONLINE_NOVEL, sourceId).uniqueKey
-        bookBibleDao.deleteByLocalSourceKey(localKey)
-        bookBibleDao.deleteByLocalSourceKey(onlineKey)
+        val sourceKeys = listOf(localKey, onlineKey)
+        // Lấy đường dẫn payload trước khi xóa bản ghi: worker đang chờ sẽ không tìm thấy submission và
+        // thoát sớm, nên nếu không dọn ở đây file nội dung chương sẽ nằm lại vĩnh viễn.
+        val payloadPaths = sourceKeys.flatMap { bookBibleDao.getPayloadPathsByLocalSource(it) }.distinct()
+        sourceKeys.forEach { bookBibleDao.deleteByLocalSourceKey(it) }
+        payloadPaths
+            .filter { bookBibleDao.countSubmissionsUsingPayload(it) == 0 }
+            .forEach(payloadStore::deletePayload)
     }
 
     /**

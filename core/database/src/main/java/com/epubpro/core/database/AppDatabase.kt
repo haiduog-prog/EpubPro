@@ -25,7 +25,7 @@ import com.epubpro.core.database.entity.*
         BookBibleTimelineEntity::class
     ],
     version = 8,
-    exportSchema = false
+    exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun bookDao(): BookDao

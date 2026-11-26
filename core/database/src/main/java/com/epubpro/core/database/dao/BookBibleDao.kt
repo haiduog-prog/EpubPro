@@ -235,6 +235,26 @@ interface BookBibleDao {
         deleteTimelinesByLocalSource(localSourceKey)
     }
 
+    /**
+     * Lấy các đường dẫn file payload (nội dung chương tạm) mà submission của một nguồn sách đang tham chiếu,
+     * để dọn file trước khi xóa bản ghi.
+     *
+     * @param localSourceKey Khóa nguồn sách.
+     * @return Danh sách đường dẫn không trùng lặp, rỗng nếu nguồn không còn payload nào.
+     */
+    @Query("SELECT DISTINCT payloadPath FROM book_bible_submissions WHERE localSourceKey = :localSourceKey AND payloadPath IS NOT NULL AND payloadPath != ''")
+    suspend fun getPayloadPathsByLocalSource(localSourceKey: String): List<String>
+
+    /**
+     * Đếm số submission còn tham chiếu một file payload. File được đặt tên theo hash nội dung nên có thể
+     * dùng chung giữa nhiều nguồn sách có chương giống hệt nhau.
+     *
+     * @param payloadPath Đường dẫn file payload.
+     * @return Số submission còn dùng file này; `0` nghĩa là có thể xóa file an toàn.
+     */
+    @Query("SELECT COUNT(*) FROM book_bible_submissions WHERE payloadPath = :payloadPath")
+    suspend fun countSubmissionsUsingPayload(payloadPath: String): Int
+
     @Query("DELETE FROM book_bible_editions WHERE localSourceKey = :localSourceKey")
     suspend fun deleteEditionsByLocalSource(localSourceKey: String)
 

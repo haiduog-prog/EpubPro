@@ -5,6 +5,22 @@ plugins {
 
 android {
     namespace = "com.epubpro.core.database"
+
+    defaultConfig {
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    // MigrationTestHelper đọc file schema JSON từ assets của androidTest.
+    sourceSets {
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+    }
+}
+
+// Xuất schema Room ra thư mục được commit để kiểm tra migration bằng MigrationTestHelper.
+kapt {
+    arguments {
+        arg("room.schemaLocation", "$projectDir/schemas")
+    }
 }
 
 dependencies {
@@ -19,4 +35,8 @@ dependencies {
 
     testImplementation(libs.junit4)
     testImplementation(libs.mockito.core)
+
+    androidTestImplementation(libs.androidx.room.testing)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.ext.junit)
 }

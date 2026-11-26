@@ -51,7 +51,16 @@ interface BookDao {
     suspend fun deleteHighlightsByBookId(bookId: String)
 
     /**
-     * Xóa bản ghi sách cùng toàn bộ dữ liệu phụ thuộc (`reading_progress`, `bookmarks`, `highlights`) trong một transaction.
+     * Xóa chỉ mục tìm kiếm toàn văn của một sách. Bảng FTS không có khóa ngoại nên không tự xóa theo `books`.
+     *
+     * @param bookId Mã định danh sách cần xóa chỉ mục.
+     */
+    @Query("DELETE FROM book_search_fts WHERE bookId = :bookId")
+    suspend fun deleteSearchIndexByBookId(bookId: String)
+
+    /**
+     * Xóa bản ghi sách cùng toàn bộ dữ liệu phụ thuộc (`reading_progress`, `bookmarks`, `highlights`,
+     * chỉ mục `book_search_fts`) trong một transaction.
      *
      * @param id Mã định danh sách cần xóa.
      */
@@ -60,6 +69,7 @@ interface BookDao {
         deleteReadingProgressByBookId(id)
         deleteBookmarksByBookId(id)
         deleteHighlightsByBookId(id)
+        deleteSearchIndexByBookId(id)
         deleteBookRecord(id)
     }
 
