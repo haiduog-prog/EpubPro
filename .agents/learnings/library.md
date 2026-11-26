@@ -1,7 +1,7 @@
 # Library Screen & Book Management
 
 > Tổng hợp kiến thức về giao diện Thư viện, trích xuất ảnh bìa EPUB và quản lý danh mục sách theo chuẩn Stitch UI.
-> Cập nhật lần cuối: 2026-08-27
+> Cập nhật lần cuối: 2026-11-26
 
 ---
 
@@ -22,6 +22,16 @@
 - **Chi tiết**: Màn hình Thư viện sử dụng cấu trúc: TopAppBar Serif mang phong cách tạp chí biên tập, ô tìm kiếm có nút xóa nhanh, thanh Filter Chips ngang tính toán số lượng theo thời gian thực (Tất cả, Đang đọc, Chưa đọc, Đã đọc xong), Sync Progress Widget hiển thị tác vụ nền và danh sách `LazyColumn` với Horizontal Book Card hiển thị tiến độ đọc chi tiết.
 - **Files liên quan**: `feature/library/src/main/java/com/epubpro/feature/library/LibraryScreen.kt`, `feature/library/src/main/java/com/epubpro/feature/library/LibraryViewModel.kt`
 
+### Lối tắt sách trên launcher (ghim + động) qua alias nội bộ
+- **Ngày**: 2026-11-26
+- **Chi tiết**: Feature chỉ biết `BookShortcutPublisher` (domain); cài đặt `BookShortcutManager` nằm ở `:app` vì Intent phải trỏ tới alias `InternalEntryActivity` (`exported="false"`). Intent chỉ mang `bookId` (`BookEntryContract.ACTION_OPEN_BOOK_ENTRY`); `MainIntentViewModel.openBookEntry` gửi `TtsOpenBookRequest(chapterIndex = NO_CHAPTER_OVERRIDE)` để `ReaderViewModel` tự khôi phục chương/trang đã lưu, còn CBZ/`ONLINE_COMIC_` đi kênh `openComicRequests`. Một collector `getAllBooks()` trong Application scope (bỏ `lastReadAt` khỏi state + `distinctUntilChanged`) đồng bộ 4 lối tắt động, vô hiệu hoá lối tắt ghim của sách đã xoá (app không tự gỡ được lối tắt ghim) và vẽ lại icon khi bìa đổi.
+- **Files liên quan**: `app/src/main/java/com/epubpro/app/shortcut/BookShortcutManager.kt`, `app/src/main/java/com/epubpro/app/shortcut/BookEntryContract.kt`, `app/src/main/java/com/epubpro/app/MainIntentViewModel.kt`
+
+### Bìa chuẩn cho truyện web tự đóng gói EPUB
+- **Ngày**: 2026-11-26
+- **Chi tiết**: EPUB do `EpubWriter` tạo không chứa ảnh, nên bìa lấy từ trang giới thiệu truyện: `WebNovelCoverFinder.findLandingUrl` chọn link cùng host là thư mục cha gần nhất của URL chương (breadcrumb), `findCoverUrl` ưu tiên `og:image` → `twitter:image` → `itemprop=image` → JSON-LD `Book` → `link[rel=image_src]`, bỏ tên file giống logo. `WebNovelCoverFetcher` tải bằng HTTP client public-only của `WebNovelDownloadWorker`, gửi `Referer`, loại ảnh ngang/nhỏ (logo, banner), thu nhỏ ≤ 900 px rồi lưu JPEG. Truyện tải mới lấy bìa ngay; truyện cũ và truyện lưu từ trình duyệt do `WebNovelCoverBackfillWorker` xử lý, hẹn thử lại 1 ngày khi lỗi mạng và 7 ngày khi site không có bìa. Chỉ xét sách có `WebNovelSourceStore` hoặc EPUB đúng cấu trúc `OEBPS/text/chapter_*` để không gửi request cho EPUB người dùng tự nhập có `dc:source`.
+- **Files liên quan**: `core/webnovel/src/main/java/com/epubpro/core/webnovel/WebNovelCoverFinder.kt`, `core/storage/src/main/java/com/epubpro/core/storage/worker/WebNovelCoverFetcher.kt`, `core/storage/src/main/java/com/epubpro/core/storage/worker/WebNovelCoverBackfillWorker.kt`
+
 ---
 
 ## Bugs & Solutions
@@ -39,6 +49,20 @@
 - **Root cause**: `OnlineNovelDownloadWorker` không nhận `coverUrl` qua WorkData input nên không có fallback.
 - **Fix**: Bổ sung `KEY_COVER_URL` vào Scheduler và Worker, gán `finalCoverPath = parsedBook.coverPath ?: previousBook?.coverPath ?: coverUrl`.
 - **Files liên quan**: `core/storage/src/main/java/com/epubpro/core/storage/worker/OnlineNovelDownloadWorker.kt`, `core/storage/src/main/java/com/epubpro/core/storage/worker/OnlineNovelDownloadScheduler.kt`
+
+### Nối chương truyện web xoá mất ảnh bìa đã tải
+- **Ngày**: 2026-11-26
+- **Vấn đề**: Sau "Tải thêm chương" hoặc lưu chương kế tiếp từ trình duyệt, truyện web mất ảnh bìa vừa lấy từ trang nguồn.
+- **Root cause**: `LocalBookReplacement.replace` gán `coverPath = parsed.coverPath` từ EPUB mới; EPUB truyện web không có ảnh nên `parsed.coverPath` là `null`.
+- **Fix**: Thêm tham số `keepExistingCover` (`parsed.coverPath ?: current.coverPath`), chỉ bật ở hai chỗ nối chương truyện web; nạp lại sách local giữ hành vi cũ.
+- **Files liên quan**: `core/storage/src/main/java/com/epubpro/core/storage/worker/LocalBookReplacement.kt`
+
+### Gắn bìa thất bại khi `filePath` của sách đổi trong lúc tải
+- **Ngày**: 2026-11-26
+- **Vấn đề**: Bìa đã lưu vào `covers/` nhưng không gắn vào sách nếu người dùng nối chương đúng lúc đang tải bìa.
+- **Root cause**: `updateCoverPathIfMissing` có điều kiện `filePath = :filePath`; nối chương đổi sang file EPUB mới nên snapshot `Book` cũ không còn khớp.
+- **Fix**: Đọc lại sách bằng `getBookById` ngay trước khi tải; nếu cập nhật thất bại mà `filePath` đã đổi và sách vẫn chưa có bìa thì gắn lại theo `filePath` hiện tại. Không giữ `WebNovelMutationLock` trong lúc gọi mạng để không chặn thao tác lưu chương từ trình duyệt.
+- **Files liên quan**: `core/storage/src/main/java/com/epubpro/core/storage/worker/WebNovelCoverFetcher.kt`
 
 ---
 
@@ -86,3 +110,13 @@
 - **Ngày**: 2026-08-27
 - **Chi tiết**: Khi thêm một trường dữ liệu phái sinh (như `coverPath`) cho các bản ghi cũ trong Room Database, thực hiện quét ngầm qua `viewModelScope.launch(Dispatchers.IO)` ngay trong `init` để tự cập nhật database mà không làm chậm luồng khởi động chính của UI.
 - **Files liên quan**: `feature/library/src/main/java/com/epubpro/feature/library/LibraryViewModel.kt`
+
+### Bảng màu bìa tự sinh dùng chung Compose và Canvas
+- **Ngày**: 2026-11-26
+- **Chi tiết**: `GeneratedCoverPalette.gradientFor(title)` (core:designsystem) trả cặp ARGB `Long`; Compose dùng `Color(long)`, icon lối tắt dùng `LinearGradient(top.toInt(), bottom.toInt())`. Giữ công thức `abs(hash % size)` để màu không đổi so với bản cũ `abs(hash) % size` (kể cả `Int.MIN_VALUE`).
+- **Files liên quan**: `core/designsystem/src/main/java/com/epubpro/core/designsystem/cover/GeneratedCoverPalette.kt`, `feature/library/src/main/java/com/epubpro/feature/library/components/GeneratedBookCover.kt`
+
+### Launcher mở được lối tắt trỏ tới activity-alias không export
+- **Ngày**: 2026-11-26
+- **Chi tiết**: Lối tắt ghim/động được hệ thống khởi chạy bằng danh tính app phát hành (log `START ... cmp=.../.InternalEntryActivity ... from uid <app>`), nên alias `exported="false"` vẫn mở được; đã kiểm chứng trên Samsung One UI. Không cần export alias cho lối tắt. Hệ thống tự thêm `FLAG_ACTIVITY_NEW_TASK`; Intent ở `onCreate` hoặc `onNewIntent` tuỳ app đang chạy.
+- **Files liên quan**: `app/src/main/AndroidManifest.xml`, `app/src/main/java/com/epubpro/app/MainActivity.kt`
