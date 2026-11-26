@@ -3,6 +3,7 @@ package com.epubpro.core.storage
 import com.epubpro.core.reader.engine.EpubEngine
 import com.epubpro.core.reader.engine.EpubPackageStructureParser
 import com.epubpro.core.storage.worker.LocalBookReplacement
+import com.epubpro.core.storage.worker.WebNovelCoverBackfillScheduler
 import com.epubpro.core.webnovel.EpubMetadata
 import com.epubpro.core.webnovel.EpubWriter
 import com.epubpro.core.webnovel.WebArticle
@@ -41,7 +42,8 @@ class VisibleWebChapterSaver @Inject constructor(
     private val storage: EpubStorageManager,
     private val engine: EpubEngine,
     private val search: SearchRepository,
-    private val replacement: LocalBookReplacement
+    private val replacement: LocalBookReplacement,
+    private val coverBackfillScheduler: WebNovelCoverBackfillScheduler
 ) {
     /**
      * Lưu hoặc nhận diện chương đang hiển thị; không nối chương nhảy cóc.
@@ -84,6 +86,8 @@ class VisibleWebChapterSaver @Inject constructor(
                         sources.save(parsed.id, WebNovelSource(article.url, article.url, userAgent))
                         books.insertBook(parsed)
                         engine.indexBookContent(output, parsed.id, search)
+                        // Lấy bìa từ trang truyện gốc ở nền, không giữ khoá trong lúc chờ mạng.
+                        runCatching { coverBackfillScheduler.enqueue(afterNewBook = true) }
                         VisibleChapterResult.Saved(parsed.id, 0, false)
                     } else {
                         val source = checkNotNull(sources.get(target.id))
@@ -96,7 +100,7 @@ class VisibleWebChapterSaver @Inject constructor(
                         val parsed = engine.parseEpubMetadataStrict(output)
                         sources.prepareReplacement(target.id, output.absolutePath, source.copy(lastChapterUrl = article.url, userAgent = userAgent ?: source.userAgent))
                         sources.retireFile(target.id, old.absolutePath)
-                        replacement.replace(parsed, target.id, identifier, keepAiCache = true, expectedFilePath = old.absolutePath)
+                        replacement.replace(parsed, target.id, identifier, keepAiCache = true, expectedFilePath = old.absolutePath, keepExistingCover = true)
                         sources.reconcileReplacement(target.id, output.absolutePath)
                         VisibleChapterResult.Saved(target.id, chapters.size, false)
                     }

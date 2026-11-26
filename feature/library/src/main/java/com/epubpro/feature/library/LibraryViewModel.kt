@@ -36,6 +36,8 @@ import com.epubpro.domain.model.Book
 import com.epubpro.domain.model.ImportJobStatus
 import com.epubpro.domain.repository.BookBibleRepository
 import com.epubpro.domain.repository.BookRepository
+import com.epubpro.domain.repository.BookShortcutPublisher
+import com.epubpro.domain.repository.PinShortcutResult
 import com.epubpro.domain.repository.SearchRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -159,7 +161,8 @@ class LibraryViewModel @Inject constructor(
     private val comicTranslationStore: ComicTranslationStore,
     private val webNovelSourceStore: WebNovelSourceStore,
     private val onlineComicProgressStore: OnlineComicProgressStore,
-    private val offlineComicStore: OfflineComicStore
+    private val offlineComicStore: OfflineComicStore,
+    private val bookShortcutPublisher: BookShortcutPublisher
 ) : ViewModel() {
 
     val pendingLocalImports = localBookImportScheduler.pendingImports
@@ -773,5 +776,25 @@ class LibraryViewModel @Inject constructor(
      */
     fun reportExportUnavailable(title: String) {
         viewModelScope.launch { _events.send(UserMessage(R.string.library_export_failed, listOf(title))) }
+    }
+
+    /**
+     * Yêu cầu launcher ghim lối tắt mở thẳng cuốn sách ra màn hình chính.
+     *
+     * Khi thành công, launcher tự hiện hộp thoại xác nhận nên không cần thông báo thêm;
+     * chỉ báo khi launcher không hỗ trợ hoặc hệ thống từ chối.
+     *
+     * @param book Cuốn sách cần tạo lối tắt.
+     */
+    fun addHomeScreenShortcut(book: Book) {
+        viewModelScope.launch {
+            when (bookShortcutPublisher.requestPin(book)) {
+                PinShortcutResult.REQUESTED -> Unit
+                PinShortcutResult.UNSUPPORTED ->
+                    _events.send(UserMessage(R.string.book_shortcut_unsupported))
+                PinShortcutResult.FAILED ->
+                    _events.send(UserMessage(R.string.book_shortcut_failed, listOf(book.title)))
+            }
+        }
     }
 }

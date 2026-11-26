@@ -45,6 +45,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.filled.AddToHomeScreen
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.Clear
@@ -719,6 +720,7 @@ fun LibraryScreen(
                                 item = item,
                                 onClick = { onBookClick(item.book.id, item.book.sourceFormat) },
                                 onDelete = { pendingDeleteBookId = item.book.id },
+                                onAddShortcut = { viewModel.addHomeScreenShortcut(item.book) },
                                 onExport = { format ->
                                     pendingExportBookId = item.book.id
                                     val intent = Intent(Intent.ACTION_CREATE_DOCUMENT)
@@ -908,13 +910,15 @@ private fun SyncProgressWidget(
  * @param onClick Callback khi người dùng chọn đọc sách.
  * @param onDelete Callback khi người dùng chọn xóa sách.
  * @param onExport Callback khi người dùng chọn xuất file sách ra ngoài, nhận định dạng xuất.
+ * @param onAddShortcut Callback khi người dùng chọn ghim lối tắt sách ra màn hình chính.
  */
 @Composable
 fun BookCard(
     item: BookItemUiState,
     onClick: () -> Unit,
     onDelete: () -> Unit,
-    onExport: (BookExportFormat) -> Unit = {}
+    onExport: (BookExportFormat) -> Unit = {},
+    onAddShortcut: () -> Unit = {}
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val exportFormat = remember(item.book.filePath) { bookExportFormat(item.book.filePath) }
@@ -1025,6 +1029,19 @@ fun BookCard(
                                         }
                                     )
                                 }
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.book_shortcut_add)) },
+                                    onClick = {
+                                        showMenu = false
+                                        onAddShortcut()
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.AddToHomeScreen,
+                                            contentDescription = null
+                                        )
+                                    }
+                                )
                                 DropdownMenuItem(
                                     text = {
                                         Text(

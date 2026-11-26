@@ -26,6 +26,8 @@ class LocalBookReplacement @Inject constructor(
      * @param identifier ID xuất bản bắt buộc trùng ở cả hai bản.
      * @param keepAiCache true khi bản mới chỉ nối thêm chương (các chương cũ không đổi) nên cache AI vẫn đúng.
      * @param expectedFilePath Đường dẫn nguồn đã đọc; null nếu caller không yêu cầu đối chiếu.
+     * @param keepExistingCover true để giữ ảnh bìa hiện tại khi bản mới không có bìa (truyện web tự đóng gói
+     *        không chứa ảnh, bìa được tải riêng từ trang nguồn).
      * @return Metadata sau cập nhật.
      * @throws IllegalStateException Nếu truyện đã bị xóa, thay đổi hoặc ID không còn khớp.
      */
@@ -34,7 +36,8 @@ class LocalBookReplacement @Inject constructor(
         bookId: String,
         identifier: String,
         keepAiCache: Boolean = false,
-        expectedFilePath: String? = null
+        expectedFilePath: String? = null,
+        keepExistingCover: Boolean = false
     ): Book = withContext(Dispatchers.IO) {
         val dao = database.bookDao()
         val previous = checkNotNull(dao.getBookById(bookId))
@@ -54,7 +57,7 @@ class LocalBookReplacement @Inject constructor(
             val updated = current.copy(
                 title = parsed.title,
                 author = parsed.author,
-                coverPath = parsed.coverPath,
+                coverPath = if (keepExistingCover) parsed.coverPath ?: current.coverPath else parsed.coverPath,
                 filePath = parsed.filePath,
                 totalChapters = parsed.totalChapters,
                 sourceFormat = parsed.sourceFormat.name

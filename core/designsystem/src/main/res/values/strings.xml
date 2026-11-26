@@ -33,6 +33,11 @@
     <string name="library_export_book">Xuất %1$s</string>
     <string name="library_export_success">Đã xuất “%1$s”</string>
     <string name="library_export_failed">Không xuất được “%1$s”</string>
+    <string name="book_shortcut_add">Thêm ra màn hình chính</string>
+    <string name="book_shortcut_unsupported">Launcher hiện tại không hỗ trợ ghim lối tắt</string>
+    <string name="book_shortcut_failed">Không tạo được lối tắt cho “%1$s”</string>
+    <string name="book_shortcut_disabled_deleted">Sách này đã bị xoá khỏi thư viện</string>
+    <string name="book_entry_missing">Không tìm thấy sách, có thể sách đã bị xoá khỏi thư viện</string>
     <string name="library_loading">Đang tải thư viện...</string>
     <string name="library_search_empty_title">Không tìm thấy “%1$s”</string>
     <string name="library_search_empty_subtitle">Hãy thử một từ khóa khác.</string>

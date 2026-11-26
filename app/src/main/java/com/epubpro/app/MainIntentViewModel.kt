@@ -9,11 +9,14 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.epubpro.core.bookconverter.BookConversionException
 import com.epubpro.core.designsystem.R
+import com.epubpro.core.reader.tts.TtsOpenBookContract
 import com.epubpro.core.reader.tts.TtsOpenBookRequest
 import com.epubpro.core.storage.BookFileTooLargeException
+import com.epubpro.core.storage.OnlineComicProgressStore
 import com.epubpro.core.storage.worker.LocalBookImportScheduler
 import com.epubpro.core.storage.worker.LocalBookImportWorker
 import com.epubpro.domain.model.BookSourceFormat
+import com.epubpro.domain.repository.BookRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -58,7 +61,8 @@ sealed interface MainIntentNotice {
 @HiltViewModel
 class MainIntentViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
-    private val localBookImportScheduler: LocalBookImportScheduler
+    private val localBookImportScheduler: LocalBookImportScheduler,
+    private val bookRepository: BookRepository
 ) : ViewModel() {
     private val requestChannel = Channel<TtsOpenBookRequest>(Channel.BUFFERED)
     private val libraryChannel = Channel<Unit>(Channel.BUFFERED)
@@ -94,6 +98,41 @@ class MainIntentViewModel @Inject constructor(
      */
     fun dispatchOpenComic(bookId: String) {
         comicChannel.trySend(bookId)
+    }
+
+    /**
+     * Mở một cuốn sách theo `bookId` (từ lối tắt màn hình chính), tiếp tục từ tiến độ đã lưu.
+     *
+     * Reader EPUB nhận [TtsOpenBookContract.NO_CHAPTER_OVERRIDE] nên tự khôi phục chương và trang;
+     * truyện tranh (CBZ hoặc truyện online) đi qua kênh mở truyện tranh để chọn đúng Reader.
+     * Sách đã bị xoá khỏi thư viện chỉ phát thông báo.
+     *
+     * @param bookId ID sách lấy từ Intent của lối tắt.
+     */
+    fun openBookEntry(bookId: String) {
+        viewModelScope.launch {
+            val book = try {
+                bookRepository.getBookById(bookId)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                null
+            }
+            when {
+                book == null ->
+                    noticeChannel.trySend(MainIntentNotice.Res(R.string.book_entry_missing, isLong = true))
+                book.sourceFormat == BookSourceFormat.CBZ ||
+                    book.id.startsWith(OnlineComicProgressStore.COMIC_BOOK_ID_PREFIX) ->
+                    dispatchOpenComic(book.id)
+                else -> dispatch(
+                    TtsOpenBookRequest(
+                        bookId = book.id,
+                        chapterIndex = TtsOpenBookContract.NO_CHAPTER_OVERRIDE,
+                        openTtsPlayer = false
+                    )
+                )
+            }
+        }
     }
 
     /**

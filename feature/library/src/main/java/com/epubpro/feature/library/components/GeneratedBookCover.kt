@@ -19,8 +19,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.epubpro.core.designsystem.cover.GeneratedCoverPalette
 import java.util.Locale
-import kotlin.math.abs
 
 @Composable
 fun GeneratedBookCover(
@@ -89,17 +89,13 @@ fun GeneratedBookCover(
     }
 }
 
+/**
+ * Lấy gradient bìa tự sinh theo tiêu đề từ bảng màu dùng chung.
+ *
+ * @param title Tiêu đề sách.
+ * @return Danh sách hai màu (trên, dưới) cho `Brush.verticalGradient`.
+ */
 private fun getCoverGradient(title: String): List<Color> {
-    val gradients = listOf(
-        listOf(Color(0xFF8E2DE2), Color(0xFF4A00E0)), // Deep Violet
-        listOf(Color(0xFFD4145A), Color(0xFFFBB03B)), // Warm Sunset
-        listOf(Color(0xFF009245), Color(0xFF11998E)), // Emerald Leaf
-        listOf(Color(0xFF667EEA), Color(0xFF764BA2)), // Purple Blue
-        listOf(Color(0xFF13547A), Color(0xFF80D0C7)), // Ocean Teal
-        listOf(Color(0xFF2B5876), Color(0xFF4E4376)), // Slate Midnight
-        listOf(Color(0xFFE0C3FC), Color(0xFF8EC5FC)), // Lavender Ice
-        listOf(Color(0xFFF093FB), Color(0xFFF5576C))  // Bright Coral
-    )
-    val index = abs(title.hashCode()) % gradients.size
-    return gradients[index]
+    val (top, bottom) = GeneratedCoverPalette.gradientFor(title)
+    return listOf(Color(top), Color(bottom))
 }

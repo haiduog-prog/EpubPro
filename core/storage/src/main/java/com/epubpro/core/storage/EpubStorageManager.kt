@@ -8,6 +8,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.util.UUID
 import javax.inject.Inject
@@ -282,13 +284,35 @@ class EpubStorageManager @Inject constructor(
         files.completed.delete()
     }
 
+    /**
+     * Lưu ảnh bìa của một sách vào thư mục covers của ứng dụng.
+     *
+     * Ghi ra file tạm rồi đổi tên nguyên tử, nên hai tác vụ cùng lưu bìa cho một sách không thể tạo ra file
+     * JPEG lẫn dữ liệu của nhau; bản ghi sau cùng thắng.
+     *
+     * @param bookId ID sách, dùng để đặt tên file ổn định.
+     * @param inputStream Dữ liệu ảnh; luôn được đóng sau khi đọc.
+     * @return Đường dẫn tuyệt đối của file bìa.
+     * @throws java.io.IOException Khi không ghi được file.
+     */
     fun saveCoverImage(bookId: String, inputStream: InputStream): String {
         val safeName = stableFileKey(bookId)
         val coverFile = File(coversDir, "$safeName.jpg")
-        inputStream.use { input ->
-            FileOutputStream(coverFile).use { output ->
-                input.copyTo(output)
+        val temporaryFile = File.createTempFile("${safeName}_", ".tmp", coversDir)
+        try {
+            inputStream.use { input ->
+                FileOutputStream(temporaryFile).use { output ->
+                    input.copyTo(output)
+                }
             }
+            Files.move(
+                temporaryFile.toPath(),
+                coverFile.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE
+            )
+        } finally {
+            temporaryFile.delete()
         }
         return coverFile.absolutePath
     }

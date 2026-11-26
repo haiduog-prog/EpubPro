@@ -62,7 +62,8 @@ class WebNovelDownloadWorker @AssistedInject constructor(
     private val bookRepository: BookRepository,
     private val searchRepository: SearchRepository,
     private val sourceStore: WebNovelSourceStore,
-    private val replacement: LocalBookReplacement
+    private val replacement: LocalBookReplacement,
+    private val coverFetcher: WebNovelCoverFetcher
 ) : CoroutineWorker(appContext, workerParams) {
 
     /** User-Agent dùng cho mọi request của tác vụ này; khớp WebView để cookie Cloudflare còn hiệu lực. */
@@ -120,6 +121,8 @@ class WebNovelDownloadWorker @AssistedInject constructor(
                 book.id,
                 WebNovelSource(startUrl, result.lastChapterUrl ?: startUrl, inputData.getString(KEY_USER_AGENT))
             )
+            // EPUB tự đóng gói không có ảnh: lấy bìa từ trang truyện gốc; lỗi không ảnh hưởng việc tải truyện.
+            coverFetcher.fetchCoverIfMissing(book, startUrl, inputData.getString(KEY_USER_AGENT))
             epubEngine.indexBookContent(outputFile, book.id, searchRepository)
             showResultNotification(
                 title,
@@ -198,7 +201,7 @@ class WebNovelDownloadWorker @AssistedInject constructor(
             sourceStore.prepareReplacement(bookId, outputFile.absolutePath, source.copy(lastChapterUrl = result.lastChapterUrl ?: source.lastChapterUrl))
             // Không xóa ngay vì Reader có thể còn đọc bản cũ; dọn ở lần nối sau hoặc khi xóa sách.
             sourceStore.retireFile(bookId, oldFile.absolutePath)
-            replacement.replace(parsed, bookId, identifier, keepAiCache = true, expectedFilePath = oldFile.absolutePath)
+            replacement.replace(parsed, bookId, identifier, keepAiCache = true, expectedFilePath = oldFile.absolutePath, keepExistingCover = true)
             sourceStore.reconcileReplacement(bookId, outputFile.absolutePath)
             showResultNotification(
                 book.title,
@@ -391,7 +394,7 @@ class WebNovelDownloadWorker @AssistedInject constructor(
         private const val BLOCKED_MESSAGE = "Blocked non-public address"
         private const val LANGUAGE_SAMPLE_CHARS = 2000
         private const val UNKNOWN_AUTHOR = "Unknown Author"
-        private const val DEFAULT_USER_AGENT =
+        internal const val DEFAULT_USER_AGENT =
             "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
 
         /**
@@ -401,7 +404,7 @@ class WebNovelDownloadWorker @AssistedInject constructor(
          * địa chỉ socket thực tế của mọi request (kể cả sau redirect và URL dạng IP mà OkHttp không qua DNS),
          * chặn SSRF vào localhost/mạng LAN và DNS rebinding.
          */
-        private val httpClient: OkHttpClient by lazy {
+        internal val httpClient: OkHttpClient by lazy {
             OkHttpClient.Builder()
                 .connectTimeout(20, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)

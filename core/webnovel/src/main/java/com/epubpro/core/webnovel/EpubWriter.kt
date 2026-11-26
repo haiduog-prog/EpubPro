@@ -72,6 +72,34 @@ object EpubWriter {
     }
 
     /**
+     * Đọc URL nguồn (`dc:source`) của EPUB truyện web do [write] tạo ra.
+     *
+     * Dùng để tìm lại trang truyện gốc (ví dụ lấy ảnh bìa) cho các truyện đã lưu trước khi có nguồn riêng.
+     * Chỉ nhận EPUB đúng cấu trúc của [write] (có chương `OEBPS/text/chapter_*.xhtml`), để EPUB người dùng
+     * tự nhập có `dc:source` (sách thương mại, Gutenberg...) không bị app tự gửi request tới site ghi trong sách.
+     *
+     * @param source File EPUB.
+     * @return URL http(s) nguồn, hoặc `null` nếu file không đọc được, không phải EPUB truyện web của app
+     *         hoặc không có `dc:source` hợp lệ.
+     */
+    fun readSourceUrl(source: File): String? = runCatching {
+        ZipFile(source).use { zip ->
+            val isWebNovelEpub = zip.entries().asSequence()
+                .any { it.name.startsWith(CHAPTER_DIRECTORY) && it.name.endsWith(".xhtml") }
+            if (!isWebNovelEpub) return@use null
+            val entry = zip.getEntry("OEBPS/content.opf") ?: return@use null
+            if (entry.size > MAX_CHAPTER_BYTES) return@use null
+            val bytes = zip.getInputStream(entry).use { input -> readBounded(input, MAX_CHAPTER_BYTES) }
+            Jsoup.parse(bytes.toString(Charsets.UTF_8), "", Parser.xmlParser())
+                .getElementsByTag("dc:source")
+                .firstOrNull()
+                ?.text()
+                ?.trim()
+                ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+        }
+    }.getOrNull()
+
+    /**
      * Đọc lại các chương từ EPUB do chính [write] tạo ra, để nối thêm chương mới rồi ghi lại.
      *
      * Chỉ dùng cho EPUB truyện web của ứng dụng (cấu trúc `OEBPS/text/chapter_XXXX.xhtml` với `<h2>` + `<p>`).

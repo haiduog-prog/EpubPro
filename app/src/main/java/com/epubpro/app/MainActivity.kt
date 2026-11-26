@@ -15,6 +15,7 @@ import androidx.navigation.compose.rememberNavController
 import com.epubpro.app.intent.ExternalBookImportHandler
 import com.epubpro.app.intent.SharedLinkParser
 import com.epubpro.app.navigation.AppNavHost
+import com.epubpro.app.shortcut.BookEntryContract
 import com.epubpro.core.designsystem.theme.EpubProTheme
 import com.epubpro.core.reader.tts.TtsOpenBookContract
 import com.epubpro.core.reader.tts.TtsOpenBookRequest
@@ -50,7 +51,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val isFromHistory = (intent?.flags ?: 0) and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
         val shouldProcessIntent = savedInstanceState == null && !isFromHistory
-        val hasExplicitOpenBook = shouldProcessIntent && dispatchOpenBookRequest(intent)
+        val hasExplicitOpenBook = shouldProcessIntent &&
+            (dispatchOpenBookRequest(intent) || dispatchBookEntryRequest(intent))
         val hasExplicitOpenLibrary = shouldProcessIntent && dispatchOpenLibraryRequest(intent)
         val hasExplicitImportBook = shouldProcessIntent && dispatchImportBookRequest(intent)
         val hasExplicitSharedLink = shouldProcessIntent && dispatchSharedLinkRequest(intent)
@@ -86,7 +88,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        val hasExplicitOpenBook = dispatchOpenBookRequest(intent)
+        val hasExplicitOpenBook = dispatchOpenBookRequest(intent) || dispatchBookEntryRequest(intent)
         val hasExplicitOpenLibrary = dispatchOpenLibraryRequest(intent)
         val hasExplicitImportBook = dispatchImportBookRequest(intent)
         val hasExplicitSharedLink = dispatchSharedLinkRequest(intent)
@@ -165,6 +167,23 @@ class MainActivity : ComponentActivity() {
             removeExtra(TtsOpenBookContract.EXTRA_BOOK_ID)
             removeExtra(TtsOpenBookContract.EXTRA_CHAPTER_INDEX)
             removeExtra(TtsOpenBookContract.EXTRA_OPEN_TTS_PLAYER)
+        }
+        return true
+    }
+
+    /**
+     * Mở sách từ lối tắt màn hình chính; Reader tự tiếp tục từ tiến độ đã lưu.
+     *
+     * @param intent Intent nhận được từ launcher.
+     * @return true nếu intent là yêu cầu mở sách theo lối tắt hợp lệ đi qua alias nội bộ, ngược lại false.
+     */
+    private fun dispatchBookEntryRequest(intent: Intent?): Boolean {
+        if (!TtsOpenBookContract.isInternalEntry(intent)) return false
+        val bookId = BookEntryContract.parseBookId(intent) ?: return false
+        intentViewModel.openBookEntry(bookId)
+        intent?.apply {
+            action = null
+            removeExtra(BookEntryContract.EXTRA_BOOK_ID)
         }
         return true
     }
