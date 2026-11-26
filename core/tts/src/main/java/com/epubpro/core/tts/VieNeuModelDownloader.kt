@@ -86,6 +86,14 @@ data class DownloadProgress(
 open class VieNeuModelDownloader constructor(
     private val modelDirProvider: () -> File,
 ) {
+    /** Danh sách file bắt buộc mà downloader quản lý; lớp con (gói VieNeu Turbo) override để dùng bộ file riêng. */
+    protected open val artifacts: List<RemoteArtifactSpec>
+        get() = REQUIRED_ARTIFACTS
+
+    /** Tổng dung lượng dự kiến của bộ file mà downloader này quản lý (byte). */
+    open val totalExpectedBytes: Long
+        get() = artifacts.sumOf { it.expectedBytes }
+
     @Inject
     constructor(@ApplicationContext context: Context) : this(
         modelDirProvider = { File(context.filesDir, MODEL_SUBDIR) },
@@ -107,7 +115,7 @@ open class VieNeuModelDownloader constructor(
         var presentCount = 0
         var existingBytes = 0L
         var missingBytes = 0L
-        for (spec in REQUIRED_ARTIFACTS) {
+        for (spec in artifacts) {
             val file = File(dir, spec.fileName)
             if (isValidFile(file, spec.expectedBytes)) {
                 presentCount++
@@ -126,7 +134,7 @@ open class VieNeuModelDownloader constructor(
         return ResourceInventory(
             modelDir = dir,
             presentCount = presentCount,
-            totalCount = REQUIRED_ARTIFACTS.size,
+            totalCount = artifacts.size,
             existingBytes = existingBytes,
             missingBytes = missingBytes,
         )
@@ -139,9 +147,9 @@ open class VieNeuModelDownloader constructor(
      */
     open fun firstMissingArtifactFileName(): String {
         val dir = modelDir
-        return REQUIRED_ARTIFACTS.firstOrNull { spec ->
+        return artifacts.firstOrNull { spec ->
             !isValidFile(File(dir, spec.fileName), spec.expectedBytes)
-        }?.fileName ?: REQUIRED_ARTIFACTS.first().fileName
+        }?.fileName ?: artifacts.first().fileName
     }
 
     /**
@@ -159,7 +167,7 @@ open class VieNeuModelDownloader constructor(
     open fun clearModelFiles(): Boolean {
         val dir = modelDir
         if (!dir.exists()) return true
-        for (spec in REQUIRED_ARTIFACTS) {
+        for (spec in artifacts) {
             File(dir, spec.fileName).delete()
             File(dir, "${spec.fileName}.tmp").delete()
         }
@@ -181,13 +189,13 @@ open class VieNeuModelDownloader constructor(
             throw IOException("Không tạo được thư mục model: ${dir.absolutePath}")
         }
 
-        val missing = REQUIRED_ARTIFACTS.filter { spec ->
+        val missing = artifacts.filter { spec ->
             !isValidFile(File(dir, spec.fileName), spec.expectedBytes)
         }
         if (missing.isEmpty()) return@withContext
 
-        val totalExpectedBytes = TOTAL_EXPECTED_BYTES
-        var completedBytes = REQUIRED_ARTIFACTS
+        val totalExpectedBytes = this@VieNeuModelDownloader.totalExpectedBytes
+        var completedBytes = artifacts
             .filter { isValidFile(File(dir, it.fileName), it.expectedBytes) }
             .sumOf { it.expectedBytes }
 

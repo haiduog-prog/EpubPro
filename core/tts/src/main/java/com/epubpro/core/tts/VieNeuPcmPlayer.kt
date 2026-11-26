@@ -112,9 +112,44 @@ open class VieNeuPcmPlayer(
         }
 
         requestAudioFocusLocked()
+        appliedSpeed = 1.0f
+        if (speedControlled) applyPlaybackSpeedLocked(created)
         created.play()
         track = created
         epoch.incrementAndGet()
+    }
+
+    @Volatile
+    private var playbackSpeed: Float = 1.0f
+
+    /** `true` khi player từng được đặt tốc độ (VieNeu Turbo); player Nano giữ nguyên track mặc định. */
+    @Volatile
+    private var speedControlled: Boolean = false
+
+    /** Tốc độ thực sự đang áp trên track hiện tại (1f nếu thiết bị không hỗ trợ time-stretch). */
+    @Volatile
+    private var appliedSpeed: Float = 1.0f
+
+    /**
+     * Đặt tốc độ phát bằng time-stretch của [AudioTrack] (giữ nguyên cao độ), dùng cho engine không có tham số
+     * tốc độ khi tổng hợp (VieNeu Turbo). Áp dụng ngay cho track đang phát và mọi track tạo sau.
+     *
+     * @param speed Tốc độ phát (`0.5f..2.0f`).
+     */
+    fun setPlaybackSpeed(speed: Float) {
+        val clamped = speed.coerceIn(0.5f, 2.0f)
+        if (!speedControlled && clamped == 1.0f) return
+        speedControlled = true
+        playbackSpeed = clamped
+        synchronized(trackLock) { track?.let { applyPlaybackSpeedLocked(it) } }
+    }
+
+    /** Áp [playbackSpeed] cho [target]; thiết bị không hỗ trợ time-stretch thì giữ tốc độ gốc. */
+    private fun applyPlaybackSpeedLocked(target: AudioTrack) {
+        appliedSpeed = runCatching {
+            target.playbackParams = android.media.PlaybackParams().setSpeed(playbackSpeed).setPitch(1.0f)
+            playbackSpeed
+        }.getOrDefault(1.0f)
     }
 
     /**
@@ -221,7 +256,9 @@ open class VieNeuPcmPlayer(
 
             val now = System.currentTimeMillis()
             if (absoluteDeadlineMs < 0L) {
-                val remainingMs = ((targetFrame - playedFrames).coerceAtLeast(0L) * 1_000L) / sampleRate
+                // Time-stretch làm frame phát chậm/nhanh theo tốc độ: hạn chờ phải chia cho tốc độ đang áp.
+                val remainingMs = (((targetFrame - playedFrames).coerceAtLeast(0L) * 1_000L) / sampleRate /
+                    appliedSpeed.coerceAtLeast(MIN_SPEED_FOR_DEADLINE)).toLong()
                 absoluteDeadlineMs = now + remainingMs + DRAIN_SAFETY_MARGIN_MS
             }
 
@@ -379,5 +416,6 @@ open class VieNeuPcmPlayer(
         private const val DRAIN_POLL_INTERVAL_MS = 15L
         private const val DRAIN_SAFETY_MARGIN_MS = 3_000L
         private const val MAX_STALL_WAIT_MS = 2_500L
+        private const val MIN_SPEED_FOR_DEADLINE = 0.25f
     }
 }

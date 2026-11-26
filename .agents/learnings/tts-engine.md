@@ -1,11 +1,31 @@
 # Android Text-to-Speech & Background Media Architecture
 
-> Tổng hợp kiến thức về hệ thống TTS Engine, Sherpa-ONNX, VieNeu-TTS v3-Nano (`sea-g2p`), Foreground Service, MediaSessionCompat và đồng bộ Highlight trong WebView EPUB Reader.
-> Cập nhật lần cuối: 2026-11-25
+> Tổng hợp kiến thức về hệ thống TTS Engine, Sherpa-ONNX, VieNeu-TTS v3-Nano / v3 Turbo (`sea-g2p`), Foreground Service, MediaSessionCompat và đồng bộ Highlight trong WebView EPUB Reader.
+> Cập nhật lần cuối: 2026-11-26
 
 ---
 
 ## Architecture
+
+### VieNeu-TTS v3 Turbo: Engine Tự Hồi Quy 48 kHz Chạy Bằng ONNX Runtime Kotlin
+- **Ngày**: 2026-11-26
+- **Chi tiết**: Backend thứ ba `AiTtsBackend.VIENEU_TURBO` (prefix `vieneu-turbo:`, không trùng `vieneu:` của Nano) port từ `onnx_runtime_lite.py` của SDK `vieneu` 3.8.5 (Apache-2.0). Luồng: prompt (style + phoneme + 91 frame code tham chiếu, cộng anchor x-vector) → `vieneu_prefill.onnx` → mỗi frame: `vieneu_acoustic_cached.onnx` sinh 16 codebook, head chạy bằng một graph `MatMul` dựng sẵn trong code trên trọng số mmap → `vieneu_decode_step.onnx` có KV cache → cứ 4/12 frame giải mã một lần bằng codec streaming `moss_audio_tokenizer_decode_step.onnx`. Phần văn bản dùng chung `VieNeuTextChunker` + `SeaG2pEngine` với Nano (SDK dùng chung `normalize_to_chunks_v3_with_gaps` / `phonemize_text_with_emotions`). Đo trên SM-S936B: RTF 0,40–0,45, audio đầu tiên sau 220–300 ms, native heap ~190 MB. 25 preset chính thức (`voices_v3_turbo.json`) + giọng người dùng (`voices_v3_turbo_user.json`, định dạng `user_voices_v3_turbo.json` do app Gradio của SDK lưu).
+- **Files liên quan**: `core/tts/src/main/java/com/epubpro/core/tts/VieNeuTurboEngine.kt`, `core/tts/src/main/java/com/epubpro/core/tts/VieNeuTurboSupport.kt`, `core/tts/src/main/java/com/epubpro/core/tts/VieNeuTurboRuntimeManager.kt`, `core/playback/src/main/java/com/epubpro/core/reader/tts/VieNeuTurboTtsEngineWrapper.kt`
+
+### Cấu Hình Bộ Nhớ ONNX Runtime Cho Model Tự Hồi Quy Lớn
+- **Ngày**: 2026-11-26
+- **Chi tiết**: Mặc định ORT giữ arena và prepack trọng số int8 riêng cho mỗi session, nên hai graph dùng chung `vieneu_backbone_shared.data` (104 MB) đẩy native heap lên ~486 MB. Đo trên máy thật: tắt `setCPUArenaAllocator(false)` + `setMemoryPatternOptimization(false)` cho mọi session, và thêm `session.disable_prepacking=1` chỉ cho graph prefill (chạy một lần mỗi chunk) → native heap 190 MB mà RTF vẫn ~0,45. Tắt prepack cho mọi session giảm còn 51 MB nhưng RTF tụt 0,69. Trọng số head 50 MB ánh xạ mmap thẳng từ `.npz` không nén (tự đọc End Of Central Directory) và truyền làm input tensor zero-copy, không nạp heap Java.
+- **Files liên quan**: `core/tts/src/main/java/com/epubpro/core/tts/VieNeuTurboEngine.kt`, `core/tts/src/main/java/com/epubpro/core/tts/VieNeuTurboSupport.kt`
+
+### Gói Model Dùng Chung Qua Downloader Có Danh Sách File Override Được
+- **Ngày**: 2026-11-26
+- **Chi tiết**: `VieNeuModelDownloader` giữ nguyên constructor cũ (trailing lambda `VieNeuModelDownloader { dir }` vẫn hợp lệ) và mở `protected open val artifacts`; `VieNeuTurboModelDownloader` override để tải 11 file Turbo (URL ghim revision, ~272 MB) và chép `sea_g2p.bin` từ gói Nano nếu có. `VieNeuTurboDownloadCoordinator` kế thừa coordinator Nano nên dùng lại resume `.tmp`/HTTP Range. Đã kiểm thử tải thật: huỷ ở 20 MB rồi tải tiếp từ 20 MB, xong 11/11 file trong ~81 giây.
+- **Files liên quan**: `core/tts/src/main/java/com/epubpro/core/tts/VieNeuModelDownloader.kt`, `core/tts/src/main/java/com/epubpro/core/tts/VieNeuTurboModelDownloader.kt`, `core/tts/src/androidTest/java/com/epubpro/core/tts/VieNeuTurboDownloadInstrumentedTest.kt`
+
+### Không Để Hai Model VieNeu Cùng Nằm Trong RAM
+- **Ngày**: 2026-11-26
+- **Chi tiết**: `VieNeuTurboRuntimeManager` nhả `VieNeuRuntimeManager` (Nano) trước khi nạp Turbo ở mọi đường có thể nạp engine (khởi tạo, `prepareChunks`, `synthesizeChunk`, nghe thử), không chỉ `ensureLoaded`. `TtsService.applySettingsToEngines` gọi `VieNeuTurboTtsEngineWrapper.releaseForEngineSwitch()` khi giọng đang chọn không phải Turbo để trả ~190 MB.
+- **Files liên quan**: `core/tts/src/main/java/com/epubpro/core/tts/VieNeuTurboRuntimeManager.kt`, `core/playback/src/main/java/com/epubpro/core/reader/tts/TtsService.kt`
 
 ### `PARTIAL_WAKE_LOCK` Theo Vòng Đời State Phát TTS Khi Tắt Màn Hình
 - **Ngày**: 2026-11-25
@@ -102,6 +122,27 @@
 
 ---
 ## Bugs & Solutions
+
+### Regex ICU Của Android Không Nhận Cờ `UNICODE_CHARACTER_CLASS`
+- **Ngày**: 2026-11-26
+- **Vấn đề**: `VieNeuTurboTokenizer` qua hết unit test JVM nhưng crash trên máy với `IllegalArgumentException: UNICODE_CHARACTER_CLASS flag not supported` ngay khi nạp class.
+- **Root cause**: `java.util.regex` trên Android là ICU; ICU vốn hiểu `\s`/`\p{L}` theo Unicode và từ chối cờ `Pattern.UNICODE_CHARACTER_CLASS`, trong khi JVM cần cờ này để `\s` khớp `fancy-regex` của HF `tokenizers`.
+- **Fix**: Compile với cờ trong `try`, bắt `IllegalArgumentException` thì compile lại không cờ. Test instrumented so token id trên máy với SDK để chứng minh đường Android vẫn khớp.
+- **Files liên quan**: `core/tts/src/main/java/com/epubpro/core/tts/VieNeuTurboTokenizer.kt`, `core/tts/src/androidTest/java/com/epubpro/core/tts/VieNeuTurboEngineInstrumentedTest.kt`
+
+### Time-Stretch `AudioTrack` Làm `onChunkDone` Báo Xong Sớm Khi Đọc Chậm
+- **Ngày**: 2026-11-26
+- **Vấn đề**: Với Turbo ở tốc độ 0,5x, highlight và chuyển câu chạy trước giọng đọc vài giây.
+- **Root cause**: Turbo không có tham số tốc độ nên áp `PlaybackParams.setSpeed()` lên `AudioTrack`; `awaitFramePlayed` tính hạn chờ theo `frames / sampleRate` (giả định 1x) và trả `true` khi hết hạn.
+- **Fix**: Lưu tốc độ thực sự đã áp (`appliedSpeed`, về 1x nếu thiết bị từ chối time-stretch) và chia hạn chờ cho tốc độ đó. Chỉ đặt `PlaybackParams` khi player từng được đổi tốc độ để track Nano giữ nguyên mặc định.
+- **Files liên quan**: `core/tts/src/main/java/com/epubpro/core/tts/VieNeuPcmPlayer.kt`
+
+### Instrumented Test Của Module Thư Viện Thiếu Quyền `INTERNET`
+- **Ngày**: 2026-11-26
+- **Vấn đề**: Test tải gói Turbo thật lỗi `SecurityException: Permission denied (missing INTERNET permission?)` / `EAI_NODATA`.
+- **Root cause**: APK test của module `core:tts` không merge manifest của `app`, nên không có quyền mạng.
+- **Fix**: Thêm `core/tts/src/androidTest/AndroidManifest.xml` khai báo `android.permission.INTERNET` (chỉ ảnh hưởng APK test).
+- **Files liên quan**: `core/tts/src/androidTest/AndroidManifest.xml`
 
 ### Đẩy `pauseAndFlush()` Ra Coroutine Nền Gây Cắt Mất Câu Mới & Race `_uiState` Khi Preview VieNeu
 - **Ngày**: 2026-11-25

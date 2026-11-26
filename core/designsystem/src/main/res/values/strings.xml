@@ -291,6 +291,13 @@
     <string name="tts_audio_focus_error">Không thể sử dụng đầu ra âm thanh</string>
     <string name="tts_chunk_timeout_error">Giọng đọc không phản hồi</string>
     <string name="tts_ai_fallback_to_native">Giọng AI gặp lỗi nhiều lần, tạm dùng giọng đọc của hệ thống</string>
+    <string name="audio_ai_backend_vieneu_turbo">VieNeu Turbo</string>
+    <string name="audio_ai_backend_vieneu_turbo_badge">Chất lượng cao 48 kHz · 26 giọng</string>
+    <string name="audio_vieneu_turbo_package_title">Gói VieNeu Turbo</string>
+    <string name="audio_vieneu_turbo_voice_fallback">Chọn giọng VieNeu Turbo</string>
+    <string name="audio_vieneu_turbo_package_missing">Tải 1 lần %1$s cho toàn bộ %2$d giọng VieNeu Turbo</string>
+    <string name="tts_error_vieneu_turbo_not_downloaded">Gói giọng đọc VieNeu Turbo chưa được tải xuống</string>
+    <string name="tts_error_vieneu_turbo_init_failed">Không thể khởi tạo VieNeu Turbo</string>
     <string name="tts_default_author">EpubPro Reader</string>
     <string name="tts_preview_sample_text">Xin chào, đây là giọng đọc thử nghiệm của ứng dụng EpubPro.</string>
     <string name="tts_error_chapter_empty">Chương hiện tại không có nội dung để đọc</string>

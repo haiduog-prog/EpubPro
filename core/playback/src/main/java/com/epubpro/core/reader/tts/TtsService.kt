@@ -72,6 +72,9 @@ class TtsService : Service() {
     lateinit var vieNeuTtsEngineWrapper: VieNeuTtsEngineWrapper
 
     @Inject
+    lateinit var vieNeuTurboTtsEngineWrapper: VieNeuTurboTtsEngineWrapper
+
+    @Inject
     lateinit var chapterPlaybackCoordinator: TtsChapterPlaybackCoordinator
 
     @Inject
@@ -1336,7 +1339,8 @@ class TtsService : Service() {
         isAiVoice: Boolean? = null,
         language: String = "vi"
     ): List<com.epubpro.domain.model.TtsVoice> = when (isAiVoice) {
-        true -> vieNeuTtsEngineWrapper.getAvailableVoices(language) +
+        true -> vieNeuTurboTtsEngineWrapper.getAvailableVoices(language) +
+            vieNeuTtsEngineWrapper.getAvailableVoices(language) +
             piperTtsEngineWrapper.getAvailableVoices(language)
         false -> nativeTtsEngine.getAvailableVoices(language)
         null -> currentEngine.getAvailableVoices(language)
@@ -1782,10 +1786,18 @@ class TtsService : Service() {
         nativeTtsEngine.setVoice(settings.voiceId.takeUnless { settings.isAiVoice })
 
         val isVieNeuVoice = settings.isAiVoice && TtsSettings.isVieNeuVoiceId(settings.voiceId)
+        val isVieNeuTurboVoice = settings.isAiVoice && TtsSettings.isVieNeuTurboVoiceId(settings.voiceId)
         piperTtsEngineWrapper.setLanguage(settings.language)
         piperTtsEngineWrapper.setSpeed(settings.speed)
         piperTtsEngineWrapper.setPitch(1.0f)
-        piperTtsEngineWrapper.setVoice(settings.voiceId.takeIf { settings.isAiVoice && !isVieNeuVoice })
+        piperTtsEngineWrapper.setVoice(settings.voiceId.takeIf { settings.isAiVoice && !isVieNeuVoice && !isVieNeuTurboVoice })
+
+        vieNeuTurboTtsEngineWrapper.setLanguage(settings.language)
+        vieNeuTurboTtsEngineWrapper.setSpeed(settings.speed)
+        vieNeuTurboTtsEngineWrapper.setVoice(settings.voiceId.takeIf { isVieNeuTurboVoice })
+        vieNeuTurboTtsEngineWrapper.setThreads(settings.vieNeuThreads)
+        // Turbo giữ ~190 MB native: giải phóng ngay khi người dùng chuyển sang engine khác.
+        if (!isVieNeuTurboVoice) vieNeuTurboTtsEngineWrapper.releaseForEngineSwitch()
 
         vieNeuTtsEngineWrapper.setLanguage(settings.language)
         vieNeuTtsEngineWrapper.setSpeed(settings.speed)
@@ -1801,6 +1813,7 @@ class TtsService : Service() {
 
     private fun engineFor(settings: TtsSettings): TtsEngine = when {
         !settings.isAiVoice -> nativeTtsEngine
+        TtsSettings.isVieNeuTurboVoiceId(settings.voiceId) -> vieNeuTurboTtsEngineWrapper
         TtsSettings.isVieNeuVoiceId(settings.voiceId) -> vieNeuTtsEngineWrapper
         else -> piperTtsEngineWrapper
     }
@@ -2596,6 +2609,7 @@ class TtsService : Service() {
         nativeTtsEngine.shutdown()
         piperTtsEngineWrapper.shutdown()
         vieNeuTtsEngineWrapper.shutdown()
+        vieNeuTurboTtsEngineWrapper.shutdown()
         if (::bubbleRuntime.isInitialized) bubbleRuntime.close()
         if (::playbackWakeLock.isInitialized) playbackWakeLock.release()
         serviceJob.cancel()

@@ -74,10 +74,11 @@ fun TtsSetupBottomSheet(
     var vieNeuPreset by remember { mutableStateOf(currentSettings.vieNeuPreset) }
     var selectedBackend by remember {
         mutableStateOf(
-            if (!currentSettings.isAiVoice || TtsSettings.isVieNeuVoiceId(currentSettings.voiceId) || currentSettings.voiceId == null) {
-                AiTtsBackend.VIENEU_NANO
-            } else {
-                AiTtsBackend.SHERPA_VITS
+            when {
+                currentSettings.isAiVoice && TtsSettings.isVieNeuTurboVoiceId(currentSettings.voiceId) -> AiTtsBackend.VIENEU_TURBO
+                !currentSettings.isAiVoice || TtsSettings.isVieNeuVoiceId(currentSettings.voiceId) ||
+                    currentSettings.voiceId == null -> AiTtsBackend.VIENEU_NANO
+                else -> AiTtsBackend.SHERPA_VITS
             }
         )
     }
@@ -95,6 +96,7 @@ fun TtsSetupBottomSheet(
         }
     }
     val hasVieNeuVoices = availableVoices.any { it.aiBackend == AiTtsBackend.VIENEU_NANO }
+    val hasTurboVoices = availableVoices.any { it.aiBackend == AiTtsBackend.VIENEU_TURBO }
     val hasSherpaVoices = availableVoices.any {
         it.aiBackend == AiTtsBackend.SHERPA_VITS || it.aiBackend == null
     }
@@ -108,6 +110,8 @@ fun TtsSetupBottomSheet(
             val matchedVoice = availableVoices.firstOrNull { it.id == selectedVoiceId }
             if (matchedVoice != null) {
                 selectedBackend = when {
+                    matchedVoice.aiBackend == AiTtsBackend.VIENEU_TURBO ||
+                        TtsSettings.isVieNeuTurboVoiceId(matchedVoice.id) -> AiTtsBackend.VIENEU_TURBO
                     matchedVoice.aiBackend == AiTtsBackend.VIENEU_NANO ||
                         TtsSettings.isVieNeuVoiceId(matchedVoice.id) -> AiTtsBackend.VIENEU_NANO
                     else -> AiTtsBackend.SHERPA_VITS
@@ -123,6 +127,7 @@ fun TtsSetupBottomSheet(
     val displayedVoices = if (isAiVoice) {
         availableVoices.filter { voice ->
             when (selectedBackend) {
+                AiTtsBackend.VIENEU_TURBO -> voice.aiBackend == AiTtsBackend.VIENEU_TURBO
                 AiTtsBackend.VIENEU_NANO -> voice.aiBackend == AiTtsBackend.VIENEU_NANO
                 AiTtsBackend.SHERPA_VITS -> voice.aiBackend == AiTtsBackend.SHERPA_VITS || voice.aiBackend == null
             }
@@ -188,12 +193,27 @@ fun TtsSetupBottomSheet(
                 )
             }
 
-            if (isAiVoice && (hasVieNeuVoices || hasSherpaVoices)) {
+            if (isAiVoice && (hasVieNeuVoices || hasSherpaVoices || hasTurboVoices)) {
                 Text(
                     text = stringResource(R.string.audio_ai_backend_label),
                     fontWeight = FontWeight.Medium,
                     fontSize = 14.sp
                 )
+                if (hasTurboVoices) {
+                    FilterChip(
+                        selected = selectedBackend == AiTtsBackend.VIENEU_TURBO,
+                        onClick = {
+                            if (selectedBackend != AiTtsBackend.VIENEU_TURBO) {
+                                selectedBackend = AiTtsBackend.VIENEU_TURBO
+                                val turboList = availableVoices.filter { it.aiBackend == AiTtsBackend.VIENEU_TURBO }
+                                selectedVoiceId = turboList.firstOrNull { it.isDownloaded }?.id
+                                    ?: turboList.firstOrNull()?.id
+                            }
+                        },
+                        label = { Text(stringResource(R.string.audio_ai_backend_vieneu_turbo), maxLines = 1) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     FilterChip(
                         selected = selectedBackend == AiTtsBackend.VIENEU_NANO,
@@ -330,7 +350,7 @@ fun TtsSetupBottomSheet(
 
             if (isAiVoice && selectedVoice != null && !selectedVoice.isDownloaded) {
                 Text(
-                    text = if (selectedVoice.aiBackend == AiTtsBackend.VIENEU_NANO) {
+                    text = if (selectedVoice.aiBackend == AiTtsBackend.VIENEU_NANO || selectedVoice.aiBackend == AiTtsBackend.VIENEU_TURBO) {
                         stringResource(R.string.tts_setup_vieneu_missing_hint)
                     } else {
                         stringResource(R.string.tts_setup_hint_download_in_settings)

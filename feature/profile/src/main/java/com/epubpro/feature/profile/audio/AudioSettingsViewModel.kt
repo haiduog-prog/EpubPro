@@ -20,6 +20,11 @@ import com.epubpro.core.tts.VieNeuModelDownloader
 import com.epubpro.core.tts.VieNeuNanoEngine
 import com.epubpro.core.tts.VieNeuPcmPlayer
 import com.epubpro.core.tts.VieNeuRuntimeManager
+import com.epubpro.core.tts.VieNeuTurboDownloadCoordinator
+import com.epubpro.core.tts.VieNeuTurboEngine
+import com.epubpro.core.tts.VieNeuTurboModelDownloader
+import com.epubpro.core.tts.VieNeuTurboParams
+import com.epubpro.core.tts.VieNeuTurboRuntimeManager
 import com.epubpro.core.tts.VoiceModelDownloader
 import com.epubpro.domain.model.AiTtsBackend
 import com.epubpro.domain.model.TtsChunk
@@ -89,6 +94,14 @@ data class AudioSettingsUiState(
     val vieNeuCfg: Float = TtsSettings.DEFAULT_VIENEU_CFG,
     val vieNeuSway: Float = TtsSettings.DEFAULT_VIENEU_SWAY,
     val vieNeuThreads: Int = TtsSettings.DEFAULT_VIENEU_THREADS,
+    val isVieNeuTurboAvailable: Boolean = false,
+    val isVieNeuTurboDownloading: Boolean = false,
+    val isVieNeuTurboModelReady: Boolean = false,
+    val vieNeuTurboDownloadProgress: Float = 0f,
+    val vieNeuTurboCurrentFile: String = "",
+    val vieNeuTurboDownloadedMb: Int = 0,
+    val vieNeuTurboTotalMb: Int = 0,
+    val vieNeuTurboDownloadError: String? = null,
     val isPlaying: Boolean = false,
     val speechSpeed: Float = 1.0f,
     val speechPitch: Float = 1.0f,
@@ -123,6 +136,9 @@ class AudioSettingsViewModel internal constructor(
     private val vieNeuPcmPlayer: VieNeuPcmPlayer,
     private val resolveString: (Int, Array<out Any>) -> String,
     private val previewAudioDispatcher: CoroutineDispatcher = Dispatchers.Unconfined,
+    private val vieNeuTurboDownloadCoordinator: VieNeuDownloadCoordinator? = null,
+    private val vieNeuTurboRuntimeManager: VieNeuTurboRuntimeManager? = null,
+    private val vieNeuTurboPcmPlayer: VieNeuPcmPlayer? = null,
 ) : ViewModel() {
 
     @Inject
@@ -135,6 +151,8 @@ class AudioSettingsViewModel internal constructor(
         vieNeuDownloadCoordinator: VieNeuDownloadCoordinator,
         vieNeuRuntimeManager: VieNeuRuntimeManager,
         vieNeuDeviceSupportChecker: VieNeuDeviceSupportChecker,
+        vieNeuTurboDownloadCoordinator: VieNeuTurboDownloadCoordinator,
+        vieNeuTurboRuntimeManager: VieNeuTurboRuntimeManager,
     ) : this(
         voiceModelDownloader = voiceModelDownloader,
         ttsEngine = ttsEngine,
@@ -149,6 +167,9 @@ class AudioSettingsViewModel internal constructor(
             if (args.isEmpty()) context.getString(resId) else context.getString(resId, *args)
         },
         previewAudioDispatcher = Dispatchers.IO,
+        vieNeuTurboDownloadCoordinator = vieNeuTurboDownloadCoordinator,
+        vieNeuTurboRuntimeManager = vieNeuTurboRuntimeManager,
+        vieNeuTurboPcmPlayer = VieNeuPcmPlayer(sampleRate = VieNeuTurboEngine.SAMPLE_RATE),
     )
 
     companion object {
@@ -176,11 +197,13 @@ class AudioSettingsViewModel internal constructor(
     private val nativeTtsEngine: TtsEngine = nativeTtsEngineFactory()
     private val initialBubblePreferences = bubblePreferencesManager.getPreferences()
     private val supportsVieNeu = vieNeuDeviceSupportChecker.isSupported()
+    private val supportsVieNeuTurbo = supportsVieNeu && vieNeuTurboDownloadCoordinator != null && vieNeuTurboRuntimeManager != null
     private var previewJob: Job? = null
 
     private val _uiState = MutableStateFlow(
         AudioSettingsUiState(
             isVieNeuSupported = supportsVieNeu,
+            isVieNeuTurboAvailable = supportsVieNeuTurbo,
             selectedAiBackend = if (supportsVieNeu) AiTtsBackend.VIENEU_NANO else AiTtsBackend.SHERPA_VITS,
             isBubbleEnabled = initialBubblePreferences.enabled,
             isBubbleEnablePending = initialBubblePreferences.pendingEnable,
@@ -270,7 +293,75 @@ class AudioSettingsViewModel internal constructor(
                 applyVieNeuDownloadState(dlState)
             }
         }
+
+        vieNeuTurboDownloadCoordinator?.let { coordinator ->
+            viewModelScope.launch {
+                coordinator.state.collect { dlState -> applyVieNeuTurboDownloadState(dlState) }
+            }
+        }
     }
+
+    /**
+     * Đồng bộ trạng thái tải gói VieNeu Turbo vào [AudioSettingsUiState].
+     *
+     * @param dlState Trạng thái tải hiện tại của gói VieNeu Turbo.
+     */
+    private fun applyVieNeuTurboDownloadState(dlState: VieNeuDownloadState) {
+        val totalBytes = (dlState as? VieNeuDownloadState.Downloading)?.progress?.totalBytes
+            ?: VieNeuTurboModelDownloader.TURBO_ARTIFACTS.sumOf { it.expectedBytes }
+        val totalMb = (totalBytes / BYTES_PER_MB).toInt().coerceAtLeast(1)
+        _uiState.update { current ->
+            when (dlState) {
+                is VieNeuDownloadState.Idle -> current.copy(
+                    isVieNeuTurboDownloading = false,
+                    isVieNeuTurboModelReady = dlState.inventory.isReady,
+                    vieNeuTurboDownloadProgress = if (dlState.inventory.isReady) 1f else 0f,
+                    vieNeuTurboCurrentFile = "",
+                    vieNeuTurboDownloadedMb = (dlState.inventory.existingBytes / BYTES_PER_MB).toInt(),
+                    vieNeuTurboTotalMb = totalMb,
+                    vieNeuTurboDownloadError = null,
+                )
+                is VieNeuDownloadState.Downloading -> current.copy(
+                    isVieNeuTurboDownloading = true,
+                    isVieNeuTurboModelReady = false,
+                    vieNeuTurboDownloadProgress = dlState.progress.fraction,
+                    vieNeuTurboCurrentFile = dlState.progress.currentFile,
+                    vieNeuTurboDownloadedMb = (dlState.progress.downloadedBytes / BYTES_PER_MB).toInt(),
+                    vieNeuTurboTotalMb = totalMb,
+                    vieNeuTurboDownloadError = null,
+                )
+                is VieNeuDownloadState.Ready -> current.copy(
+                    isVieNeuTurboDownloading = false,
+                    isVieNeuTurboModelReady = true,
+                    vieNeuTurboDownloadProgress = 1f,
+                    vieNeuTurboCurrentFile = "",
+                    vieNeuTurboDownloadedMb = totalMb,
+                    vieNeuTurboTotalMb = totalMb,
+                    vieNeuTurboDownloadError = null,
+                )
+                is VieNeuDownloadState.Error -> current.copy(
+                    isVieNeuTurboDownloading = false,
+                    isVieNeuTurboModelReady = dlState.inventory.isReady,
+                    vieNeuTurboDownloadProgress = 0f,
+                    vieNeuTurboCurrentFile = "",
+                    vieNeuTurboDownloadedMb = (dlState.inventory.existingBytes / BYTES_PER_MB).toInt(),
+                    vieNeuTurboTotalMb = totalMb,
+                    vieNeuTurboDownloadError = dlState.message,
+                )
+            }
+        }
+        refreshAiVoices()
+        if (dlState is VieNeuDownloadState.Ready &&
+            _uiState.value.isAiVoice &&
+            TtsSettings.isVieNeuTurboVoiceId(_uiState.value.selectedVoiceId)
+        ) {
+            saveSettings()
+        }
+    }
+
+    /** Model VieNeu Turbo đã tải đủ trên máy chưa. */
+    private fun isVieNeuTurboReady(): Boolean =
+        supportsVieNeuTurbo && (vieNeuTurboDownloadCoordinator?.state?.value?.isReady == true || vieNeuTurboRuntimeManager?.isModelReady() == true)
 
     /**
      * Đồng bộ trạng thái tải từ [VieNeuDownloadCoordinator] vào [AudioSettingsUiState].
@@ -393,11 +484,28 @@ class AudioSettingsViewModel internal constructor(
             )
         }
 
-        val allVoices = vieNeuVoices + sherpaVoices
+        val turboReady = isVieNeuTurboReady()
+        val turboVoices = if (supportsVieNeuTurbo) {
+            TtsVoiceCatalog.vieNeuTurboVoices.map { model ->
+                AiVoiceUiItem(
+                    id = model.id,
+                    name = model.displayName,
+                    size = TtsVoiceCatalog.VIENEU_TURBO_PACKAGE_SIZE,
+                    isDownloaded = turboReady,
+                    backend = AiTtsBackend.VIENEU_TURBO,
+                    description = model.description,
+                )
+            }
+        } else {
+            emptyList()
+        }
+
+        val allVoices = turboVoices + vieNeuVoices + sherpaVoices
         val selectedVoice = allVoices.firstOrNull { it.id == _uiState.value.selectedVoiceId }
         _uiState.value = _uiState.value.copy(
             aiVoices = allVoices,
             isVieNeuModelReady = isVieNeuReady,
+            isVieNeuTurboModelReady = turboReady,
             isModelDownloaded = selectedVoice?.isDownloaded == true,
             downloadProgress = if (selectedVoice?.backend == AiTtsBackend.SHERPA_VITS && selectedVoice.isDownloaded) {
                 1f
@@ -463,6 +571,12 @@ class AudioSettingsViewModel internal constructor(
      * @param backend Backend AI đích mà người dùng vừa chọn.
      */
     fun onAiBackendSelected(backend: AiTtsBackend) {
+        if (backend == AiTtsBackend.VIENEU_TURBO && !supportsVieNeuTurbo) {
+            _uiState.value = _uiState.value.copy(
+                vieNeuTurboDownloadError = resolveString(R.string.audio_ai_vieneu_unsupported, emptyArray()),
+            )
+            return
+        }
         if (backend == AiTtsBackend.VIENEU_NANO && !supportsVieNeu) {
             _uiState.value = _uiState.value.copy(
                 vieNeuDownloadError = resolveString(R.string.audio_ai_vieneu_unsupported, emptyArray()),
@@ -680,6 +794,27 @@ class AudioSettingsViewModel internal constructor(
         }
     }
 
+    /** Bắt đầu hoặc tiếp tục tải gói VieNeu Turbo (dùng chung cho mọi giọng Turbo). */
+    fun downloadVieNeuTurboPackage() {
+        vieNeuTurboDownloadCoordinator?.startDownload()
+    }
+
+    /** Tạm dừng tải gói VieNeu Turbo, giữ file `.tmp` để tải tiếp lần sau. */
+    fun cancelVieNeuTurboDownload() {
+        vieNeuTurboDownloadCoordinator?.cancelDownload()
+    }
+
+    /** Xoá gói VieNeu Turbo khỏi máy; nếu đang dùng giọng Turbo thì chuyển về giọng hệ thống. */
+    fun clearVieNeuTurboModel() {
+        stopActivePreview()
+        vieNeuTurboDownloadCoordinator?.clearModel()
+        val stored = preferencesManager.getSettings()
+        if (stored.isAiVoice && TtsSettings.isVieNeuTurboVoiceId(stored.voiceId)) {
+            preferencesManager.saveSettings(stored.copy(isAiVoice = false, voiceId = null))
+        }
+        viewModelScope.launch { vieNeuTurboRuntimeManager?.unload() }
+    }
+
     fun requestBubbleEnable(): Boolean {
         return bubblePreferencesManager.setPendingEnable(true)
     }
@@ -767,6 +902,7 @@ class AudioSettingsViewModel internal constructor(
         previewJob?.cancel()
         previewJob = null
         vieNeuPcmPlayer.pauseAndFlush()
+        vieNeuTurboPcmPlayer?.pauseAndFlush()
         ttsEngine.stop()
         if (_uiState.value.isPlaying) {
             _uiState.value = _uiState.value.copy(isPlaying = false)
@@ -781,6 +917,11 @@ class AudioSettingsViewModel internal constructor(
     fun testVoice(sampleText: String = FALLBACK_PREVIEW_SAMPLE) {
         val state = _uiState.value
         val voiceId = state.selectedVoiceId ?: return
+        if (TtsSettings.isVieNeuTurboVoiceId(voiceId)) {
+            if (!state.isVieNeuTurboAvailable || !isVieNeuTurboReady()) return
+            playVieNeuTurboPreview(voiceId, sampleText)
+            return
+        }
         if (TtsSettings.isVieNeuVoiceId(voiceId)) {
             if (!state.isVieNeuSupported || !state.isVieNeuModelReady) return
             playVieNeuPreview(voiceId, sampleText)
@@ -879,6 +1020,59 @@ class AudioSettingsViewModel internal constructor(
     }
 
     /**
+     * Nghe thử giọng VieNeu Turbo: tổng hợp streaming và phát từng mảnh PCM 48 kHz ngay khi có.
+     *
+     * @param voiceId Mã giọng Turbo (`"vieneu-turbo:..."`).
+     * @param sampleText Câu mẫu cần đọc.
+     */
+    private fun playVieNeuTurboPreview(voiceId: String, sampleText: String) {
+        val runtime = vieNeuTurboRuntimeManager ?: return
+        val player = vieNeuTurboPcmPlayer ?: return
+        stopActivePreview()
+        val generation = previewGeneration.incrementAndGet()
+        val snapshot = _uiState.value
+        _uiState.update { it.copy(isPlaying = true, vieNeuTurboDownloadError = null) }
+        previewJob = viewModelScope.launch(previewAudioDispatcher) {
+            try {
+                val voice = runtime.resolveVoice(voiceId)
+                val chunks = runtime.prepareChunks(text = sampleText, threads = snapshot.vieNeuThreads)
+                    .filter { it.phonemes.isNotBlank() }
+                if (chunks.isEmpty()) return@launch
+                val isCancelled = { !isActive }
+                player.setPlaybackSpeed(snapshot.speechSpeed)
+                val epoch = player.ensureStarted()
+                var lastFrame = 0L
+                var previous: FloatArray? = null
+                for (chunk in chunks) {
+                    if (!isActive) throw CancellationException()
+                    var firstPiece = true
+                    runtime.synthesizeChunk(chunk.phonemes, voice, VieNeuTurboParams(), snapshot.vieNeuThreads, isCancelled) { pcm ->
+                        if (pcm.isEmpty()) return@synthesizeChunk
+                        val prev = previous
+                        if (firstPiece && prev != null) {
+                            val pause = VieNeuNanoEngine.computePausePadSamples(prev, pcm, chunk.gapBefore, VieNeuTurboEngine.SAMPLE_RATE)
+                            if (pause > 0) player.writeSilence(pause, epoch, isCancelled)
+                        }
+                        firstPiece = false
+                        val end = player.writeSamples(pcm, epoch, isCancelled)
+                        if (end >= 0L) lastFrame = end
+                        previous = pcm
+                    }
+                }
+                if (isActive) player.awaitFramePlayed(targetFrame = lastFrame, expectedEpoch = epoch, isCancelled = isCancelled)
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (error: Throwable) {
+                logError("testVoice VieNeu Turbo failed", error)
+                val detail = error.localizedMessage ?: error.javaClass.simpleName
+                _uiState.update { it.copy(vieNeuTurboDownloadError = resolveString(R.string.audio_vieneu_preview_error, arrayOf(detail))) }
+            } finally {
+                if (previewGeneration.get() == generation) _uiState.update { it.copy(isPlaying = false) }
+            }
+        }
+    }
+
+    /**
      * Nối các chunk âm thanh preview kèm khoảng nghỉ chuẩn theo ranh giới câu/đoạn.
      *
      * @param chunks Danh sách chunk đã chuẩn hoá với metadata ranh giới [ChunkGap].
@@ -941,6 +1135,9 @@ class AudioSettingsViewModel internal constructor(
     private fun defaultVoiceForBackend(backend: AiTtsBackend): String? {
         val current = _uiState.value.selectedVoiceId
         return when (backend) {
+            AiTtsBackend.VIENEU_TURBO -> {
+                TtsVoiceCatalog.findVieNeuTurbo(current)?.id ?: TtsVoiceCatalog.DEFAULT_VIENEU_TURBO_VOICE_ID
+            }
             AiTtsBackend.VIENEU_NANO -> {
                 TtsVoiceCatalog.findVieNeu(current)?.id ?: TtsVoiceCatalog.DEFAULT_VIENEU_VOICE_ID
             }
@@ -958,10 +1155,10 @@ class AudioSettingsViewModel internal constructor(
      */
     private fun resolveBackendForVoice(voiceId: String?, fallback: AiTtsBackend): AiTtsBackend {
         val found = TtsVoiceCatalog.findBackend(voiceId) ?: return fallback
-        return if (found == AiTtsBackend.VIENEU_NANO && !supportsVieNeu) {
-            AiTtsBackend.SHERPA_VITS
-        } else {
-            found
+        return when {
+            found == AiTtsBackend.VIENEU_NANO && !supportsVieNeu -> AiTtsBackend.SHERPA_VITS
+            found == AiTtsBackend.VIENEU_TURBO && !supportsVieNeuTurbo -> AiTtsBackend.SHERPA_VITS
+            else -> found
         }
     }
 
@@ -972,6 +1169,9 @@ class AudioSettingsViewModel internal constructor(
      * @return Mã giọng hợp lệ trong catalog hoặc `null`.
      */
     private fun resolveValidAiVoiceId(voiceId: String?): String? {
+        if (TtsSettings.isVieNeuTurboVoiceId(voiceId)) {
+            return TtsVoiceCatalog.findVieNeuTurbo(voiceId)?.id?.takeIf { supportsVieNeuTurbo }
+        }
         TtsVoiceCatalog.findVieNeu(voiceId)?.let { info ->
             return if (supportsVieNeu) info.id else null
         }
@@ -985,6 +1185,9 @@ class AudioSettingsViewModel internal constructor(
      * @return Mã giọng chuẩn hoá nếu có thể phát ngay, hoặc `null` nếu model chưa được tải.
      */
     private fun resolvePlayableAiVoiceId(voiceId: String?): String? {
+        if (TtsSettings.isVieNeuTurboVoiceId(voiceId)) {
+            return TtsVoiceCatalog.findVieNeuTurbo(voiceId)?.id?.takeIf { isVieNeuTurboReady() }
+        }
         TtsVoiceCatalog.findVieNeu(voiceId)?.let { info ->
             if (!supportsVieNeu) return null
             val isVieNeuReady = vieNeuDownloadCoordinator.state.value.isReady || vieNeuRuntimeManager.isModelReady()
@@ -997,6 +1200,7 @@ class AudioSettingsViewModel internal constructor(
         logDebug("onCleared: releasing AudioSettings preview resources")
         previewJob?.cancel()
         vieNeuPcmPlayer.close()
+        vieNeuTurboPcmPlayer?.close()
         ttsEngine.release()
         nativeTtsEngine.shutdown()
         super.onCleared()

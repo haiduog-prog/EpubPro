@@ -95,6 +95,55 @@ object TtsVoiceCatalog {
         vieNeuEntry("Adam", "male", "Nam · Nam · Giọng đọc tự nhiên"),
     )
 
+    const val VIENEU_TURBO_PACKAGE_SIZE = "275 MB"
+    const val DEFAULT_VIENEU_TURBO_VOICE_ID = "${TtsSettings.VIENEU_TURBO_VOICE_ID_PREFIX}Hải Đăng"
+
+    /**
+     * Giọng VieNeu-TTS v3 Turbo: giọng người dùng tự lưu (`voices_v3_turbo_user.json`) đứng đầu, sau đó 25
+     * preset chính thức (`voices_v3_turbo.json`, theo thứ tự `featured` của SDK). [VieNeuPresetVoiceInfo.presetName]
+     * là khoá preset trong JSON.
+     */
+    val vieNeuTurboVoices: List<VieNeuPresetVoiceInfo> = listOf(
+        turboEntry("Vie_ThuyTrang", "female", "Nữ · Kể chuyện · Giọng riêng", displayName = "Thùy Trang"),
+        turboEntry("Hải Đăng", "male", "Nam · Bắc · Phong cách tự nhiên"),
+        turboEntry("Adam bựa", "male", "Nam · Bắc · Phong cách tự nhiên"),
+        turboEntry("Trúc Ly", "female", "Nữ · Bắc · Phong cách tự nhiên"),
+        turboEntry("Thiện Minh", "male", "Nam · Bắc · Phong cách kể chuyện"),
+        turboEntry("Mai Anh", "female", "Nữ · Bắc · Phong cách tin tức"),
+        turboEntry("Thùy Dung", "female", "Nữ · Nam · Phong cách tin tức"),
+        turboEntry("Thiền Tâm Đức", "male", "Nam · Bắc · Phong cách kể chuyện"),
+        turboEntry("Ngọc Huyền", "female", "Nữ · Bắc · Giọng đọc tự nhiên"),
+        turboEntry("Quang Sơn", "male", "Nam · Trung · Phong cách tự nhiên"),
+        turboEntry("Ngọc Trân", "female", "Nữ · Trung · Phong cách tự nhiên"),
+        turboEntry("Minh Đức", "male", "Nam · Bắc · Phong cách tin tức"),
+        turboEntry("Phạm Tuyên", "male", "Nam · Bắc · Phong cách tự nhiên"),
+        turboEntry("Thái Sơn", "male", "Nam · Nam · Phong cách kể chuyện"),
+        turboEntry("Xuân Vĩnh", "male", "Nam · Bắc · Phong cách tự nhiên"),
+        turboEntry("Thanh Bình", "male", "Nam · Bắc · Phong cách kể chuyện"),
+        turboEntry("Ngọc Linh", "female", "Nữ · Bắc · Phong cách kể chuyện"),
+        turboEntry("Đoan Trang", "female", "Nữ · Bắc · Phong cách tự nhiên"),
+        turboEntry("Thục Đoan", "female", "Nữ · Nam · Phong cách kể chuyện"),
+        turboEntry("Minh Triết", "male", "Nam · Nam · Phong cách tin tức"),
+        turboEntry("Mỹ Duyên", "female", "Nữ · Nam · Phong cách đọc truyện"),
+        turboEntry("Quỳnh Anh", "female", "Nữ · Bắc · Phong cách đọc truyện"),
+        turboEntry("Đức Trí", "male", "Nam · Nam · Phong cách đọc truyện"),
+        turboEntry("Kim Thanh", "female", "Nữ · Nam · Phong cách đọc truyện"),
+        turboEntry("Adam", "male", "Nam · Nam · Giọng đọc tự nhiên"),
+        turboEntry("Quốc Tuấn", "male", "Nam · Bắc · Phong cách tự nhiên"),
+    )
+
+    /**
+     * Tìm giọng VieNeu-TTS v3 Turbo theo ID (`"vieneu-turbo:..."`) hoặc tên preset gốc.
+     *
+     * @param id Mã giọng có hoặc không có prefix `"vieneu-turbo:"`.
+     * @return [VieNeuPresetVoiceInfo] khớp, hoặc `null` nếu không có trong catalog.
+     */
+    fun findVieNeuTurbo(id: String?): VieNeuPresetVoiceInfo? {
+        val raw = id?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val targetName = raw.removePrefix(TtsSettings.VIENEU_TURBO_VOICE_ID_PREFIX)
+        return vieNeuTurboVoices.firstOrNull { it.id == raw || it.presetName == targetName }
+    }
+
     /**
      * Tìm model giọng Sherpa VITS theo [id].
      *
@@ -158,6 +207,7 @@ object TtsVoiceCatalog {
      * @return [AiTtsBackend.VIENEU_NANO], [AiTtsBackend.SHERPA_VITS], hoặc `null` nếu không phải giọng AI catalog.
      */
     fun findBackend(id: String?): AiTtsBackend? = when {
+        TtsSettings.isVieNeuTurboVoiceId(id) -> AiTtsBackend.VIENEU_TURBO.takeIf { findVieNeuTurbo(id) != null }
         TtsSettings.isVieNeuVoiceId(id) -> AiTtsBackend.VIENEU_NANO
         find(id) != null -> AiTtsBackend.SHERPA_VITS
         else -> null
@@ -171,6 +221,29 @@ object TtsVoiceCatalog {
      * @param description Mô tả giọng đọc hiển thị trên UI.
      * @return Đối tượng [VieNeuPresetVoiceInfo] hoàn chỉnh.
      */
+    /**
+     * Tạo một mục giọng VieNeu-TTS v3 Turbo với ID chuẩn hoá kèm prefix `"vieneu-turbo:"`.
+     *
+     * @param presetName Khoá preset trong file JSON giọng Turbo.
+     * @param gender Giới tính (`"male"` / `"female"`).
+     * @param description Mô tả giọng hiển thị trên UI.
+     * @param displayName Tên hiển thị (mặc định trùng [presetName]).
+     * @return Đối tượng [VieNeuPresetVoiceInfo] hoàn chỉnh.
+     */
+    private fun turboEntry(
+        presetName: String,
+        gender: String,
+        description: String,
+        displayName: String = presetName,
+    ): VieNeuPresetVoiceInfo = VieNeuPresetVoiceInfo(
+        id = "${TtsSettings.VIENEU_TURBO_VOICE_ID_PREFIX}$presetName",
+        presetName = presetName,
+        displayName = displayName,
+        language = "vi",
+        gender = gender,
+        description = description,
+    )
+
     private fun vieNeuEntry(
         presetName: String,
         gender: String,

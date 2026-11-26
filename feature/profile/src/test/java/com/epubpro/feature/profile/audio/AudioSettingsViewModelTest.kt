@@ -17,6 +17,8 @@ import com.epubpro.core.tts.VieNeuModelDownloader
 import com.epubpro.core.tts.VieNeuNanoVoice
 import com.epubpro.core.tts.VieNeuPcmPlayer
 import com.epubpro.core.tts.VieNeuRuntimeManager
+import com.epubpro.core.tts.VieNeuTurboModelDownloader
+import com.epubpro.core.tts.VieNeuTurboRuntimeManager
 import com.epubpro.core.tts.VoiceCatalog
 import com.epubpro.core.tts.VoiceModelDownloader
 import com.epubpro.domain.model.AiTtsBackend
@@ -197,6 +199,26 @@ class AudioSettingsViewModelTest {
         }
     }
 
+    /**
+     * Runtime VieNeu Turbo giả: chỉ điều khiển trạng thái "model đã tải" để kiểm tra luật persist cài đặt.
+     */
+    private class FakeTurboRuntimeManager(
+        downloader: VieNeuTurboModelDownloader,
+        supportChecker: VieNeuDeviceSupportChecker,
+        nanoRuntime: VieNeuRuntimeManager,
+        var ready: Boolean,
+    ) : VieNeuTurboRuntimeManager(
+        officialVoicesJson = { "{}" },
+        userVoicesJson = { null },
+        downloader = downloader,
+        deviceSupportChecker = supportChecker,
+        nanoRuntime = nanoRuntime,
+    ) {
+        override fun isModelReady(): Boolean = ready
+
+        override suspend fun unload() = Unit
+    }
+
     private class FakePcmPlayer : VieNeuPcmPlayer() {
         var playedSamples: FloatArray? = null
         var pauseAndFlushCount = 0
@@ -259,6 +281,8 @@ class AudioSettingsViewModelTest {
         isVieNeuSupported: Boolean = true,
         isVieNeuReady: Boolean = false,
         initialSherpaDownloaded: Set<String> = emptySet(),
+        withTurbo: Boolean = false,
+        isTurboReady: Boolean = false,
     ): TestHarness {
         val modelDir = tempFolder.newFolder("vieneu-model")
         val downloader = VieNeuModelDownloader { modelDir }
@@ -296,6 +320,20 @@ class AudioSettingsViewModelTest {
         }
         val sherpaEngine: SherpaTtsEngine = mock()
         val pcmPlayer = FakePcmPlayer()
+        val turboDownloader = VieNeuTurboModelDownloader(
+            modelDirProvider = { tempFolder.root.resolve("vieneu-turbo") },
+            nanoDirProvider = { modelDir },
+        )
+        val turboCoordinator = if (withTurbo) {
+            FakeDownloadCoordinator(turboDownloader, supportChecker, mainDispatcher, initialReady = isTurboReady)
+        } else {
+            null
+        }
+        val turboRuntime = if (withTurbo) {
+            FakeTurboRuntimeManager(turboDownloader, supportChecker, runtimeManager, ready = isTurboReady)
+        } else {
+            null
+        }
 
         val viewModel = AudioSettingsViewModel(
             voiceModelDownloader = voiceModelDownloader,
@@ -310,6 +348,9 @@ class AudioSettingsViewModelTest {
             resolveString = { resId, args ->
                 if (args.isEmpty()) "res:$resId" else "res:$resId:${args.joinToString(",")}"
             },
+            vieNeuTurboDownloadCoordinator = turboCoordinator,
+            vieNeuTurboRuntimeManager = turboRuntime,
+            vieNeuTurboPcmPlayer = if (withTurbo) FakePcmPlayer() else null,
         )
         return TestHarness(
             viewModel = viewModel,
@@ -320,6 +361,40 @@ class AudioSettingsViewModelTest {
             pcmPlayer = pcmPlayer,
             downloadedSherpaIds = downloadedSherpaIds,
         )
+    }
+
+    @Test
+    fun `selecting Turbo before its package is downloaded does not persist a Turbo voice`() = runTest {
+        val harness = buildHarness(initialSettings = TtsSettings(isAiVoice = false), withTurbo = true, isTurboReady = false)
+        advanceUntilIdle()
+
+        harness.viewModel.onAiBackendSelected(AiTtsBackend.VIENEU_TURBO)
+        advanceUntilIdle()
+
+        val state = harness.viewModel.uiState.value
+        assertTrue(state.isVieNeuTurboAvailable)
+        assertEquals(AiTtsBackend.VIENEU_TURBO, state.selectedAiBackend)
+        assertEquals(TtsVoiceCatalog.DEFAULT_VIENEU_TURBO_VOICE_ID, state.selectedVoiceId)
+        assertFalse(harness.settingsFlow.value.isAiVoice)
+        assertFalse(TtsSettings.isVieNeuTurboVoiceId(harness.settingsFlow.value.voiceId))
+    }
+
+    @Test
+    fun `selecting a Turbo voice after download persists it with the Turbo prefix`() = runTest {
+        val harness = buildHarness(initialSettings = TtsSettings(isAiVoice = false), withTurbo = true, isTurboReady = true)
+        advanceUntilIdle()
+
+        harness.viewModel.onAiBackendSelected(AiTtsBackend.VIENEU_TURBO)
+        advanceUntilIdle()
+        val userVoiceId = TtsVoiceCatalog.vieNeuTurboVoices.first().id
+        harness.viewModel.onVoiceSelected(userVoiceId)
+        advanceUntilIdle()
+
+        assertTrue(harness.settingsFlow.value.isAiVoice)
+        assertEquals(userVoiceId, harness.settingsFlow.value.voiceId)
+        assertTrue(userVoiceId.startsWith(TtsSettings.VIENEU_TURBO_VOICE_ID_PREFIX))
+        assertEquals(AiTtsBackend.VIENEU_TURBO, harness.viewModel.uiState.value.selectedAiBackend)
+        assertTrue(harness.viewModel.uiState.value.filteredAiVoices.all { it.backend == AiTtsBackend.VIENEU_TURBO && it.isDownloaded })
     }
 
     @Test

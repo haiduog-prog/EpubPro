@@ -98,10 +98,52 @@ class VieNeuTurboSpikeTest {
         Log.i(TAG, "done rssStart=${rssStart}KB rssEnd=${rssKb()}KB")
     }
 
+    /**
+     * Tổng hợp các câu mẫu bằng giọng người dùng tự lưu từ app Gradio của SDK (`user_voices_v3_turbo.json`,
+     * cùng định dạng preset), ghi WAV để nghe thử.
+     */
+    @Test
+    fun synthesizeUserVoices() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val root = File(context.filesDir, "vieneu-turbo")
+        val userVoices = File(root, "user_voices_v3_turbo.json")
+        val goldenFile = File(root, "golden/turbo_golden.json")
+        assumeTrue("Chưa đẩy giọng người dùng vào $userVoices", userVoices.isFile && goldenFile.isFile)
+
+        val golden = JSONObject(goldenFile.readText())
+        val presets = JSONObject(userVoices.readText()).getJSONObject("presets")
+        val weights = TurboWeights.load(File(root, "turbo/vieneu_v3_heads.npz"))
+        TurboSpikeEngine(root, threads = 4, weights).use { engine ->
+            for (name in presets.keys()) {
+                val voice = presets.getJSONObject(name)
+                val anchor = weights.speakerAnchor(voice.getJSONArray("speaker_emb").toFloatArray())
+                val refCodes = voice.getJSONArray("codes").toIntMatrix()
+                val cases = golden.getJSONArray("cases")
+                for (i in 0 until cases.length()) {
+                    val case = cases.getJSONObject(i)
+                    val result = engine.synthesize(
+                        phoneIds = case.getJSONArray("phone_ids").toIntArray(),
+                        refCodes = refCodes,
+                        anchor = anchor,
+                        styleId = golden.getInt("style_id"),
+                        maxFrames = case.getInt("max_frames"),
+                        repetitionPenalty = golden.getDouble("repetition_penalty").toFloat(),
+                        repetitionWindow = golden.getInt("repetition_window"),
+                    )
+                    val audioS = result.audio.size / SAMPLE_RATE.toFloat()
+                    Log.i(TAG, "user voice=$name case=$i frames=${result.codes.size} audio=%.2fs RTF=%.3f"
+                        .format(audioS, result.totalMs / 1000f / audioS))
+                    val safeName = name.filter { it.isLetterOrDigit() || it == '_' }
+                    writeWav(File(root, "user_${safeName}_case$i.wav"), result.audio)
+                }
+            }
+        }
+    }
+
     private companion object {
         const val TAG = "VieNeuTurboSpike"
         const val SAMPLE_RATE = 48_000
-        val THREAD_COUNTS = listOf(4, 2, 6)
+        val THREAD_COUNTS = listOf(4)
     }
 }
 
@@ -215,13 +257,34 @@ private class TurboWeights(
  */
 private class TurboSpikeEngine(root: File, threads: Int, private val w: TurboWeights) : AutoCloseable {
     private val env = OrtEnvironment.getEnvironment()
+    private val memMode = InstrumentationRegistry.getArguments().getString("memMode")?.toIntOrNull() ?: 0
     private val options = OrtSession.SessionOptions().apply {
         setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
         setInterOpNumThreads(1)
         setIntraOpNumThreads(threads)
         addConfigEntry("session.intra_op.allow_spinning", "0")
+        if (memMode >= 1) {
+            setCPUArenaAllocator(false)
+            setMemoryPatternOptimization(false)
+        }
+        if (memMode == 2) addConfigEntry("session.disable_prepacking", "1")
+    }.also { Log.i("VieNeuTurboSpike", "memMode=$memMode") }
+
+    /** Chế độ 3: chỉ graph prefill (chạy một lần mỗi câu) bỏ prepack để không giữ bản backbone thứ hai. */
+    private val prefillOptions = if (memMode == 3) {
+        OrtSession.SessionOptions().apply {
+            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            setInterOpNumThreads(1)
+            setIntraOpNumThreads(threads)
+            addConfigEntry("session.intra_op.allow_spinning", "0")
+            setCPUArenaAllocator(false)
+            setMemoryPatternOptimization(false)
+            addConfigEntry("session.disable_prepacking", "1")
+        }
+    } else {
+        options
     }
-    private val prefill = env.createSession(File(root, "turbo/vieneu_prefill.onnx").absolutePath, options)
+    private val prefill = env.createSession(File(root, "turbo/vieneu_prefill.onnx").absolutePath, prefillOptions)
     private val decode = env.createSession(File(root, "turbo/vieneu_decode_step.onnx").absolutePath, options)
     private val acoustic = env.createSession(File(root, "turbo/vieneu_acoustic_cached.onnx").absolutePath, options)
     private val codecStep = env.createSession(File(root, "codec/moss_audio_tokenizer_decode_step.onnx").absolutePath, options)

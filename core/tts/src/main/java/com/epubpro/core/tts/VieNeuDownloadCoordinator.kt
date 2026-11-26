@@ -158,7 +158,7 @@ open class VieNeuDownloadCoordinator constructor(
                     fileIndex = 1,
                     totalFiles = (currentInventory.totalCount - currentInventory.presentCount).coerceAtLeast(1),
                     downloadedBytes = currentInventory.existingBytes,
-                    totalBytes = VieNeuModelDownloader.TOTAL_EXPECTED_BYTES,
+                    totalBytes = downloader.totalExpectedBytes,
                 ),
             )
 

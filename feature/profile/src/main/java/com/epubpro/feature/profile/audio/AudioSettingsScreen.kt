@@ -263,6 +263,26 @@ fun AudioSettingsScreen(
                             fontWeight = FontWeight.Medium,
                             style = MaterialTheme.typography.bodyMedium
                         )
+                        if (uiState.isVieNeuTurboAvailable) {
+                            FilterChip(
+                                selected = uiState.selectedAiBackend == AiTtsBackend.VIENEU_TURBO,
+                                onClick = { viewModel.onAiBackendSelected(AiTtsBackend.VIENEU_TURBO) },
+                                label = {
+                                    Column(Modifier.padding(vertical = 4.dp)) {
+                                        Text(
+                                            text = stringResource(R.string.audio_ai_backend_vieneu_turbo),
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = stringResource(R.string.audio_ai_backend_vieneu_turbo_badge),
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                         if (uiState.isVieNeuSupported) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -351,10 +371,10 @@ fun AudioSettingsScreen(
                             val backendAiVoices = uiState.filteredAiVoices
                             val selectedVoiceName = if (uiState.isAiVoice) {
                                 backendAiVoices.firstOrNull { it.id == uiState.selectedVoiceId }?.name
-                                    ?: if (uiState.selectedAiBackend == AiTtsBackend.VIENEU_NANO) {
-                                        stringResource(R.string.audio_vieneu_voice_fallback)
-                                    } else {
-                                        stringResource(R.string.audio_sherpa_voice_fallback)
+                                    ?: when (uiState.selectedAiBackend) {
+                                        AiTtsBackend.VIENEU_TURBO -> stringResource(R.string.audio_vieneu_turbo_voice_fallback)
+                                        AiTtsBackend.VIENEU_NANO -> stringResource(R.string.audio_vieneu_voice_fallback)
+                                        AiTtsBackend.SHERPA_VITS -> stringResource(R.string.audio_sherpa_voice_fallback)
                                     }
                             } else {
                                 uiState.systemVoices.firstOrNull { it.id == uiState.selectedVoiceId }?.name
@@ -371,7 +391,7 @@ fun AudioSettingsScreen(
                             ) {
                                 if (uiState.isAiVoice) {
                                     backendAiVoices.forEach { voice ->
-                                        val statusText = if (voice.backend == AiTtsBackend.VIENEU_NANO) {
+                                        val statusText = if (voice.backend != AiTtsBackend.SHERPA_VITS) {
                                             val readyTag = if (voice.isDownloaded) {
                                                 stringResource(R.string.audio_vieneu_voice_downloaded)
                                             } else {
@@ -432,15 +452,20 @@ fun AudioSettingsScreen(
                     }
 
                     if (uiState.isAiVoice) {
-                        if (uiState.selectedAiBackend == AiTtsBackend.VIENEU_NANO) {
-                            VieNeuDownloadSection(
+                        when (uiState.selectedAiBackend) {
+                            AiTtsBackend.VIENEU_TURBO -> VieNeuTurboDownloadSection(
+                                uiState = uiState,
+                                onDownload = viewModel::downloadVieNeuTurboPackage,
+                                onCancel = viewModel::cancelVieNeuTurboDownload,
+                                onClear = viewModel::clearVieNeuTurboModel,
+                            )
+                            AiTtsBackend.VIENEU_NANO -> VieNeuDownloadSection(
                                 uiState = uiState,
                                 onDownload = viewModel::downloadVieNeuPackage,
                                 onCancel = viewModel::cancelVieNeuDownload,
                                 onClear = viewModel::clearVieNeuModel,
                             )
-                        } else {
-                            AiDownloadSection(uiState = uiState, onDownload = viewModel::downloadCurrentVoice)
+                            AiTtsBackend.SHERPA_VITS -> AiDownloadSection(uiState = uiState, onDownload = viewModel::downloadCurrentVoice)
                         }
                     }
 
@@ -477,17 +502,19 @@ fun AudioSettingsScreen(
                     }
 
                     val vieNeuSampleText = stringResource(R.string.audio_vieneu_preview_sample)
-                    val canPlayAiPreview = if (uiState.selectedAiBackend == AiTtsBackend.VIENEU_NANO) {
-                        uiState.selectedVoiceId != null && uiState.isVieNeuSupported && uiState.isVieNeuModelReady
-                    } else {
-                        uiState.selectedVoiceId != null && uiState.isModelDownloaded
+                    val canPlayAiPreview = when (uiState.selectedAiBackend) {
+                        AiTtsBackend.VIENEU_TURBO ->
+                            uiState.selectedVoiceId != null && uiState.isVieNeuTurboAvailable && uiState.isVieNeuTurboModelReady
+                        AiTtsBackend.VIENEU_NANO ->
+                            uiState.selectedVoiceId != null && uiState.isVieNeuSupported && uiState.isVieNeuModelReady
+                        AiTtsBackend.SHERPA_VITS -> uiState.selectedVoiceId != null && uiState.isModelDownloaded
                     }
                     OutlinedButton(
                         onClick = {
                             when {
                                 uiState.isPlaying -> viewModel.stopActivePreview()
                                 uiState.isAiVoice -> {
-                                    if (uiState.selectedAiBackend == AiTtsBackend.VIENEU_NANO) {
+                                    if (uiState.selectedAiBackend != AiTtsBackend.SHERPA_VITS) {
                                         viewModel.testVoice(vieNeuSampleText)
                                     } else {
                                         viewModel.testVoice()
@@ -776,22 +803,101 @@ private fun VieNeuDownloadSection(
     onCancel: () -> Unit,
     onClear: () -> Unit,
 ) {
+    VieNeuPackageSection(
+        title = stringResource(R.string.audio_vieneu_package_title),
+        missingText = stringResource(R.string.audio_vieneu_package_missing, TtsVoiceCatalog.VIENEU_SHARED_PACKAGE_SIZE),
+        packageSize = TtsVoiceCatalog.VIENEU_SHARED_PACKAGE_SIZE,
+        isSupported = uiState.isVieNeuSupported,
+        isDownloading = uiState.isVieNeuDownloading,
+        isReady = uiState.isVieNeuModelReady,
+        progress = uiState.vieNeuDownloadProgress,
+        currentFile = uiState.vieNeuCurrentFile,
+        downloadedMb = uiState.vieNeuDownloadedMb,
+        totalMb = uiState.vieNeuTotalMb,
+        error = uiState.vieNeuDownloadError,
+        onDownload = onDownload,
+        onCancel = onCancel,
+        onClear = onClear,
+    )
+}
+
+/**
+ * Thẻ quản lý tải, tạm dừng và xoá gói VieNeu-TTS v3 Turbo (dùng chung cho mọi giọng Turbo).
+ *
+ * @param uiState Trạng thái màn hình cài đặt âm thanh.
+ * @param onDownload Callback bắt đầu hoặc tiếp tục tải gói Turbo.
+ * @param onCancel Callback tạm dừng tải.
+ * @param onClear Callback xoá gói Turbo khỏi máy.
+ */
+@Composable
+private fun VieNeuTurboDownloadSection(
+    uiState: AudioSettingsUiState,
+    onDownload: () -> Unit,
+    onCancel: () -> Unit,
+    onClear: () -> Unit,
+) {
+    VieNeuPackageSection(
+        title = stringResource(R.string.audio_vieneu_turbo_package_title),
+        missingText = stringResource(
+            R.string.audio_vieneu_turbo_package_missing,
+            TtsVoiceCatalog.VIENEU_TURBO_PACKAGE_SIZE,
+            TtsVoiceCatalog.vieNeuTurboVoices.size,
+        ),
+        packageSize = TtsVoiceCatalog.VIENEU_TURBO_PACKAGE_SIZE,
+        isSupported = uiState.isVieNeuTurboAvailable,
+        isDownloading = uiState.isVieNeuTurboDownloading,
+        isReady = uiState.isVieNeuTurboModelReady,
+        progress = uiState.vieNeuTurboDownloadProgress,
+        currentFile = uiState.vieNeuTurboCurrentFile,
+        downloadedMb = uiState.vieNeuTurboDownloadedMb,
+        totalMb = uiState.vieNeuTurboTotalMb,
+        error = uiState.vieNeuTurboDownloadError,
+        onDownload = onDownload,
+        onCancel = onCancel,
+        onClear = onClear,
+    )
+}
+
+/**
+ * Thẻ tải gói model dùng chung (VieNeu Nano hoặc Turbo): trạng thái, tiến trình và nút tải/tạm dừng/xoá.
+ *
+ * @param title Tiêu đề thẻ.
+ * @param missingText Mô tả hiển thị khi gói chưa tải.
+ * @param packageSize Dung lượng gói hiển thị trên nút tải.
+ * @param isSupported Thiết bị có hỗ trợ backend này hay không.
+ * @param isDownloading Đang tải hay không.
+ * @param isReady Gói đã tải đủ hay chưa.
+ * @param progress Tỉ lệ hoàn thành `0f..1f`.
+ * @param currentFile Tên file đang tải.
+ * @param downloadedMb Dung lượng đã tải (MB).
+ * @param totalMb Tổng dung lượng (MB).
+ * @param error Thông báo lỗi (nếu có).
+ * @param onDownload Callback tải.
+ * @param onCancel Callback tạm dừng.
+ * @param onClear Callback xoá gói.
+ */
+@Composable
+private fun VieNeuPackageSection(
+    title: String,
+    missingText: String,
+    packageSize: String,
+    isSupported: Boolean,
+    isDownloading: Boolean,
+    isReady: Boolean,
+    progress: Float,
+    currentFile: String,
+    downloadedMb: Int,
+    totalMb: Int,
+    error: String?,
+    onDownload: () -> Unit,
+    onCancel: () -> Unit,
+    onClear: () -> Unit,
+) {
     val statusText = when {
-        !uiState.isVieNeuSupported -> stringResource(R.string.audio_ai_vieneu_unsupported)
-        uiState.isVieNeuDownloading -> stringResource(
-            R.string.audio_vieneu_package_downloading,
-            uiState.vieNeuCurrentFile,
-            uiState.vieNeuDownloadedMb,
-            uiState.vieNeuTotalMb,
-        )
-        uiState.isVieNeuModelReady -> stringResource(
-            R.string.audio_vieneu_package_ready,
-            uiState.vieNeuTotalMb,
-        )
-        else -> stringResource(
-            R.string.audio_vieneu_package_missing,
-            TtsVoiceCatalog.VIENEU_SHARED_PACKAGE_SIZE,
-        )
+        !isSupported -> stringResource(R.string.audio_ai_vieneu_unsupported)
+        isDownloading -> stringResource(R.string.audio_vieneu_package_downloading, currentFile, downloadedMb, totalMb)
+        isReady -> stringResource(R.string.audio_vieneu_package_ready, totalMb)
+        else -> missingText
     }
 
     OutlinedCard(
@@ -801,14 +907,14 @@ private fun VieNeuDownloadSection(
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    imageVector = if (uiState.isVieNeuModelReady) Icons.Default.Check else Icons.Default.CloudDownload,
+                    imageVector = if (isReady) Icons.Default.Check else Icons.Default.CloudDownload,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary
                 )
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        text = stringResource(R.string.audio_vieneu_package_title),
+                        text = title,
                         fontWeight = FontWeight.SemiBold
                     )
                     Text(
@@ -819,16 +925,16 @@ private fun VieNeuDownloadSection(
                 }
             }
 
-            if (uiState.isVieNeuDownloading) {
+            if (isDownloading) {
                 LinearProgressIndicator(
-                    progress = { uiState.vieNeuDownloadProgress },
+                    progress = { progress },
                     modifier = Modifier.fillMaxWidth()
                 )
             }
 
-            if (uiState.isVieNeuSupported) {
+            if (isSupported) {
                 when {
-                    uiState.isVieNeuDownloading -> {
+                    isDownloading -> {
                         OutlinedButton(
                             onClick = onCancel,
                             modifier = Modifier.fillMaxWidth()
@@ -836,7 +942,7 @@ private fun VieNeuDownloadSection(
                             Text(stringResource(R.string.audio_vieneu_package_cancel_btn))
                         }
                     }
-                    uiState.isVieNeuModelReady -> {
+                    isReady -> {
                         OutlinedButton(
                             onClick = onClear,
                             modifier = Modifier.fillMaxWidth()
@@ -853,19 +959,14 @@ private fun VieNeuDownloadSection(
                         ) {
                             Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text(
-                                stringResource(
-                                    R.string.audio_vieneu_package_download_btn,
-                                    TtsVoiceCatalog.VIENEU_SHARED_PACKAGE_SIZE,
-                                )
-                            )
+                            Text(stringResource(R.string.audio_vieneu_package_download_btn, packageSize))
                         }
                     }
                 }
             }
 
-            uiState.vieNeuDownloadError?.let { error ->
-                Text(error, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+            error?.let { message ->
+                Text(message, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
             }
         }
     }

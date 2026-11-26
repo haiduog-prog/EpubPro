@@ -11,7 +11,10 @@ enum class AiTtsBackend {
     SHERPA_VITS,
 
     /** Bộ đọc VieNeu-TTS v3-Nano flow-matching + `sea-g2p` (gói dùng chung 11 giọng). */
-    VIENEU_NANO
+    VIENEU_NANO,
+
+    /** Bộ đọc VieNeu-TTS v3 Turbo tự hồi quy 48 kHz + codec MOSS (gói dùng chung, 25 giọng + giọng người dùng). */
+    VIENEU_TURBO
 }
 
 /**
@@ -136,6 +139,18 @@ data class TtsSettings(
          */
         fun isVieNeuVoiceId(voiceId: String?): Boolean =
             voiceId?.trim()?.startsWith(VIENEU_VOICE_ID_PREFIX) == true
+
+        /** Tiền tố mã giọng VieNeu-TTS v3 Turbo (không trùng [VIENEU_VOICE_ID_PREFIX] của Nano). */
+        const val VIENEU_TURBO_VOICE_ID_PREFIX = "vieneu-turbo:"
+
+        /**
+         * Kiểm tra một `voiceId` có thuộc VieNeu-TTS v3 Turbo hay không.
+         *
+         * @param voiceId Mã giọng cần kiểm tra.
+         * @return `true` nếu mã giọng bắt đầu bằng [VIENEU_TURBO_VOICE_ID_PREFIX].
+         */
+        fun isVieNeuTurboVoiceId(voiceId: String?): Boolean =
+            voiceId?.trim()?.startsWith(VIENEU_TURBO_VOICE_ID_PREFIX) == true
 
         /**
          * Quy đổi một [VieNeuQualityPreset] sang bộ tham số `(steps, cfg, sway)`.
